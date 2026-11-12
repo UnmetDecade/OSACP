@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>多节点 AI Agent 计算与调度平台 · 架构图</title>
+<style>
+  :root {
+    --bg: #f3f3f7;
+    --surface: #ffffff;
+    --surface-2: #fbfbfd;
+    --border: #e5e5ec;
+    --border-soft: #ededf3;
+    --text: #15161b;
+    --text-2: #555866;
+    --text-3: #7c7f8c;
+    --accent: #6f70e8;
+    --accent-soft: #eeeefc;
+    --green: #2f9e6e;
+    --green-soft: #e9f7f0;
+    --teal: #0f8a8a;
+    --teal-soft: #e6f6f6;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 15% -10%, #e9e9fb 0%, transparent 55%),
+      radial-gradient(900px 500px at 100% 0%, #e8f6f3 0%, transparent 50%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 24px 64px;
+  }
+  .wrap { max-width: 1600px; margin: 0 auto; }
+
+  header { margin-bottom: 26px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-3); margin-bottom: 10px;
+  }
+  .eyebrow i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  h1 {
+    margin: 0 0 8px; font-size: 30px; line-height: 1.2;
+    font-weight: 680; letter-spacing: -0.03em;
+  }
+  .lede { margin: 0; color: var(--text-2); font-size: 14px; max-width: 900px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 26px; padding: 0 10px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-2); font-size: 11.5px;
+  }
+  .chip.accent { background: var(--accent-soft); border-color: #dcdcf8; color: #4b4cc4; }
+  .chip.green { background: var(--green-soft); border-color: #cfeee1; color: #217a55; }
+
+  .figure {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(18, 20, 30, 0.04), 0 12px 40px rgba(18, 20, 30, 0.05);
+    padding: 18px 20px 10px;
+    margin-bottom: 22px;
+    overflow: hidden;
+  }
+  .figure-head {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 2px 2px 12px;
+  }
+  .figure-head b { font-size: 13.5px; font-weight: 600; }
+  .figure-head span { color: var(--text-3); font-size: 11.5px; }
+  .scroll { overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; min-width: 1040px; }
+
+  /* ---- svg primitives ---- */
+  svg text { font-family: var(--font); }
+  .h1s { font-size: 15px; font-weight: 640; fill: var(--text); letter-spacing: -0.01em; }
+  .t2 { font-size: 12.5px; font-weight: 610; fill: var(--text); }
+  .s1 { font-size: 11px; fill: var(--text-3); }
+  .s2 { font-size: 10.8px; fill: var(--text-2); }
+  .mono { font-family: var(--mono); font-size: 10.5px; fill: #4d5060; }
+  .lbl { font-size: 10.5px; fill: var(--text-3); }
+  .pill-t { font-size: 10px; font-weight: 650; fill: #4b4cc4; }
+  .pill-t.green-t { fill: #217a55; }
+
+  .hostcard { fill: var(--surface-2); stroke: var(--border-soft); }
+  .hostcard.b { fill: #fbfefd; stroke: #e2efec; }
+  .node { fill: #fff; stroke: var(--border); }
+  .node.pcs { fill: #f8f8ff; stroke: #dedef9; }
+  .node.node-sched { fill: #f8f8ff; stroke: #dedef9; }
+  .node.builder { fill: #fcfefd; stroke: #dfeee8; }
+  .panel { fill: #fbfbfe; stroke: var(--border-soft); }
+  .pill { fill: var(--accent-soft); stroke: #dedef9; }
+  .pill.green { fill: var(--green-soft); stroke: #d3ecdf; }
+
+  .edge { stroke: #b9bbc7; stroke-width: 1.4; fill: none; }
+  .edge-arrow { stroke: #b9bbc7; stroke-width: 1.4; fill: none; marker-end: url(#m-gray); }
+  .edge-strong { stroke: var(--accent); stroke-width: 1.8; fill: none; marker-end: url(#m-accent); }
+  .fed { stroke: var(--teal); stroke-width: 2.4; fill: none; stroke-dasharray: 8 5; marker-end: url(#m-teal); }
+
+  /* ---- notes ---- */
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 8px 0 26px; }
+  @media (max-width: 1080px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 15px 16px;
+    box-shadow: 0 1px 2px rgba(18, 20, 30, 0.03);
+  }
+  .card h3 {
+    margin: 0 0 6px; font-size: 12.5px; font-weight: 640;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .card h3 i {
+    width: 18px; height: 18px; border-radius: 6px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--accent-soft); color: #4b4cc4;
+    font-size: 10px; font-style: normal; font-weight: 700;
+  }
+  .card p { margin: 0; color: var(--text-2); font-size: 12.3px; line-height: 1.7; }
+  .card code {
+    font-family: var(--mono); font-size: 11px;
+    background: #f4f4f9; border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 5px; color: #3f4152;
+  }
+
+  footer { color: var(--text-3); font-size: 11.5px; padding-top: 6px; }
+  footer code { font-family: var(--mono); }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    .figure { box-shadow: none; break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow"><i></i>平台架构 · v4.3 · 2026-11-12</div>
+    <h1>多节点 AI Agent 计算与调度平台</h1>
+    <p class="lede">
+      PCS 控制面管理主机、部署与 Agent / API 档案，密钥只保存 Secret Store 引用；
+      主机侧 host-runtime 执行签名命令；调度机按递归树派发任务，结点调度机逐级汇总能力；
+      主机可以并入另一台主机组成联邦，跨调度机的任务只下推、不复制。
+    </p>
+    <div class="chips">
+      <span class="chip accent">控制面 PCS</span>
+      <span class="chip accent">根调度机</span>
+      <span class="chip accent">结点调度机</span>
+      <span class="chip green">叶构建机</span>
+      <span class="chip">Agent / API 档案</span>
+      <span class="chip">Secret Store</span>
+      <span class="chip">MCP builders</span>
+      <span class="chip">工作能力值 W</span>
+      <span class="chip">任务难度 D</span>
+      <span class="chip">能力汇总 ΣW</span>
+      <span class="chip">主机并入</span>
+      <span class="chip">跨调度机中继</span>
+    </div>
+  </header>
+
+  <!-- ================= 图 1 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>图 1 · 控制面与主机</b>
+      <span>PCS 只写期望态；容器生命周期由主机上的 host-runtime 执行</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 540" role="img" aria-label="控制面与主机架构图">
+        <defs>
+          <marker id="m-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#b9bbc7"/>
+          </marker>
+          <marker id="m-accent" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6f70e8"/>
+          </marker>
+          <marker id="m-teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0f8a8a"/>
+          </marker>
+        </defs>
+
+        <!-- admin app -->
+        <rect class="node" x="40" y="60" width="260" height="130" rx="12"/>
+        <text class="t2" x="60" y="92">管理应用（浏览器）</text>
+        <text class="s2" x="60" y="116">AI Agent 工作室 · 构建机 · 任务</text>
+        <text class="s2" x="60" y="138">对话 · 终端 · 按主机折叠</text>
+        <text class="s2" x="60" y="160" fill="#8a8d99">单页应用 · 无登录角色</text>
+        <path class="edge-strong" d="M300,125 H400"/>
+        <text class="lbl" x="350" y="112" text-anchor="middle">HTTPS</text>
+
+        <!-- PCS -->
+        <rect class="hostcard" x="400" y="40" width="1160" height="180" rx="14"/>
+        <text class="h1s" x="424" y="72">PCS 控制面</text>
+        <text class="s1" x="424" y="94">主机接入 · 部署与签名命令 · Agent / API 档案 · 审计</text>
+
+        <rect class="node pcs" x="424" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="440" y="138">主机名册</text>
+        <text class="s2" x="440" y="160">本地 / SSH 远程</text>
+        <text class="s2" x="440" y="180" fill="#8a8d99">parent_host_id 联邦树</text>
+
+        <rect class="node pcs" x="610" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="626" y="138">部署计划</text>
+        <text class="s2" x="626" y="160">镜像 digest 白名单</text>
+        <text class="s2" x="626" y="180" fill="#8a8d99">CPU · 内存 · 磁盘</text>
+
+        <rect class="node pcs" x="796" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="812" y="138">Agent 档案</text>
+        <text class="s2" x="812" y="160">role_agent_bindings</text>
+        <text class="s2" x="812" y="180" fill="#8a8d99">模型 · CLI / HTTP</text>
+
+        <rect class="node pcs" x="982" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="998" y="138">API 档案</text>
+        <text class="s2" x="998" y="160">role_api_bindings</text>
+        <text class="s2" x="998" y="180" fill="#8a8d99">llm · secret:// 引用</text>
+
+        <rect class="node pcs" x="1168" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="1184" y="138">Secret Store</text>
+        <text class="s2" x="1184" y="160">密钥值不在平台库</text>
+        <text class="s2" x="1184" y="180" fill="#8a8d99">文件 0600 · 实例 JWT</text>
+
+        <rect class="node pcs" x="1354" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="1370" y="138">审计与事件</text>
+        <text class="s2" x="1370" y="160">谁改了哪台主机</text>
+        <text class="s2" x="1370" y="180" fill="#8a8d99">全部操作可回溯</text>
+
+        <!-- PCS -> hosts -->
+        <path class="edge-arrow" d="M540,220 V250 H234 V278"/>
+        <path class="edge-arrow" d="M902,220 V250 H994 V278"/>
+        <text class="lbl" x="650" y="268">出站长轮询 · 签名命令幂等</text>
+
+        <!-- local host -->
+        <rect class="hostcard" x="60" y="280" width="740" height="210" rx="14"/>
+        <text class="h1s" x="84" y="314">本地主机 A · 运行管理页面 / PCS</text>
+        <text class="s1" x="84" y="336">本机执行探测与引导，不需要 SSH</text>
+
+        <rect class="node pcs" x="84" y="354" width="300" height="112" rx="10"/>
+        <text class="t2" x="100" y="380">host-runtime</text>
+        <text class="s2" x="100" y="402">拉取期望态 · 执行签名命令</text>
+        <text class="s2" x="100" y="424">写容器端口 / 卷 / 网络</text>
+        <text class="s2" x="100" y="446" fill="#8a8d99">docker 只在主机侧调用</text>
+
+        <rect class="node pcs" x="404" y="354" width="170" height="112" rx="10"/>
+        <text class="t2" x="420" y="380">scheduler</text>
+        <text class="s2" x="420" y="402">根调度机 :8443</text>
+        <text class="s2" x="420" y="424">任务 · 租约 · 调度 Agent</text>
+        <text class="s2" x="420" y="446" fill="#8a8d99">MCP builders → 构建机</text>
+
+        <rect class="node builder" x="594" y="354" width="186" height="112" rx="10"/>
+        <text class="t2" x="610" y="380">builder × N</text>
+        <text class="s2" x="610" y="402">构建 Agent + sshd</text>
+        <text class="s2" x="610" y="424">root shell</text>
+
+        <!-- remote host -->
+        <rect class="hostcard b" x="820" y="280" width="740" height="210" rx="14"/>
+        <text class="h1s" x="844" y="314">SSH 远程主机 B</text>
+        <text class="s1" x="844" y="336">私钥 AES-256-GCM 加密保存，接口只回指纹</text>
+
+        <rect class="node pcs" x="844" y="354" width="300" height="112" rx="10"/>
+        <text class="t2" x="860" y="380">host-runtime</text>
+        <text class="s2" x="860" y="402">一次性引导后主动连 PCS</text>
+        <text class="s2" x="860" y="424">长期不再需要 SSH 会话</text>
+        <text class="s2" x="860" y="446" fill="#8a8d99">bundle 与命令公钥写在主机侧</text>
+
+        <rect class="node builder" x="1164" y="354" width="180" height="112" rx="10"/>
+        <text class="t2" x="1180" y="380">builder × N</text>
+        <text class="s2" x="1180" y="402">构建 Agent + sshd</text>
+        <text class="s2" x="1180" y="424">root shell</text>
+
+        <rect class="node pcs" x="1364" y="354" width="176" height="112" rx="10"/>
+        <text class="t2" x="1380" y="380">scheduler</text>
+        <text class="s2" x="1380" y="402">B 的根（可并入 A）</text>
+        <text class="s2" x="1380" y="424">任务 · 租约 · 调度 Agent</text>
+        <text class="s2" x="1380" y="446" fill="#8a8d99">MCP builders → 构建机</text>
+
+        <text class="s2" x="60" y="515" fill="#8a8d99">PCS 不直接调用 Docker；私钥只用于探测与一次性引导。容器 sshd 只接受部署时注入的主机登录公钥（root，密钥登录）。</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= 图 2 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>图 2 · 逻辑视图</b>
+      <span>递归调度树、能力汇总与主机并入</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 900" role="img" aria-label="递归调度树架构图">
+
+        <!-- Host A -->
+        <rect class="hostcard" x="40" y="60" width="980" height="790" rx="16"/>
+        <text class="h1s" x="64" y="98">主机 A · 根域</text>
+        <text class="s1" x="64" y="120">根调度机所在主机 · 可运行多个容器</text>
+
+        <!-- root scheduler -->
+        <rect class="node pcs" x="120" y="160" width="320" height="130" rx="12"/>
+        <text class="t2" x="142" y="192">根调度机</text>
+        <text class="s2" x="142" y="214">主机 A · 容器 · ROOT</text>
+        <text class="s2" x="142" y="238">任务队列 · 派发 · 租约 · 记账</text>
+        <text class="s2" x="142" y="262">看到的是整个联邦的总能力</text>
+        <rect class="pill" x="346" y="170" width="74" height="22" rx="11"/>
+        <text class="pill-t" x="383" y="185" text-anchor="middle">ΣW 168</text>
+
+        <!-- root -> children -->
+        <path class="edge" d="M280,290 V340"/>
+        <path class="edge" d="M195,340 H690"/>
+        <path class="edge-arrow" d="M195,340 V400"/>
+        <path class="edge-arrow" d="M405,340 V400"/>
+        <path class="edge-arrow" d="M690,340 V400"/>
+        <text class="lbl" x="470" y="333">↓ 下发任务 · ↑ 上报能力</text>
+
+        <!-- leaf builder 1 -->
+        <rect class="node builder" x="100" y="400" width="190" height="150" rx="12"/>
+        <text class="t2" x="118" y="430">叶构建机</text>
+        <rect class="pill green" x="212" y="414" width="60" height="20" rx="10"/>
+        <text class="pill-t green-t" x="242" y="428" text-anchor="middle">W 24</text>
+        <text class="s2" x="118" y="456">Ubuntu 24.04</text>
+        <text class="s2" x="118" y="478">8 核 · 3.2 GHz</text>
+        <text class="s2" x="118" y="500">32G 内存 · 500G 磁盘</text>
+        <text class="s2" x="118" y="524" fill="#8a8d99">模型 / API 能力已折算</text>
+
+        <!-- leaf builder 2 -->
+        <rect class="node builder" x="320" y="400" width="190" height="150" rx="12"/>
+        <text class="t2" x="338" y="430">叶构建机</text>
+        <rect class="pill green" x="432" y="414" width="60" height="20" rx="10"/>
+        <text class="pill-t green-t" x="462" y="428" text-anchor="middle">W 16</text>
+        <text class="s2" x="338" y="456">Ubuntu 22.04</text>
+        <text class="s2" x="338" y="478">4 核 · 2.8 GHz</text>
+        <text class="s2" x="338" y="500">16G 内存 · 200G 磁盘</text>
+        <text class="s2" x="338" y="524" fill="#8a8d99">模型 / API 能力已折算</text>
+
+        <!-- node scheduler S1 -->
+        <rect class="node node-sched" x="560" y="400" width="280" height="150" rx="12"/>
+        <text class="t2" x="578" y="430">结点调度机 S1</text>
+        <rect class="pill" x="762" y="414" width="62" height="20" rx="10"/>
+        <text class="pill-t" x="793" y="428" text-anchor="middle">ΣW 68</text>
+        <text class="s2" x="578" y="456">下挂 2 叶构建机 + 1 结点</text>
+        <text class="s2" x="578" y="478">先在子树内按 ΣW 路由</text>
+        <text class="s2" x="578" y="500">再按 W 选择目标构建机</text>
+
+        <!-- S1 -> children -->
+        <path class="edge" d="M700,550 V570"/>
+        <path class="edge" d="M615,570 H940"/>
+        <path class="edge-arrow" d="M615,570 V590"/>
+        <path class="edge-arrow" d="M785,570 V590"/>
+        <path class="edge-arrow" d="M940,570 V590"/>
+
+        <!-- S1 children -->
+        <rect class="node builder" x="540" y="590" width="150" height="140" rx="12"/>
+        <text class="t2" x="556" y="618">叶构建机</text>
+        <rect class="pill green" x="616" y="604" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="644" y="618" text-anchor="middle">W 20</text>
+        <text class="s2" x="556" y="644">Ubuntu 22.04</text>
+        <text class="s2" x="556" y="666">16G / 200G</text>
+
+        <rect class="node builder" x="710" y="590" width="150" height="140" rx="12"/>
+        <text class="t2" x="726" y="618">叶构建机</text>
+        <rect class="pill green" x="786" y="604" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="814" y="618" text-anchor="middle">W 12</text>
+        <text class="s2" x="726" y="644">Ubuntu 24.04</text>
+        <text class="s2" x="726" y="666">8G / 120G</text>
+
+        <rect class="node node-sched" x="880" y="590" width="130" height="140" rx="12"/>
+        <text class="t2" x="896" y="618">结点调度机</text>
+        <rect class="pill" x="896" y="632" width="62" height="20" rx="10"/>
+        <text class="pill-t" x="927" y="646" text-anchor="middle">ΣW 36</text>
+        <text class="s2" x="896" y="672">S2 · 可继续</text>
+        <text class="s2" x="896" y="694">挂子节点 ⋯</text>
+
+        <line x1="64" y1="762" x2="996" y2="762" stroke="#ececf2" stroke-width="1"/>
+        <text class="s2" x="64" y="792">主机内可运行多个容器（构建机 / 调度机）；主机本身直接充当角色时，只能二选一。</text>
+        <text class="s2" x="64" y="814" fill="#8a8d99">每台主机最多一个根调度机，它是该主机对内、对外的唯一入口。</text>
+
+        <!-- Host B -->
+        <rect class="hostcard b" x="1080" y="60" width="480" height="500" rx="16"/>
+        <text class="h1s" x="1104" y="98">主机 B · 并入 A</text>
+        <text class="s1" x="1104" y="120">SSH 远程主机 · 内部仍是独立根域</text>
+
+        <rect class="node pcs" x="1120" y="160" width="400" height="150" rx="12"/>
+        <text class="t2" x="1140" y="192">主机 B 的根调度机</text>
+        <rect class="pill" x="1452" y="170" width="60" height="20" rx="10"/>
+        <text class="pill-t" x="1482" y="184" text-anchor="middle">ΣW 60</text>
+        <text class="s2" x="1140" y="218">对内：仍是 B 的根调度机</text>
+        <text class="s2" x="1140" y="242">对外：A 的结点调度机</text>
+        <text class="s2" x="1140" y="266">内部派发链完全不变</text>
+
+        <path class="edge" d="M1320,310 V350"/>
+        <path class="edge" d="M1210,350 H1430"/>
+        <path class="edge-arrow" d="M1210,350 V390"/>
+        <path class="edge-arrow" d="M1430,350 V390"/>
+
+        <rect class="node builder" x="1120" y="390" width="180" height="130" rx="12"/>
+        <text class="t2" x="1136" y="418">叶构建机</text>
+        <rect class="pill green" x="1200" y="404" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="1228" y="418" text-anchor="middle">W 32</text>
+        <text class="s2" x="1136" y="444">Ubuntu 24.04</text>
+        <text class="s2" x="1136" y="466">24G / 400G</text>
+
+        <rect class="node builder" x="1340" y="390" width="180" height="130" rx="12"/>
+        <text class="t2" x="1356" y="418">叶构建机</text>
+        <rect class="pill green" x="1420" y="404" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="1448" y="418" text-anchor="middle">W 28</text>
+        <text class="s2" x="1356" y="444">Ubuntu 22.04</text>
+        <text class="s2" x="1356" y="466">16G / 300G</text>
+
+        <text class="s2" x="1104" y="545" fill="#8a8d99">B 的 ΣW 通过「对外身份」上报给 A 的根。</text>
+
+        <!-- federation link -->
+        <path class="fed" d="M1120,230 H440"/>
+        <text class="lbl" x="780" y="216" text-anchor="middle" fill="#0f8a8a">并入 A · 对外降为结点调度机</text>
+
+        <!-- capability panel -->
+        <rect class="panel" x="1080" y="600" width="480" height="250" rx="14"/>
+        <text class="t2" x="1104" y="634">工作能力值 W</text>
+        <text class="mono" x="1104" y="662">W = w1·核心数 + w2·主频 + w3·内存</text>
+        <text class="mono" x="1104" y="684">  + w4·存储 + w5·模型能力 + w6·API 能力</text>
+        <text class="s2" x="1104" y="714">创建构建机时计算上报，权重归一化后得到可比较分值。</text>
+        <text class="s2" x="1104" y="738">派发：任务难度 D ≤ 构建机 W，取余量最小者。</text>
+        <text class="s2" x="1104" y="762">汇总：ΣW = Σ叶构建机 W + Σ子调度机 ΣW（递归）。</text>
+        <text class="s2" x="1104" y="786" fill="#8a8d99">根调度机看到的 168，就是整个联邦的可用能力。</text>
+
+        <!-- legend -->
+        <line class="edge-strong" x1="40" y1="878" x2="76" y2="878"/>
+        <text class="lbl" x="86" y="882">父 → 子：下发任务；子 → 父：上报能力</text>
+        <path class="fed" d="M420,878 H456"/>
+        <text class="lbl" x="466" y="882" fill="#0f8a8a">主机并入（联邦关系）</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= 图 3 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>图 3 · 主机并入</b>
+      <span>同一棵子树，换个视角看：对外降级，对内不变</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 450" role="img" aria-label="主机并入前后对比图">
+        <text class="h1s" x="40" y="42">并入前</text>
+        <text class="h1s" x="1080" y="42">并入后</text>
+
+        <!-- before: host A -->
+        <rect class="hostcard" x="40" y="70" width="420" height="320" rx="14"/>
+        <text class="t2" x="60" y="100">主机 A · 根域</text>
+        <rect class="node pcs" x="80" y="130" width="180" height="90" rx="10"/>
+        <text class="s2" x="96" y="162">根调度机 A</text>
+        <text class="mono" x="96" y="186">ROOT</text>
+        <path class="edge" d="M170,220 V250"/>
+        <path class="edge-arrow" d="M120,250 V270"/>
+        <path class="edge-arrow" d="M220,250 V270"/>
+        <rect class="node builder" x="80" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="92" y="300">构建机</text>
+        <text class="mono" x="92" y="322">W 24</text>
+        <rect class="node builder" x="180" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="192" y="300">构建机</text>
+        <text class="mono" x="192" y="322">W 16</text>
+
+        <!-- before: host B -->
+        <rect class="hostcard b" x="520" y="70" width="420" height="320" rx="14"/>
+        <text class="t2" x="540" y="100">主机 B · 根域</text>
+        <rect class="node pcs" x="560" y="130" width="180" height="90" rx="10"/>
+        <text class="s2" x="576" y="162">根调度机 B</text>
+        <text class="mono" x="576" y="186">ROOT</text>
+        <path class="edge" d="M650,220 V250"/>
+        <path class="edge-arrow" d="M600,250 V270"/>
+        <path class="edge-arrow" d="M700,250 V270"/>
+        <rect class="node builder" x="560" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="572" y="300">构建机</text>
+        <text class="mono" x="572" y="322">W 32</text>
+        <rect class="node builder" x="660" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="672" y="300">构建机</text>
+        <text class="mono" x="672" y="322">W 28</text>
+
+        <!-- merge arrow -->
+        <path class="fed" d="M960,230 H1040"/>
+        <text class="lbl" x="1000" y="214" text-anchor="middle" fill="#0f8a8a">并入</text>
+
+        <!-- after -->
+        <rect class="hostcard" x="1080" y="70" width="480" height="320" rx="14"/>
+        <text class="t2" x="1100" y="100">主机 A · 根域 + B 子树</text>
+        <rect class="node pcs" x="1100" y="120" width="160" height="90" rx="10"/>
+        <text class="s2" x="1116" y="152">根调度机 A</text>
+        <text class="mono" x="1116" y="176">ROOT</text>
+        <path class="edge-strong" d="M1260,165 H1300"/>
+
+        <rect class="node node-sched" x="1300" y="120" width="240" height="90" rx="10"/>
+        <text class="s2" x="1316" y="148">B 的根调度机</text>
+        <text class="mono" x="1316" y="170">对外 = 结点 · ΣW 60</text>
+        <text class="s2" x="1316" y="192" fill="#8a8d99">对内仍是 B 的根</text>
+
+        <path class="edge" d="M1420,210 V240"/>
+        <path class="edge" d="M1350,240 H1490"/>
+        <path class="edge-arrow" d="M1350,240 V260"/>
+        <path class="edge-arrow" d="M1490,240 V260"/>
+
+        <rect class="node builder" x="1300" y="260" width="100" height="80" rx="10"/>
+        <text class="s2" x="1314" y="290">构建机</text>
+        <text class="mono" x="1314" y="312">W 32</text>
+        <rect class="node builder" x="1440" y="260" width="100" height="80" rx="10"/>
+        <text class="s2" x="1454" y="290">构建机</text>
+        <text class="mono" x="1454" y="312">W 28</text>
+
+        <text class="s2" x="1100" y="368" fill="#555866">B 的调度链不需要改动；只是把「根」这个身份对 A 降了一级。</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= 图 4 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>图 4 · 跨调度机中继</b>
+      <span>只下推、不复制：状态与输出逐级镜像回父任务</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 560" role="img" aria-label="跨调度机中继示意图">
+
+        <!-- root scheduler -->
+        <rect class="hostcard" x="40" y="60" width="400" height="460" rx="14"/>
+        <text class="h1s" x="64" y="96">根调度机 · 主机 A</text>
+        <text class="s1" x="64" y="118">任务第一次进入联邦</text>
+
+        <rect class="node" x="64" y="140" width="352" height="124" rx="10"/>
+        <text class="t2" x="84" y="168">任务 T · QUEUED</text>
+        <text class="s2" x="84" y="192">target: b-1（在并入主机 B 下）</text>
+        <text class="s2" x="84" y="214">本地没有目标实例</text>
+        <text class="s2" x="84" y="238" fill="#8a8d99">父任务留在本库，不复制</text>
+
+        <rect class="node pcs" x="64" y="288" width="352" height="104" rx="10"/>
+        <text class="t2" x="84" y="316">task_relays · ACTIVE</text>
+        <text class="s2" x="84" y="340">领取候选排除父任务</text>
+        <text class="s2" x="84" y="362">两边不会同时执行</text>
+
+        <text class="s2" x="64" y="428">周期拉取子任务：状态 / 摘要 / 输出镜像回父任务</text>
+        <text class="s2" x="64" y="450">取消父任务 → 向子任务转发取消</text>
+        <text class="s2" x="64" y="472" fill="#8a8d99">工作流子任务不中继，状态机留在同一个库</text>
+
+        <!-- relay -->
+        <path class="edge-strong" d="M440,196 H600"/>
+        <text class="lbl" x="520" y="180" text-anchor="middle">POST /v1/tasks · relay</text>
+        <text class="lbl" x="520" y="216" text-anchor="middle">parent_task_id · depth+1</text>
+
+        <!-- node scheduler -->
+        <rect class="hostcard b" x="600" y="60" width="400" height="460" rx="14"/>
+        <text class="h1s" x="624" y="96">结点调度机 · 主机 B</text>
+        <text class="s1" x="624" y="118">对外是 A 的结点，对内仍是 B 的根</text>
+
+        <rect class="node node-sched" x="624" y="140" width="352" height="124" rx="10"/>
+        <text class="t2" x="644" y="168">子任务 T' · 去重建单</text>
+        <text class="s2" x="644" y="192">relay_parent_task_id = T</text>
+        <text class="s2" x="644" y="214">重复投递不会建出第二条</text>
+        <text class="s2" x="644" y="238" fill="#8a8d99">本机没有就继续往下推</text>
+
+        <path class="edge-arrow" d="M800,264 V288"/>
+
+        <rect class="node builder" x="624" y="288" width="352" height="104" rx="10"/>
+        <text class="t2" x="644" y="316">叶构建机 b-1</text>
+        <text class="s2" x="644" y="340">W ≥ D · 领取并执行</text>
+        <text class="s2" x="644" y="362">stdout / stderr → 子任务结果</text>
+
+        <text class="s2" x="624" y="428">子任务状态、摘要、输出回传给父任务</text>
+        <text class="s2" x="624" y="450">父任务最终拿到执行方的 stdout / stderr</text>
+        <text class="s2" x="624" y="472" fill="#8a8d99">最大深度 8；接不住就留在原调度机排队</text>
+
+        <!-- relay semantics -->
+        <rect class="panel" x="1060" y="60" width="500" height="460" rx="14"/>
+        <text class="t2" x="1084" y="96">中继语义</text>
+        <text class="s2" x="1084" y="128">1. 带目标实例：本机有该实例就留本机；否则在直接子结点名册里找，逐跳下推。</text>
+        <text class="s2" x="1084" y="164">2. 不带目标实例：本机有在线且 W ≥ D 的构建机就留本机；否则按容量挑子结点。</text>
+        <text class="s2" x="1100" y="190" fill="#8a8d99">D &gt; 0：优先 max_builder_score 刚好够用的（升序）。</text>
+        <text class="s2" x="1100" y="216" fill="#8a8d99">D = 0：优先更闲的子结点（idle_builder_count 降序）。</text>
+        <text class="s2" x="1084" y="252">3. 只下推、不复制：父任务保持 QUEUED，领取候选排除。</text>
+        <text class="s2" x="1084" y="288">4. 去重：子任务用 relay_parent_task_id 唯一约束，重复投递不会建第二条。</text>
+        <text class="s2" x="1084" y="324">5. 镜像：周期拉取子任务状态与输出；多级中继取嵌套的 child_result。</text>
+        <text class="s2" x="1084" y="360">6. 取消：父任务取消 → 子任务 POST /v1/tasks/:id/cancel，再往下转发。</text>
+        <text class="s2" x="1084" y="396">7. 深度上限 8；子树整体接不住时，任务留在原调度机排队。</text>
+        <text class="s2" x="1084" y="432">8. 子结点不可达只累计 sync_failures，不重复执行。</text>
+        <text class="s2" x="1084" y="468" fill="#8a8d99">结点上报同时带容量指标，根据此决定往哪个子结点下推。</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= 说明 ================= -->
+  <div class="grid">
+    <article class="card">
+      <h3><i>1</i>控制面</h3>
+      <p>PCS 只写期望态与签名命令，不直接调用 Docker；容器生命周期由主机上的 <code>host-runtime</code> 执行。私钥只用于探测与一次性引导。</p>
+    </article>
+    <article class="card">
+      <h3><i>2</i>递归</h3>
+      <p>根调度机下可以挂叶构建机，也可以挂结点调度机；结点调度机再挂构建机和调度机，如此递归，层级不设上限。每台调度机各自一套库。</p>
+    </article>
+    <article class="card">
+      <h3><i>3</i>工作能力值 W</h3>
+      <p><code>W = round(1000 × Σ(权重 × min(值, 上限) / 上限))</code>：CPU 30%（8 核）、频率 15%（4 GHz）、内存 20%（32 GB）、存储 10%（256 GB）、模型 15%（10）、API 10%（10）。调度机不参与 W，固定 0。</p>
+    </article>
+    <article class="card">
+      <h3><i>4</i>按难度派发</h3>
+      <p>任务带难度 <code>D</code>（0–1000，0 = 不限）。调度机只把任务交给 <code>W ≥ D</code> 的构建机，并优先选余量最小的，避免大机器被小任务占住。</p>
+    </article>
+    <article class="card">
+      <h3><i>5</i>逐级汇总</h3>
+      <p>结点调度机把名下构建机的 W 与子调度机的 ΣW 相加后上报，直到根调度机。根看到的 ΣW 就是整个联邦的总能力。</p>
+    </article>
+    <article class="card">
+      <h3><i>6</i>主机并入</h3>
+      <p><code>pcs_hosts.parent_host_id</code> 一行引用即完成并入；不能并入自己或自己的下级，双方都必须已有根调度机。合并与脱离只改运行时上级，不重启容器。</p>
+    </article>
+    <article class="card">
+      <h3><i>7</i>跨调度机中继</h3>
+      <p>只下推、不复制：父任务留在原库保持 <code>QUEUED</code>，子任务用 <code>relay_parent_task_id</code> 唯一约束去重；状态与输出镜像回来，取消向下转发，深度上限 8。</p>
+    </article>
+    <article class="card">
+      <h3><i>8</i>角色规则</h3>
+      <p>主机角色取 <code>containers</code> / <code>builder</code> / <code>scheduler</code>；同一台主机不能同时是构建机和调度机。容器模式下每台主机有且仅有一台根调度机，可再加任意多台结点调度机。</p>
+    </article>
+    <article class="card">
+      <h3><i>9</i>管理视图</h3>
+      <p>构建机、调度机、对话、终端都按主机子树取数：本机与并入主机分组折叠，组头显示主机名与数量，折叠状态记在本机；只有一台主机时不折叠。</p>
+    </article>
+    <article class="card">
+      <h3><i>10</i>Agent / API 档案</h3>
+      <p>Agent Profile 与 API Profile 由控制面维护：角色到 Agent 的绑定在 <code>role_agent_bindings</code>，到 API 的绑定在 <code>role_api_bindings</code>，都按主机生效。调度机与构建机部署时只拿到引用，调度机不解析档案内容，也不接触密钥。</p>
+    </article>
+    <article class="card">
+      <h3><i>11</i>Secret Store</h3>
+      <p>API 密钥不落平台库：档案里只存 <code>secret://&lt;path&gt;</code> 引用，值写入独立的 Secret Store（文件 0600），PCS 不回显、不记日志；容器实例用 Secret Store 实例 JWT 解析引用。</p>
+    </article>
+    <article class="card">
+      <h3><i>12</i>调度 Agent 与 MCP</h3>
+      <p>派发仍由确定性调度循环完成；调度 Agent 只解释队列、租约与「为什么这条在等」。它通过调度机本地 MCP 服务 <code>builders</code> 调用 <code>list_builders</code>、<code>builder_exec</code>、<code>builder_ask</code>、<code>task_status</code> 查看或操作构建机，不进入任务派发路径。</p>
+    </article>
+  </div>
+
+</div>
+</body>
+</html>

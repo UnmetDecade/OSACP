@@ -1,0 +1,112 @@
+{
+  "scheduler_url": "http://127.0.0.1:7801",
+  "heartbeat_seconds": 10,
+  "claim_interval_seconds": 2,
+  "lease_renew_seconds": 60,
+  "progress_seconds": 3,
+  "request_timeout_ms": 5000,
+  "workspace_dir": "data/workspace",
+  "keep_workspace": false,
+  "instances": [
+    {
+      "instance_id": "scheduler",
+      "role_id": "scheduler",
+      "host_id": "docker-host-01",
+      "agent_profile_id": "agp_scheduler",
+      "task_types": [
+        "task.chat.scheduler",
+        "task.console.scheduler"
+      ],
+      "capabilities": {
+        "healthy": [
+          "queue",
+          "lease",
+          "shell",
+          "llm"
+        ]
+      },
+      "slots": 2,
+      "slot_memory_bytes": 536870912
+    },
+    {
+      "instance_id": "builder-ubuntu20-a",
+      "role_id": "builder",
+      "host_id": "dev-box",
+      "agent_profile_id": "agp_shell",
+      "task_types": [
+        "task.build",
+        "task.chat.builder",
+        "task.console.builder"
+      ],
+      "capabilities": {
+        "healthy": [
+          "code.build",
+          "shell",
+          "llm"
+        ]
+      },
+      "slots": 1,
+      "slot_memory_bytes": 2147483648
+    },
+    {
+      "instance_id": "builder-ubuntu22-a",
+      "role_id": "builder",
+      "host_id": "docker-host-01",
+      "agent_profile_id": "agp_builder",
+      "task_types": [
+        "task.build",
+        "task.chat.builder",
+        "task.console.builder"
+      ],
+      "capabilities": {
+        "healthy": [
+          "code.build",
+          "shell",
+          "llm"
+        ]
+      },
+      "slots": 1,
+      "slot_memory_bytes": 2147483648
+    },
+    {
+      "instance_id": "builder-ubuntu24-a",
+      "role_id": "builder",
+      "host_id": "docker-host-01",
+      "agent_profile_id": "agp_builder",
+      "task_types": [
+        "task.build",
+        "task.chat.builder",
+        "task.console.builder"
+      ],
+      "capabilities": {
+        "healthy": [
+          "code.build",
+          "shell",
+          "llm"
+        ]
+      },
+      "slots": 1,
+      "slot_memory_bytes": 2147483648
+    },
+    {
+      "instance_id": "builder-ubuntu26-a",
+      "role_id": "builder",
+      "host_id": "docker-host-01",
+      "agent_profile_id": "agp_builder",
+      "task_types": [
+        "task.build",
+        "task.chat.builder",
+        "task.console.builder"
+      ],
+      "capabilities": {
+        "healthy": [
+          "code.build",
+          "shell",
+          "llm"
+        ]
+      },
+      "slots": 1,
+      "slot_memory_bytes": 2147483648
+    }
+  ]
+}

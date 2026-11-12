@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Multi-Node AI Agent Compute &amp; Scheduling Platform · Architecture</title>
+<style>
+  :root {
+    --bg: #f3f3f7;
+    --surface: #ffffff;
+    --surface-2: #fbfbfd;
+    --border: #e5e5ec;
+    --border-soft: #ededf3;
+    --text: #15161b;
+    --text-2: #555866;
+    --text-3: #7c7f8c;
+    --accent: #6f70e8;
+    --accent-soft: #eeeefc;
+    --green: #2f9e6e;
+    --green-soft: #e9f7f0;
+    --teal: #0f8a8a;
+    --teal-soft: #e6f6f6;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui,
+      "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 15% -10%, #e9e9fb 0%, transparent 55%),
+      radial-gradient(900px 500px at 100% 0%, #e8f6f3 0%, transparent 50%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 24px 64px;
+  }
+  .wrap { max-width: 1600px; margin: 0 auto; }
+
+  header { margin-bottom: 26px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-3); margin-bottom: 10px;
+  }
+  .eyebrow i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  h1 {
+    margin: 0 0 8px; font-size: 30px; line-height: 1.2;
+    font-weight: 680; letter-spacing: -0.03em;
+  }
+  .lede { margin: 0; color: var(--text-2); font-size: 14px; max-width: 900px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 26px; padding: 0 10px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-2); font-size: 11.5px;
+  }
+  .chip.accent { background: var(--accent-soft); border-color: #dcdcf8; color: #4b4cc4; }
+  .chip.green { background: var(--green-soft); border-color: #cfeee1; color: #217a55; }
+
+  .figure {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(18, 20, 30, 0.04), 0 12px 40px rgba(18, 20, 30, 0.05);
+    padding: 18px 20px 10px;
+    margin-bottom: 22px;
+    overflow: hidden;
+  }
+  .figure-head {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 2px 2px 12px;
+  }
+  .figure-head b { font-size: 13.5px; font-weight: 600; }
+  .figure-head span { color: var(--text-3); font-size: 11.5px; }
+  .scroll { overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; min-width: 1040px; }
+
+  /* ---- svg primitives ---- */
+  svg text { font-family: var(--font); }
+  .h1s { font-size: 15px; font-weight: 640; fill: var(--text); letter-spacing: -0.01em; }
+  .t2 { font-size: 12.5px; font-weight: 610; fill: var(--text); }
+  .s1 { font-size: 11px; fill: var(--text-3); }
+  .s2 { font-size: 10.8px; fill: var(--text-2); }
+  .mono { font-family: var(--mono); font-size: 10.5px; fill: #4d5060; }
+  .lbl { font-size: 10.5px; fill: var(--text-3); }
+  .pill-t { font-size: 10px; font-weight: 650; fill: #4b4cc4; }
+  .pill-t.green-t { fill: #217a55; }
+
+  .hostcard { fill: var(--surface-2); stroke: var(--border-soft); }
+  .hostcard.b { fill: #fbfefd; stroke: #e2efec; }
+  .node { fill: #fff; stroke: var(--border); }
+  .node.pcs { fill: #f8f8ff; stroke: #dedef9; }
+  .node.node-sched { fill: #f8f8ff; stroke: #dedef9; }
+  .node.builder { fill: #fcfefd; stroke: #dfeee8; }
+  .panel { fill: #fbfbfe; stroke: var(--border-soft); }
+  .pill { fill: var(--accent-soft); stroke: #dedef9; }
+  .pill.green { fill: var(--green-soft); stroke: #d3ecdf; }
+
+  .edge { stroke: #b9bbc7; stroke-width: 1.4; fill: none; }
+  .edge-arrow { stroke: #b9bbc7; stroke-width: 1.4; fill: none; marker-end: url(#m-gray); }
+  .edge-strong { stroke: var(--accent); stroke-width: 1.8; fill: none; marker-end: url(#m-accent); }
+  .fed { stroke: var(--teal); stroke-width: 2.4; fill: none; stroke-dasharray: 8 5; marker-end: url(#m-teal); }
+
+  /* ---- notes ---- */
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 8px 0 26px; }
+  @media (max-width: 1080px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 15px 16px;
+    box-shadow: 0 1px 2px rgba(18, 20, 30, 0.03);
+  }
+  .card h3 {
+    margin: 0 0 6px; font-size: 12.5px; font-weight: 640;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .card h3 i {
+    width: 18px; height: 18px; border-radius: 6px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--accent-soft); color: #4b4cc4;
+    font-size: 10px; font-style: normal; font-weight: 700;
+  }
+  .card p { margin: 0; color: var(--text-2); font-size: 12.3px; line-height: 1.7; }
+  .card code {
+    font-family: var(--mono); font-size: 11px;
+    background: #f4f4f9; border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 5px; color: #3f4152;
+  }
+
+  footer { color: var(--text-3); font-size: 11.5px; padding-top: 6px; }
+  footer code { font-family: var(--mono); }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    .figure { box-shadow: none; break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow"><i></i>Platform architecture · v4.3 · 2026-11-12</div>
+    <h1>Multi-Node AI Agent Compute &amp; Scheduling Platform</h1>
+    <p class="lede">
+      The PCS control plane manages hosts, deployments and Agent / API profiles, storing only
+      Secret Store references for keys. host-runtime on each host executes signed commands.
+      Schedulers dispatch over a recursive tree and node schedulers aggregate capability upward;
+      a host can merge into another host to form a federation, and tasks that cross schedulers are
+      pushed down, never copied.
+    </p>
+    <div class="chips">
+      <span class="chip accent">PCS control plane</span>
+      <span class="chip accent">Root scheduler</span>
+      <span class="chip accent">Node scheduler</span>
+      <span class="chip green">Leaf builder</span>
+      <span class="chip">Agent / API profiles</span>
+      <span class="chip">Secret Store</span>
+      <span class="chip">MCP builders</span>
+      <span class="chip">Capability score W</span>
+      <span class="chip">Task difficulty D</span>
+      <span class="chip">Aggregated ΣW</span>
+      <span class="chip">Host merge</span>
+      <span class="chip">Cross-scheduler relay</span>
+    </div>
+  </header>
+
+  <!-- ================= Figure 1 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>Figure 1 · Control plane and hosts</b>
+      <span>PCS writes desired state only; host-runtime runs the containers</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 540" role="img" aria-label="Control plane and hosts diagram">
+        <defs>
+          <marker id="m-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#b9bbc7"/>
+          </marker>
+          <marker id="m-accent" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6f70e8"/>
+          </marker>
+          <marker id="m-teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0f8a8a"/>
+          </marker>
+        </defs>
+
+        <!-- admin app -->
+        <rect class="node" x="40" y="60" width="260" height="130" rx="12"/>
+        <text class="t2" x="60" y="92">Admin app (browser)</text>
+        <text class="s2" x="60" y="116">Agent studio · builders · tasks</text>
+        <text class="s2" x="60" y="138">Chat · terminal · folded by host</text>
+        <text class="s2" x="60" y="160" fill="#8a8d99">Single page · no roles</text>
+        <path class="edge-strong" d="M300,125 H400"/>
+        <text class="lbl" x="350" y="112" text-anchor="middle">HTTPS</text>
+
+        <!-- PCS -->
+        <rect class="hostcard" x="400" y="40" width="1160" height="180" rx="14"/>
+        <text class="h1s" x="424" y="72">PCS control plane</text>
+        <text class="s1" x="424" y="94">Host onboarding · deploy &amp; signed commands · Agent / API profiles · audit</text>
+
+        <rect class="node pcs" x="424" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="440" y="138">Host registry</text>
+        <text class="s2" x="440" y="160">Local / SSH remote</text>
+        <text class="s2" x="440" y="180" fill="#8a8d99">parent_host_id tree</text>
+
+        <rect class="node pcs" x="610" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="626" y="138">Deploy plans</text>
+        <text class="s2" x="626" y="160">Pinned image digests</text>
+        <text class="s2" x="626" y="180" fill="#8a8d99">CPU · memory · disk</text>
+
+        <rect class="node pcs" x="796" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="812" y="138">Agent profiles</text>
+        <text class="s2" x="812" y="160">role_agent_bindings</text>
+        <text class="s2" x="812" y="180" fill="#8a8d99">model · CLI / HTTP</text>
+
+        <rect class="node pcs" x="982" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="998" y="138">API profiles</text>
+        <text class="s2" x="998" y="160">role_api_bindings</text>
+        <text class="s2" x="998" y="180" fill="#8a8d99">llm · secret:// refs</text>
+
+        <rect class="node pcs" x="1168" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="1184" y="138">Secret Store</text>
+        <text class="s2" x="1184" y="160">Keys never in platform DB</text>
+        <text class="s2" x="1184" y="180" fill="#8a8d99">file 0600 · instance JWT</text>
+
+        <rect class="node pcs" x="1354" y="112" width="174" height="84" rx="10"/>
+        <text class="t2" x="1370" y="138">Audit &amp; events</text>
+        <text class="s2" x="1370" y="160">Who changed which host</text>
+        <text class="s2" x="1370" y="180" fill="#8a8d99">Every action traceable</text>
+
+        <!-- PCS -> hosts -->
+        <path class="edge-arrow" d="M540,220 V250 H234 V278"/>
+        <path class="edge-arrow" d="M902,220 V250 H994 V278"/>
+        <text class="lbl" x="650" y="268">Outbound long poll · idempotent signed commands</text>
+
+        <!-- local host -->
+        <rect class="hostcard" x="60" y="280" width="740" height="210" rx="14"/>
+        <text class="h1s" x="84" y="314">Host A (local) · runs admin app / PCS</text>
+        <text class="s1" x="84" y="336">Probed and bootstrapped in place, no SSH</text>
+
+        <rect class="node pcs" x="84" y="354" width="300" height="112" rx="10"/>
+        <text class="t2" x="100" y="380">host-runtime</text>
+        <text class="s2" x="100" y="402">Polls desired state · runs commands</text>
+        <text class="s2" x="100" y="424">Container ports / volumes / network</text>
+        <text class="s2" x="100" y="446" fill="#8a8d99">Docker is only touched host-side</text>
+
+        <rect class="node pcs" x="404" y="354" width="170" height="112" rx="10"/>
+        <text class="t2" x="420" y="380">scheduler</text>
+        <text class="s2" x="420" y="402">Root scheduler :8443</text>
+        <text class="s2" x="420" y="424">Tasks · leases · sched Agent</text>
+        <text class="s2" x="420" y="446" fill="#8a8d99">MCP builders · exec / ask</text>
+
+        <rect class="node builder" x="594" y="354" width="186" height="112" rx="10"/>
+        <text class="t2" x="610" y="380">builder × N</text>
+        <text class="s2" x="610" y="402">build Agent + sshd</text>
+        <text class="s2" x="610" y="424">root shell</text>
+
+        <!-- remote host -->
+        <rect class="hostcard b" x="820" y="280" width="740" height="210" rx="14"/>
+        <text class="h1s" x="844" y="314">Host B (SSH remote)</text>
+        <text class="s1" x="844" y="336">Private key AES-256-GCM encrypted; the API returns fingerprints only</text>
+
+        <rect class="node pcs" x="844" y="354" width="300" height="112" rx="10"/>
+        <text class="t2" x="860" y="380">host-runtime</text>
+        <text class="s2" x="860" y="402">One-time bootstrap, then dials PCS</text>
+        <text class="s2" x="860" y="424">No long-lived SSH session after that</text>
+        <text class="s2" x="860" y="446" fill="#8a8d99">bundle and command keys on the host</text>
+
+        <rect class="node builder" x="1164" y="354" width="180" height="112" rx="10"/>
+        <text class="t2" x="1180" y="380">builder × N</text>
+        <text class="s2" x="1180" y="402">build Agent + sshd</text>
+        <text class="s2" x="1180" y="424">root shell</text>
+
+        <rect class="node pcs" x="1364" y="354" width="176" height="112" rx="10"/>
+        <text class="t2" x="1380" y="380">scheduler</text>
+        <text class="s2" x="1380" y="402">B's root · can merge</text>
+        <text class="s2" x="1380" y="424">Tasks · leases · sched Agent</text>
+        <text class="s2" x="1380" y="446" fill="#8a8d99">MCP builders · exec / ask</text>
+
+        <text class="s2" x="60" y="515" fill="#8a8d99">PCS never calls Docker directly; private keys are only for probing and one-time bootstrap. Container sshd accepts only the host login key injected at deploy time (root, key-only).</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= Figure 2 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>Figure 2 · Logical view</b>
+      <span>Recursive scheduling tree, capability aggregation and host merge</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 900" role="img" aria-label="Recursive scheduling tree diagram">
+
+        <!-- Host A -->
+        <rect class="hostcard" x="40" y="60" width="980" height="790" rx="16"/>
+        <text class="h1s" x="64" y="98">Host A · root domain</text>
+        <text class="s1" x="64" y="120">Host of the root scheduler · runs multiple containers</text>
+
+        <!-- root scheduler -->
+        <rect class="node pcs" x="120" y="160" width="320" height="130" rx="12"/>
+        <text class="t2" x="142" y="192">Root scheduler</text>
+        <text class="s2" x="142" y="214">Host A · container · ROOT</text>
+        <text class="s2" x="142" y="238">Queue · dispatch · leases · ledger</text>
+        <text class="s2" x="142" y="262">Sees the whole federation's capacity</text>
+        <rect class="pill" x="346" y="170" width="74" height="22" rx="11"/>
+        <text class="pill-t" x="383" y="185" text-anchor="middle">ΣW 168</text>
+
+        <!-- root -> children -->
+        <path class="edge" d="M280,290 V340"/>
+        <path class="edge" d="M195,340 H690"/>
+        <path class="edge-arrow" d="M195,340 V400"/>
+        <path class="edge-arrow" d="M405,340 V400"/>
+        <path class="edge-arrow" d="M690,340 V400"/>
+        <text class="lbl" x="470" y="333">↓ dispatch tasks · ↑ report capability</text>
+
+        <!-- leaf builder 1 -->
+        <rect class="node builder" x="100" y="400" width="190" height="150" rx="12"/>
+        <text class="t2" x="118" y="430">Builder</text>
+        <rect class="pill green" x="212" y="414" width="60" height="20" rx="10"/>
+        <text class="pill-t green-t" x="242" y="428" text-anchor="middle">W 24</text>
+        <text class="s2" x="118" y="456">Ubuntu 24.04</text>
+        <text class="s2" x="118" y="478">8 cores · 3.2 GHz</text>
+        <text class="s2" x="118" y="500">32G RAM · 500G disk</text>
+        <text class="s2" x="118" y="524" fill="#8a8d99">Model / API folded in</text>
+
+        <!-- leaf builder 2 -->
+        <rect class="node builder" x="320" y="400" width="190" height="150" rx="12"/>
+        <text class="t2" x="338" y="430">Builder</text>
+        <rect class="pill green" x="432" y="414" width="60" height="20" rx="10"/>
+        <text class="pill-t green-t" x="462" y="428" text-anchor="middle">W 16</text>
+        <text class="s2" x="338" y="456">Ubuntu 22.04</text>
+        <text class="s2" x="338" y="478">4 cores · 2.8 GHz</text>
+        <text class="s2" x="338" y="500">16G RAM · 200G disk</text>
+        <text class="s2" x="338" y="524" fill="#8a8d99">Model / API folded in</text>
+
+        <!-- node scheduler S1 -->
+        <rect class="node node-sched" x="560" y="400" width="280" height="150" rx="12"/>
+        <text class="t2" x="578" y="430">Node scheduler S1</text>
+        <rect class="pill" x="762" y="414" width="62" height="20" rx="10"/>
+        <text class="pill-t" x="793" y="428" text-anchor="middle">ΣW 68</text>
+        <text class="s2" x="578" y="456">2 leaf builders + 1 node</text>
+        <text class="s2" x="578" y="478">Routes by ΣW in its subtree</text>
+        <text class="s2" x="578" y="500">Then picks a builder by W</text>
+
+        <!-- S1 -> children -->
+        <path class="edge" d="M700,550 V570"/>
+        <path class="edge" d="M615,570 H940"/>
+        <path class="edge-arrow" d="M615,570 V590"/>
+        <path class="edge-arrow" d="M785,570 V590"/>
+        <path class="edge-arrow" d="M940,570 V590"/>
+
+        <!-- S1 children -->
+        <rect class="node builder" x="540" y="590" width="150" height="140" rx="12"/>
+        <text class="t2" x="556" y="618">Builder</text>
+        <rect class="pill green" x="616" y="604" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="644" y="618" text-anchor="middle">W 20</text>
+        <text class="s2" x="556" y="644">Ubuntu 22.04</text>
+        <text class="s2" x="556" y="666">16G / 200G</text>
+
+        <rect class="node builder" x="710" y="590" width="150" height="140" rx="12"/>
+        <text class="t2" x="726" y="618">Builder</text>
+        <rect class="pill green" x="786" y="604" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="814" y="618" text-anchor="middle">W 12</text>
+        <text class="s2" x="726" y="644">Ubuntu 24.04</text>
+        <text class="s2" x="726" y="666">8G / 120G</text>
+
+        <rect class="node node-sched" x="880" y="590" width="130" height="140" rx="12"/>
+        <text class="t2" x="896" y="618">Node scheduler</text>
+        <rect class="pill" x="896" y="632" width="62" height="20" rx="10"/>
+        <text class="pill-t" x="927" y="646" text-anchor="middle">ΣW 36</text>
+        <text class="s2" x="896" y="672">S2 · can nest</text>
+        <text class="s2" x="896" y="694">child nodes ⋯</text>
+
+        <line x1="64" y1="762" x2="996" y2="762" stroke="#ececf2" stroke-width="1"/>
+        <text class="s2" x="64" y="792">A host runs many containers (builders / schedulers); a bare host taking a role is one or the other.</text>
+        <text class="s2" x="64" y="814" fill="#8a8d99">Each host has at most one root scheduler — its single entry point inward and outward.</text>
+
+        <!-- Host B -->
+        <rect class="hostcard b" x="1080" y="60" width="480" height="500" rx="16"/>
+        <text class="h1s" x="1104" y="98">Host B · merged into A</text>
+        <text class="s1" x="1104" y="120">SSH remote host · still its own root domain</text>
+
+        <rect class="node pcs" x="1120" y="160" width="400" height="150" rx="12"/>
+        <text class="t2" x="1140" y="192">Host B's root scheduler</text>
+        <rect class="pill" x="1452" y="170" width="60" height="20" rx="10"/>
+        <text class="pill-t" x="1482" y="184" text-anchor="middle">ΣW 60</text>
+        <text class="s2" x="1140" y="218">Inside: still B's root scheduler</text>
+        <text class="s2" x="1140" y="242">Outside: A's node scheduler</text>
+        <text class="s2" x="1140" y="266">Internal dispatch chain unchanged</text>
+
+        <path class="edge" d="M1320,310 V350"/>
+        <path class="edge" d="M1210,350 H1430"/>
+        <path class="edge-arrow" d="M1210,350 V390"/>
+        <path class="edge-arrow" d="M1430,350 V390"/>
+
+        <rect class="node builder" x="1120" y="390" width="180" height="130" rx="12"/>
+        <text class="t2" x="1136" y="418">Builder</text>
+        <rect class="pill green" x="1200" y="404" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="1228" y="418" text-anchor="middle">W 32</text>
+        <text class="s2" x="1136" y="444">Ubuntu 24.04</text>
+        <text class="s2" x="1136" y="466">24G / 400G</text>
+
+        <rect class="node builder" x="1340" y="390" width="180" height="130" rx="12"/>
+        <text class="t2" x="1356" y="418">Builder</text>
+        <rect class="pill green" x="1420" y="404" width="56" height="20" rx="10"/>
+        <text class="pill-t green-t" x="1448" y="418" text-anchor="middle">W 28</text>
+        <text class="s2" x="1356" y="444">Ubuntu 22.04</text>
+        <text class="s2" x="1356" y="466">16G / 300G</text>
+
+        <text class="s2" x="1104" y="545" fill="#8a8d99">B reports its ΣW to A's root through its outward identity.</text>
+
+        <!-- federation link -->
+        <path class="fed" d="M1120,230 H440"/>
+        <text class="lbl" x="780" y="216" text-anchor="middle" fill="#0f8a8a">Merged into A · outward role becomes node</text>
+
+        <!-- capability panel -->
+        <rect class="panel" x="1080" y="600" width="480" height="250" rx="14"/>
+        <text class="t2" x="1104" y="634">Capability score W</text>
+        <text class="mono" x="1104" y="662">W = w1·cores + w2·clock + w3·memory</text>
+        <text class="mono" x="1104" y="684">  + w4·storage + w5·model + w6·API</text>
+        <text class="s2" x="1104" y="714">Computed when a builder is created; weights normalize to a comparable score.</text>
+        <text class="s2" x="1104" y="738">Dispatch: task difficulty D ≤ builder W; take the tightest fit.</text>
+        <text class="s2" x="1104" y="762">Aggregate: ΣW = Σ leaf W + Σ child scheduler ΣW (recursive).</text>
+        <text class="s2" x="1104" y="786" fill="#8a8d99">The root's 168 is the whole federation's available capacity.</text>
+
+        <!-- legend -->
+        <line class="edge-strong" x1="40" y1="878" x2="76" y2="878"/>
+        <text class="lbl" x="86" y="882">Parent → child: dispatch tasks; child → parent: report capability</text>
+        <path class="fed" d="M420,878 H456"/>
+        <text class="lbl" x="466" y="882" fill="#0f8a8a">Host merge (federation)</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= Figure 3 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>Figure 3 · Host merge</b>
+      <span>The same subtree, seen differently: degraded outside, unchanged inside</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 450" role="img" aria-label="Host merge before and after">
+        <text class="h1s" x="40" y="42">Before merge</text>
+        <text class="h1s" x="1080" y="42">After merge</text>
+
+        <!-- before: host A -->
+        <rect class="hostcard" x="40" y="70" width="420" height="320" rx="14"/>
+        <text class="t2" x="60" y="100">Host A · root domain</text>
+        <rect class="node pcs" x="80" y="130" width="180" height="90" rx="10"/>
+        <text class="s2" x="96" y="162">Root scheduler A</text>
+        <text class="mono" x="96" y="186">ROOT</text>
+        <path class="edge" d="M170,220 V250"/>
+        <path class="edge-arrow" d="M120,250 V270"/>
+        <path class="edge-arrow" d="M220,250 V270"/>
+        <rect class="node builder" x="80" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="92" y="300">Builder</text>
+        <text class="mono" x="92" y="322">W 24</text>
+        <rect class="node builder" x="180" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="192" y="300">Builder</text>
+        <text class="mono" x="192" y="322">W 16</text>
+
+        <!-- before: host B -->
+        <rect class="hostcard b" x="520" y="70" width="420" height="320" rx="14"/>
+        <text class="t2" x="540" y="100">Host B · root domain</text>
+        <rect class="node pcs" x="560" y="130" width="180" height="90" rx="10"/>
+        <text class="s2" x="576" y="162">Root scheduler B</text>
+        <text class="mono" x="576" y="186">ROOT</text>
+        <path class="edge" d="M650,220 V250"/>
+        <path class="edge-arrow" d="M600,250 V270"/>
+        <path class="edge-arrow" d="M700,250 V270"/>
+        <rect class="node builder" x="560" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="572" y="300">Builder</text>
+        <text class="mono" x="572" y="322">W 32</text>
+        <rect class="node builder" x="660" y="270" width="80" height="90" rx="10"/>
+        <text class="s2" x="672" y="300">Builder</text>
+        <text class="mono" x="672" y="322">W 28</text>
+
+        <!-- merge arrow -->
+        <path class="fed" d="M960,230 H1040"/>
+        <text class="lbl" x="1000" y="214" text-anchor="middle" fill="#0f8a8a">Merge</text>
+
+        <!-- after -->
+        <rect class="hostcard" x="1080" y="70" width="480" height="320" rx="14"/>
+        <text class="t2" x="1100" y="100">Host A · root domain + B subtree</text>
+        <rect class="node pcs" x="1100" y="120" width="160" height="90" rx="10"/>
+        <text class="s2" x="1116" y="152">Root scheduler A</text>
+        <text class="mono" x="1116" y="176">ROOT</text>
+        <path class="edge-strong" d="M1260,165 H1300"/>
+
+        <rect class="node node-sched" x="1300" y="120" width="240" height="90" rx="10"/>
+        <text class="s2" x="1316" y="148">B's root scheduler</text>
+        <text class="mono" x="1316" y="170">Outward = node · ΣW 60</text>
+        <text class="s2" x="1316" y="192" fill="#8a8d99">Inside still B's root</text>
+
+        <path class="edge" d="M1420,210 V240"/>
+        <path class="edge" d="M1350,240 H1490"/>
+        <path class="edge-arrow" d="M1350,240 V260"/>
+        <path class="edge-arrow" d="M1490,240 V260"/>
+
+        <rect class="node builder" x="1300" y="260" width="100" height="80" rx="10"/>
+        <text class="s2" x="1314" y="290">Builder</text>
+        <text class="mono" x="1314" y="312">W 32</text>
+        <rect class="node builder" x="1440" y="260" width="100" height="80" rx="10"/>
+        <text class="s2" x="1454" y="290">Builder</text>
+        <text class="mono" x="1454" y="312">W 28</text>
+
+        <text class="s2" x="1100" y="368" fill="#555866">B's chain is untouched; only the root identity drops a level toward A.</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= Figure 4 ================= -->
+  <section class="figure">
+    <div class="figure-head">
+      <b>Figure 4 · Cross-scheduler relay</b>
+      <span>Push down, never copy: state and output mirror back up the chain</span>
+    </div>
+    <div class="scroll">
+      <svg viewBox="0 0 1600 560" role="img" aria-label="Cross-scheduler task relay">
+
+        <!-- root scheduler -->
+        <rect class="hostcard" x="40" y="60" width="400" height="460" rx="14"/>
+        <text class="h1s" x="64" y="96">Root scheduler · Host A</text>
+        <text class="s1" x="64" y="118">The task first enters the federation</text>
+
+        <rect class="node" x="64" y="140" width="352" height="124" rx="10"/>
+        <text class="t2" x="84" y="168">Task T · QUEUED</text>
+        <text class="s2" x="84" y="192">target: b-1 (under merged host B)</text>
+        <text class="s2" x="84" y="214">No such instance locally</text>
+        <text class="s2" x="84" y="238" fill="#8a8d99">Parent stays here, never copied</text>
+
+        <rect class="node pcs" x="64" y="288" width="352" height="104" rx="10"/>
+        <text class="t2" x="84" y="316">task_relays · ACTIVE</text>
+        <text class="s2" x="84" y="340">Claim candidates exclude the parent</text>
+        <text class="s2" x="84" y="362">No double execution</text>
+
+        <text class="s2" x="64" y="428">Poll child: state / summary / output mirrored back</text>
+        <text class="s2" x="64" y="450">Cancel parent → forward the cancel to the child</text>
+        <text class="s2" x="64" y="472" fill="#8a8d99">Workflow subtasks never relay; state stays in one DB</text>
+
+        <!-- relay -->
+        <path class="edge-strong" d="M440,196 H600"/>
+        <text class="lbl" x="520" y="180" text-anchor="middle">POST /v1/tasks · relay</text>
+        <text class="lbl" x="520" y="216" text-anchor="middle">parent_task_id · depth+1</text>
+
+        <!-- node scheduler -->
+        <rect class="hostcard b" x="600" y="60" width="400" height="460" rx="14"/>
+        <text class="h1s" x="624" y="96">Node scheduler · Host B</text>
+        <text class="s1" x="624" y="118">A's node outward, B's root inward</text>
+
+        <rect class="node node-sched" x="624" y="140" width="352" height="124" rx="10"/>
+        <text class="t2" x="644" y="168">Child task T' · deduplicated</text>
+        <text class="s2" x="644" y="192">relay_parent_task_id = T</text>
+        <text class="s2" x="644" y="214">Redelivery never creates a second task</text>
+        <text class="s2" x="644" y="238" fill="#8a8d99">Not local → push one level down</text>
+
+        <path class="edge-arrow" d="M800,264 V288"/>
+
+        <rect class="node builder" x="624" y="288" width="352" height="104" rx="10"/>
+        <text class="t2" x="644" y="316">Leaf builder b-1</text>
+        <text class="s2" x="644" y="340">W ≥ D · claims and runs</text>
+        <text class="s2" x="644" y="362">stdout / stderr → child result</text>
+
+        <text class="s2" x="624" y="428">Child state, summary and output flow back up</text>
+        <text class="s2" x="624" y="450">The parent ends up with the runner's stdout / stderr</text>
+        <text class="s2" x="624" y="472" fill="#8a8d99">Max depth 8; if nobody fits, it queues here</text>
+
+        <!-- relay semantics -->
+        <rect class="panel" x="1060" y="60" width="500" height="460" rx="14"/>
+        <text class="t2" x="1084" y="96">Relay semantics</text>
+        <text class="s2" x="1084" y="128">1. Target instance: local if present, else the direct child rosters, hop by hop.</text>
+        <text class="s2" x="1084" y="164">2. No target: local if a builder has W ≥ D; else pick a child by capacity.</text>
+        <text class="s2" x="1100" y="190" fill="#8a8d99">D &gt; 0: tightest fit first (max_builder_score ascending).</text>
+        <text class="s2" x="1100" y="216" fill="#8a8d99">D = 0: idler child first (idle_builder_count descending).</text>
+        <text class="s2" x="1084" y="252">3. Push down, never copy: parent stays QUEUED and is excluded from claims.</text>
+        <text class="s2" x="1084" y="288">4. Dedup: relay_parent_task_id is unique; redelivery never creates a second task.</text>
+        <text class="s2" x="1084" y="324">5. Mirror: poll child state and output; multi-hop reads the nested child_result.</text>
+        <text class="s2" x="1084" y="360">6. Cancel: parent cancel → POST /v1/tasks/:id/cancel on the child, forwarded down.</text>
+        <text class="s2" x="1084" y="396">7. Max depth 8; if the subtree cannot take it, the task queues where it is.</text>
+        <text class="s2" x="1084" y="432">8. An unreachable child only adds sync_failures; nothing runs twice.</text>
+        <text class="s2" x="1084" y="468" fill="#8a8d99">Nodes report capacity metrics; that is how the parent picks a child.</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= Notes ================= -->
+  <div class="grid">
+    <article class="card">
+      <h3><i>1</i>Control plane</h3>
+      <p>PCS writes desired state and signed commands only; it never calls Docker. Container lifecycle runs in <code>host-runtime</code> on the host. Private keys are only for probing and one-time bootstrap.</p>
+    </article>
+    <article class="card">
+      <h3><i>2</i>Recursion</h3>
+      <p>A root scheduler can hold leaf builders or node schedulers; a node scheduler holds more builders and schedulers, recursively, with no depth limit. Every scheduler owns its own database.</p>
+    </article>
+    <article class="card">
+      <h3><i>3</i>Capability score W</h3>
+      <p><code>W = round(1000 × Σ(weight × min(value, cap) / cap))</code>: CPU 30% (8 cores), clock 15% (4 GHz), memory 20% (32 GB), storage 10% (256 GB), model 15% (10), API 10% (10). Schedulers do not score — W is 0.</p>
+    </article>
+    <article class="card">
+      <h3><i>4</i>Dispatch by difficulty</h3>
+      <p>A task carries difficulty <code>D</code> (0–1000, 0 = any). A scheduler only hands it to builders with <code>W ≥ D</code>, preferring the tightest fit so big machines are not held by small tasks.</p>
+    </article>
+    <article class="card">
+      <h3><i>5</i>Aggregate upward</h3>
+      <p>A node scheduler adds its builders' W to its children's ΣW and reports it upward, all the way to the root. The ΣW the root sees is the whole federation's capacity.</p>
+    </article>
+    <article class="card">
+      <h3><i>6</i>Host merge</h3>
+      <p>Merging is one reference, <code>pcs_hosts.parent_host_id</code>. A host cannot merge into itself or its own descendant, and both sides need a root scheduler. Merging or detaching only changes the runtime parent — no container restarts.</p>
+    </article>
+    <article class="card">
+      <h3><i>7</i>Cross-scheduler relay</h3>
+      <p>Push down, never copy: the parent task stays <code>QUEUED</code> in its original database and child tasks dedupe on <code>relay_parent_task_id</code>; state and output mirror back, cancels forward down, max depth 8.</p>
+    </article>
+    <article class="card">
+      <h3><i>8</i>Role rules</h3>
+      <p>A host's role is <code>containers</code>, <code>builder</code> or <code>scheduler</code>; one host cannot be both builder and scheduler. In container mode a host has exactly one root scheduler plus any number of node schedulers.</p>
+    </article>
+    <article class="card">
+      <h3><i>9</i>Admin views</h3>
+      <p>Builders, schedulers, chat and terminal all read the host subtree: the local host and merged hosts are grouped and foldable, each header shows the hostname and count, and fold state persists per browser. A single host renders flat.</p>
+    </article>
+    <article class="card">
+      <h3><i>10</i>Agent / API profiles</h3>
+      <p>The control plane owns Agent and API profiles: role-to-Agent bindings live in <code>role_agent_bindings</code>, role-to-API bindings in <code>role_api_bindings</code>, scoped per host. Deployments receive references only; a scheduler neither parses profile contents nor touches keys.</p>
+    </article>
+    <article class="card">
+      <h3><i>11</i>Secret Store</h3>
+      <p>API keys never enter the platform database: profiles hold only <code>secret://&lt;path&gt;</code> refs, values live in the Secret Store (file 0600). PCS neither echoes nor logs them; container instances resolve refs with a Secret Store instance JWT.</p>
+    </article>
+    <article class="card">
+      <h3><i>12</i>Scheduler Agent &amp; MCP</h3>
+      <p>Dispatch stays deterministic; the scheduler Agent only explains queues, leases and "why is this one waiting". It calls the local <code>builders</code> MCP server (<code>list_builders</code>, <code>builder_exec</code>, <code>builder_ask</code>, <code>task_status</code>) to inspect or operate builders, outside the dispatch path.</p>
+    </article>
+  </div>
+
+</div>
+</body>
+</html>

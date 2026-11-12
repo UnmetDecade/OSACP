@@ -1,0 +1,264 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import path from "node:path";
+import readline from "node:readline";
+import type { AgentProfile } from "./types.js";
+
+export interface AdapterEvent {
+  type: "progress" | "log" | "artifact";
+  percent?: number;
+  phase?: string;
+  level?: string;
+  message?: string;
+  name?: string;
+  path?: string;
+}
+
+export interface AdapterResult {
+  status: "SUCCEEDED" | "FAILED";
+  summary?: string;
+  /** 对话类任务的可选文本回复；普通构建任务不需要设置 */
+  reply?: string;
+  outputs?: Array<{ name: string; path: string }>;
+  metrics?: Record<string, unknown>;
+  error?: { code?: string; message?: string };
+}
+
+export interface AdapterHooks {
+  onEvent: (event: AdapterEvent) => void;
+  onLog: (line: string) => void;
+  /** 工具调用由 role-agent 的 Policy Guard 执行；错误会原样回给 Adapter */
+  onToolCall: (params: unknown) => Promise<unknown>;
+}
+
+type Pending = {
+  resolve: (v: any) => void;
+  reject: (e: Error) => void;
+  timer: NodeJS.Timeout;
+};
+
+export class AdapterCrash extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AdapterCrash";
+  }
+}
+
+/**
+ * stdio JSON-RPC 2.0 Adapter（每行一个 JSON）。
+ *
+ * 这是“同角色换 Agent”的关键边界：Agent 只看到任务、工作区和工具句柄，
+ * 看不到调度机令牌、Secret Store 或宿主目录。
+ */
+export class StdioAdapter {
+  private child?: ChildProcessWithoutNullStreams;
+  private seq = 0;
+  private readonly pending = new Map<number, Pending>();
+  private readonly events: AdapterEvent[] = [];
+  private resultNotify: AdapterResult | null = null;
+  private resultWaiter?: (r: AdapterResult) => void;
+  private closed = false;
+  private lastProgress = -1;
+
+  constructor(
+    private readonly profile: AgentProfile,
+    private readonly workspace: string,
+    private readonly env: NodeJS.ProcessEnv,
+    private readonly hooks: AdapterHooks,
+  ) {}
+
+  /**
+   * 裸机模式下 Agent Profile 仍按容器路径写 /opt/platform/...；
+   * 这里映射到实例目录，Profile 不需要为两种执行方式各写一份。
+   */
+  private nativePath(value: string): string {
+    const root = process.env.PLATFORM_NATIVE_ROOT;
+    if (!root || !value.startsWith("/opt/platform/")) return value;
+    return path.join(root, value.slice("/opt/platform/".length));
+  }
+
+  async start(): Promise<void> {
+    const [rawCmd, ...baseArgs] = this.profile.entrypoint;
+    if (!rawCmd) throw new AdapterCrash("AGENT_PROFILE_INVALID", "Agent Profile 缺少 entrypoint");
+    const cmd = this.nativePath(rawCmd);
+    const args = [...baseArgs.map((a) => this.nativePath(a)), ...(this.profile.args ?? []).map((a) => this.nativePath(a))];
+    this.child = spawn(cmd, args, {
+      cwd: this.workspace,
+      env: this.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: false,
+    });
+
+    readline.createInterface({ input: this.child.stdout }).on("line", (line) => this.onLine(line));
+    readline.createInterface({ input: this.child.stderr }).on("line", (line) => {
+      this.hooks.onLog(`[adapter] ${redact(line)}`.slice(0, 2000));
+    });
+    this.child.on("error", (e) => this.failAll(new AdapterCrash("AGENT_CRASHED", e.message)));
+    this.child.on("exit", (code, signal) => {
+      this.closed = true;
+      const msg = `Adapter 退出（code=${code ?? "null"}, signal=${signal ?? "null"}）`;
+      this.failAll(new AdapterCrash("AGENT_CRASHED", msg));
+    });
+
+    await this.request("agent.health", {}, 5000);
+  }
+
+  private onLine(line: string): void {
+    const text = line.trim();
+    if (!text) return;
+    let msg: any;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      this.hooks.onLog(`[adapter-stdout] ${redact(text).slice(0, 2000)}`);
+      return;
+    }
+    if (msg.method === "agent.event") {
+      this.handleEvent(msg.params ?? {});
+      return;
+    }
+    if (msg.method === "agent.result") {
+      const result = msg.params as AdapterResult;
+      this.resultNotify = result;
+      this.resultWaiter?.(result);
+      return;
+    }
+    if (msg.method === "tool.call" && msg.id !== undefined) {
+      void this.handleToolRequest(msg);
+      return;
+    }
+    if (msg.id !== undefined) {
+      const p = this.pending.get(Number(msg.id));
+      if (!p) return;
+      this.pending.delete(Number(msg.id));
+      clearTimeout(p.timer);
+      if (msg.error) {
+        p.reject(
+          new AdapterCrash(
+            String(msg.error.code ?? "AGENT_RPC_ERROR"),
+            String(msg.error.message ?? "Adapter 返回错误"),
+          ),
+        );
+      } else {
+        p.resolve(msg.result);
+      }
+    }
+  }
+
+  private handleEvent(params: any): void {
+    const type = String(params.type ?? "");
+    if (type === "progress") {
+      let percent = Number(params.percent);
+      if (!Number.isFinite(percent)) percent = 0;
+      percent = Math.max(this.lastProgress, Math.min(100, Math.max(0, percent)));
+      this.lastProgress = percent;
+      this.events.push({ type, percent, phase: params.phase });
+      this.hooks.onEvent({ type, percent, phase: params.phase });
+      return;
+    }
+    if (type === "log") {
+      this.hooks.onEvent({ type, level: params.level, message: params.message });
+      return;
+    }
+    if (type === "artifact") {
+      this.hooks.onEvent({ type, name: params.name, path: params.path });
+      return;
+    }
+    this.hooks.onLog(`未知 agent.event 类型：${type}`);
+  }
+
+  private async handleToolRequest(msg: any): Promise<void> {
+    try {
+      const result = await this.hooks.onToolCall(msg.params);
+      this.write({ jsonrpc: "2.0", id: msg.id, result });
+    } catch (e: any) {
+      this.write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32001,
+          message: String(e?.code ?? "TOOL_DENIED"),
+          data: { code: e?.code, step: e?.step, message: e?.message },
+        },
+      });
+    }
+  }
+
+  request(method: string, params: unknown, timeoutMs: number): Promise<any> {
+    if (this.closed) {
+      return Promise.reject(new AdapterCrash("AGENT_CRASHED", "Adapter 已退出"));
+    }
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new AdapterCrash("AGENT_TIMEOUT", `${method} 超时（${timeoutMs}ms）`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.write({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+
+  async prepare(params: unknown, timeoutMs: number): Promise<any> {
+    return this.request("agent.prepare", params, timeoutMs);
+  }
+
+  async execute(params: unknown, timeoutMs: number): Promise<AdapterResult> {
+    this.resultNotify = null;
+    const waitResult = new Promise<AdapterResult>((resolve) => {
+      this.resultWaiter = resolve;
+    });
+    const response = this.request("agent.execute", params, timeoutMs).catch((e) => {
+      // execute 的响应可能晚于 agent.result；此时以 result 通知为准
+      if (this.resultNotify) return null;
+      throw e;
+    });
+    return Promise.race([
+      waitResult,
+      response.then((r) => (r as AdapterResult | null) ?? waitResult),
+    ]);
+  }
+
+  async cancel(reason: string): Promise<void> {
+    if (this.closed) return;
+    try {
+      await this.request("agent.cancel", { reason }, 1500);
+    } catch {
+      // Agent 没响应取消就强杀，不能留下孤儿进程
+    }
+    this.kill();
+  }
+
+  kill(): void {
+    this.closed = true;
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new AdapterCrash("AGENT_CANCELLED", "Adapter 已停止"));
+    }
+    this.pending.clear();
+    if (this.child && !this.child.killed) this.child.kill("SIGKILL");
+  }
+
+  private failAll(e: Error): void {
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(e);
+    }
+    this.pending.clear();
+    this.resultWaiter?.({ status: "FAILED", error: { code: "AGENT_CRASHED", message: e.message } });
+  }
+
+  private write(msg: unknown): void {
+    if (!this.child || this.closed) return;
+    this.child.stdin.write(`${JSON.stringify(msg)}\n`);
+  }
+}
+
+export function redact(line: string): string {
+  return line
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>")
+    .replace(/((?:secret|token|password|passwd|api[_-]?key)\s*[=:]\s*)[^\s,"'}]+/gi, "$1<redacted>")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<redacted-private-key>");
+}

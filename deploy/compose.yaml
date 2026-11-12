@@ -1,0 +1,199 @@
+# v4 单机部署：调度机 + PostgreSQL + 四台构建机，全部是容器。
+#
+#   cp deploy/.env.example deploy/.env
+#   mkdir -p deploy/keys deploy/tokens deploy/data/{postgres,artifacts}
+#   ssh-keygen -t ed25519 -N "" -f deploy/keys/scheduler
+#   ssh-keygen -t ed25519 -N "" -f deploy/keys/builder22
+#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+#
+# 构建机 SSH：ssh root@<host> -p 2222/2223/2224/2225
+# 调度机 SSH：ssh root@<host> -p 2200，API：http://<host>:8443
+
+name: platform
+
+x-builder: &builder
+  restart: unless-stopped
+  networks: [platform-net]
+  volumes:
+    - ./keys:/opt/platform/keys:ro
+    - ./tokens:/opt/platform/tokens:ro
+  environment: &builder-env
+    SCHEDULER_URL: http://scheduler:8443
+    ROLE_ID: builder
+    HOST_ID: docker-host-01
+    AGENT_PROFILE_ID: ${BUILDER_AGENT_PROFILE_ID:-agp_builder}
+    INSTANCE_TOKEN_DIR: /opt/platform/tokens
+    SSH_PUBKEY_FILE: /opt/platform/keys/builder.pub
+    MAX_CONCURRENCY: "1"
+    # 模型凭据只在运行时注入容器环境，不烘焙进镜像，也不写进 Profile。
+    # PLATFORM_AGENT_PASS_ENV 是「容器环境 → Agent 适配器」的放行表；
+    # Agent Profile 的 --pass-env 是「适配器 → 外部 CLI」的第二层放行。
+    # 少配任一层都只是 Agent 认证失败，确定性 Shell 任务不受影响。
+    DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    PLATFORM_AGENT_PASS_ENV: ${PLATFORM_AGENT_PASS_ENV:-ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CODEX_HOME}
+    # 领任务轮询间隔（秒）。默认 2 秒省数据库；终端/对话要跟手可以调小到 0.5。
+    CLAIM_INTERVAL_SECONDS: ${CLAIM_INTERVAL_SECONDS:-0.5}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: scheduler
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?在 deploy/.env 设置 POSTGRES_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d scheduler"]
+      interval: 5s
+      retries: 20
+
+  scheduler:
+    image: platform/scheduler:4.0
+    build:
+      context: ..
+      dockerfile: deploy/scheduler/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://platform:${POSTGRES_PASSWORD}@postgres:5432/scheduler
+      HOST: 0.0.0.0
+      PORT: "8443"
+      AUTH_TOKEN: ${SCHEDULER_AUTH_TOKEN:-}
+      SEED: "1"
+      ARTIFACT_DIR: /opt/platform/artifacts
+      SSH_PUBKEY_FILE: /opt/platform/keys/scheduler.pub
+      SCHEDULER_INSTANCE_ID: scheduler
+      SCHEDULER_AGENT_PROFILE_ID: ${SCHEDULER_AGENT_PROFILE_ID:-agp_scheduler}
+      SCHEDULER_HOST_ID: docker-host-01
+      # 调度机上的 Claude Code / Codex 同样需要模型凭据（见 builder-env 注释）。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PLATFORM_AGENT_PASS_ENV: ${PLATFORM_AGENT_PASS_ENV:-ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CODEX_HOME}
+      CLAIM_INTERVAL_SECONDS: ${CLAIM_INTERVAL_SECONDS:-0.5}
+    ports:
+      - "8443:8443"
+      - "2200:22"
+    volumes:
+      - ./keys:/opt/platform/keys:ro
+      - ./data/artifacts:/opt/platform/artifacts
+    networks: [platform-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8443/healthz || exit 1"]
+      interval: 10s
+      retries: 12
+
+  builder20:
+    <<: *builder
+    image: platform/builder:ubuntu20.04
+    build:
+      context: ..
+      dockerfile: deploy/builder/Dockerfile
+      args:
+        UBUNTU_VERSION: "20.04"
+    hostname: builder-ubuntu20
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: builder-ubuntu20-a
+      BUILDER_OS: ubuntu20.04
+      SSH_PUBKEY_FILE: /opt/platform/keys/builder20.pub
+    ports: ["2222:2222"]
+    volumes:
+      - ./keys:/opt/platform/keys:ro
+      - ./tokens:/opt/platform/tokens:ro
+      - builder20-workspace:/opt/platform/workspace
+      - builder20-artifacts:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+
+  builder22:
+    <<: *builder
+    image: platform/builder:ubuntu22.04
+    build:
+      context: ..
+      dockerfile: deploy/builder/Dockerfile
+      args:
+        UBUNTU_VERSION: "22.04"
+    hostname: builder-ubuntu22
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: builder-ubuntu22-a
+      BUILDER_OS: ubuntu22.04
+      SSH_PUBKEY_FILE: /opt/platform/keys/builder22.pub
+    ports: ["2223:2222"]
+    volumes:
+      - ./keys:/opt/platform/keys:ro
+      - ./tokens:/opt/platform/tokens:ro
+      - builder22-workspace:/opt/platform/workspace
+      - builder22-artifacts:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+
+  builder24:
+    <<: *builder
+    image: platform/builder:ubuntu24.04
+    build:
+      context: ..
+      dockerfile: deploy/builder/Dockerfile
+      args:
+        UBUNTU_VERSION: "24.04"
+    hostname: builder-ubuntu24
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: builder-ubuntu24-a
+      BUILDER_OS: ubuntu24.04
+      SSH_PUBKEY_FILE: /opt/platform/keys/builder24.pub
+    ports: ["2224:2222"]
+    volumes:
+      - ./keys:/opt/platform/keys:ro
+      - ./tokens:/opt/platform/tokens:ro
+      - builder24-workspace:/opt/platform/workspace
+      - builder24-artifacts:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+
+  builder26:
+    <<: *builder
+    image: platform/builder:ubuntu26.04
+    build:
+      context: ..
+      dockerfile: deploy/builder/Dockerfile
+      args:
+        UBUNTU_VERSION: "26.04"
+    hostname: builder-ubuntu26
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: builder-ubuntu26-a
+      BUILDER_OS: ubuntu26.04
+      SSH_PUBKEY_FILE: /opt/platform/keys/builder26.pub
+    ports: ["2225:2222"]
+    volumes:
+      - ./keys:/opt/platform/keys:ro
+      - ./tokens:/opt/platform/tokens:ro
+      - builder26-workspace:/opt/platform/workspace
+      - builder26-artifacts:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+
+networks:
+  platform-net:
+    driver: bridge
+
+volumes:
+  builder20-workspace:
+  builder20-artifacts:
+  builder22-workspace:
+  builder22-artifacts:
+  builder24-workspace:
+  builder24-artifacts:
+  builder26-workspace:
+  builder26-artifacts:

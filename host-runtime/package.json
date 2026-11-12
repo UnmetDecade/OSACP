@@ -1,0 +1,19 @@
+{
+  "name": "host-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Host Runtime（role-agent 侧）：注册、心跳、领取、本机二次准入、续租、结果上报",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "dev": "tsx watch src/main.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

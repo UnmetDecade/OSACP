@@ -1,0 +1,18 @@
+# Codex CLI 的 DeepSeek 接入配置（镜像内 /opt/platform/codex/config.toml）。
+#
+# DeepSeek API 原生实现了 OpenAI Responses API，Codex 0.164+ 只支持 responses
+# 协议（旧的 wire_api = "chat" 已被移除），因此这里固定用 responses。
+# 密钥不写进文件：由容器环境变量 DEEPSEEK_API_KEY 提供，并经 Profile 的
+# --pass-env DEEPSEEK_API_KEY 显式放行给 CLI。
+
+model = "deepseek-flash"
+model_provider = "deepseek"
+forced_login_method = "api"
+model_reasoning_effort = "high"
+suppress_unstable_features_warning = true
+
+[model_providers.deepseek]
+name = "deepseek"
+base_url = "https://api.deepseek.com/"
+wire_api = "responses"
+env_key = "DEEPSEEK_API_KEY"

@@ -1,0 +1,47 @@
+# 依赖
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+coverage/
+
+# 本地配置与凭据（示例文件除外）
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.jwt
+*.crt
+*.p12
+keys/
+tokens/
+run/
+
+# 主机运行时本地状态
+host-runtime/runtime.config.json
+
+# 截图与浏览器配置
+.screenshots/
+*/.screenshots/
+docs/assets/.chrome-profile/
+docs/assets/.studio-frames/
+
+# 本地构建的镜像归档：1.6G，不随仓库发布
+images/
+
+# 日志
+*.log
+logs/
+
+# 操作系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

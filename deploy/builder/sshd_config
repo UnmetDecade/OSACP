@@ -1,0 +1,11 @@
+# v4 构建机 SSH：完全权限，root + 公钥。
+Port 2222
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+AllowTcpForwarding yes
+X11Forwarding yes
+ClientAliveInterval 30
+ClientAliveCountMax 6
+UsePAM yes

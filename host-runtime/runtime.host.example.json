@@ -1,0 +1,32 @@
+{
+  "pcs_url": "http://127.0.0.1:7901",
+  "identity_dir": "run/identity",
+  "state_dir": "run/state",
+  "command_public_key_file": "../pcs-issuer/keys/command-public.pem",
+  "image_allowlist": ["docker.m.daocloud.io/library/"],
+  "network_policies": { "default": "bridge" },
+  "docker_socket": "/var/run/docker.sock",
+  "admission_socket": "run/runtime.sock",
+  "admission": {
+    "host_reserve_bytes": 536870912,
+    "system_reserve_bytes": 1073741824,
+    "safety_margin_bytes": 536870912,
+    "max_task_grant_bytes": 4294967296,
+    "grant_ttl_seconds": 3600
+  },
+  "heartbeat_seconds": 15,
+  "report_seconds": 15,
+  "command_wait_seconds": 30,
+  "container_stop_timeout_seconds": 30,
+  "remove_volumes_on_remove": false,
+  "watchdog": {
+    "sample_seconds": 5,
+    "warning": { "mem_available_ratio_below": 0.2, "load1_per_cpu_above": 1.5, "disk_free_ratio_below": 0.15 },
+    "throttled": { "mem_available_ratio_below": 0.12, "load1_per_cpu_above": 2.5, "disk_free_ratio_below": 0.08 },
+    "protecting": { "mem_available_ratio_below": 0.05, "load1_per_cpu_above": 4, "disk_free_ratio_below": 0.03 },
+    "sustain_seconds": { "warning": 60, "throttled": 120, "protecting": 5 },
+    "recover_seconds": 300,
+    "recovering_seconds": 60,
+    "pcs_lost_seconds": 60
+  }
+}

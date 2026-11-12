@@ -1,0 +1,155 @@
+import fs from "node:fs";
+import path from "node:path";
+import type { InstanceConfig } from "../config.js";
+import type { AgentProfile, ApiProfile, ProfilesFile } from "./types.js";
+
+const ADAPTERS: Record<string, string[]> = {
+  builder: ["stdio-jsonrpc", "http-local"],
+  scheduler: ["stdio-jsonrpc", "http-local"],
+};
+
+export class ProfileRejected extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProfileRejected";
+  }
+}
+
+export interface RuntimeProfiles {
+  agent: AgentProfile;
+  api: Map<string, ApiProfile>;
+  boundApiIds: Set<string>;
+}
+
+export function loadProfilesFile(file: string): ProfilesFile {
+  const abs = path.resolve(file);
+  if (!fs.existsSync(abs)) {
+    throw new Error(`找不到 Profile 文件：${abs}`);
+  }
+  const raw = JSON.parse(fs.readFileSync(abs, "utf8")) as ProfilesFile;
+  return raw;
+}
+
+/**
+ * 加载本实例的 Profile。
+ *
+ * 校验是失败关闭的：角色/Adapter 矩阵、绑定关系、API 子集任意一项不满足，
+ * 实例直接拒绝启动执行器，而不是“先跑起来再说”。
+ */
+export function resolveInstanceProfiles(
+  file: ProfilesFile,
+  instance: InstanceConfig,
+): RuntimeProfiles {
+  const agentId = instance.agent_profile_id;
+  if (!agentId) throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", "实例未绑定 Agent Profile");
+
+  const agent = (file.agent_profiles ?? []).find((p) => p.agent_profile_id === agentId);
+  if (!agent) {
+    throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", `Profile 文件里没有 ${agentId}`);
+  }
+  if (agent.enabled === false) {
+    throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", `Agent Profile 已停用：${agentId}`);
+  }
+  if (agent.role_id !== instance.role_id) {
+    throw new ProfileRejected(
+      "AGENT_PROFILE_NOT_ALLOWED",
+      `Agent Profile 属于 ${agent.role_id}，实例角色是 ${instance.role_id}`,
+    );
+  }
+  const allowed = ADAPTERS[instance.role_id];
+  if (!allowed || !allowed.includes(agent.adapter)) {
+    throw new ProfileRejected(
+      "ADAPTER_NOT_ALLOWED",
+      `角色 ${instance.role_id} 不允许 ${agent.adapter}`,
+    );
+  }
+
+  const binding = file.bindings?.[instance.instance_id];
+  if (binding) {
+    if (binding.agent_profile_id !== agentId) {
+      throw new ProfileRejected(
+        "AGENT_PROFILE_NOT_ALLOWED",
+        `实例配置的 Agent ${agentId} 与 PCS 绑定 ${binding.agent_profile_id} 不一致`,
+      );
+    }
+    const configured = new Set(instance.api_profile_ids ?? []);
+    for (const id of binding.api_profile_ids ?? []) {
+      if (!configured.has(id)) {
+        throw new ProfileRejected(
+          "API_PROFILE_NOT_ALLOWED",
+          `PCS 绑定了 ${id}，但实例启动配置没有加载它`,
+        );
+      }
+    }
+    if (configured.size !== new Set(binding.api_profile_ids ?? []).size) {
+      throw new ProfileRejected(
+        "API_PROFILE_NOT_ALLOWED",
+        "实例加载了 PCS 未绑定的 API Profile",
+      );
+    }
+  }
+
+  const api = new Map<string, ApiProfile>();
+  for (const id of instance.api_profile_ids ?? []) {
+    const p = (file.api_profiles ?? []).find((x) => x.api_profile_id === id);
+    if (!p) throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `Profile 文件里没有 API ${id}`);
+    if (p.enabled === false) {
+      throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `API Profile 已停用：${id}`);
+    }
+    api.set(id, p);
+  }
+
+  // Agent 声明的模型/工具 API 必须是实例绑定 API 的子集
+  const declared = [
+    ...(agent.model_api_profile_id ? [agent.model_api_profile_id] : []),
+    ...(agent.tool_api_profile_ids ?? []),
+  ];
+  for (const id of declared) {
+    if (!api.has(id)) {
+      throw new ProfileRejected(
+        "API_PROFILE_NOT_ALLOWED",
+        `Agent Profile 引用了未绑定的 API：${id}`,
+      );
+    }
+  }
+
+  return { agent, api, boundApiIds: new Set(api.keys()) };
+}
+
+/**
+ * 任务信封校验（§5.2）：只引用、不解析实现。
+ * 版本不一致、未绑定 Agent 或 API 超集都拒绝，任务回队且不消耗重试。
+ */
+export function assertEnvelopeAllowed(
+  profiles: RuntimeProfiles,
+  envelope: { agent?: { profile_id?: string | null; version?: string | null }; api_profiles?: string[] },
+): void {
+  if (!envelope.agent || envelope.agent.profile_id !== profiles.agent.agent_profile_id) {
+    throw new ProfileRejected(
+      "AGENT_PROFILE_NOT_ALLOWED",
+      `任务指定 Agent ${envelope.agent?.profile_id ?? "(空)"}，实例绑定 ${profiles.agent.agent_profile_id}`,
+    );
+  }
+  if (
+    envelope.agent.version !== null &&
+    envelope.agent.version !== undefined &&
+    envelope.agent.version !== profiles.agent.version
+  ) {
+    throw new ProfileRejected(
+      "AGENT_PROFILE_NOT_ALLOWED",
+      `任务指定版本 ${envelope.agent.version}，实例加载 ${profiles.agent.version}`,
+    );
+  }
+  for (const id of envelope.api_profiles ?? []) {
+    if (!profiles.boundApiIds.has(id)) {
+      throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `任务引用了未绑定的 API ${id}`);
+    }
+  }
+}
+
+export function supportsTask(agent: AgentProfile, taskType: string): boolean {
+  return agent.task_types.includes(taskType);
+}

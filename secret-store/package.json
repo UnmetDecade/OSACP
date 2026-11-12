@@ -1,0 +1,17 @@
+{
+  "name": "secret-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Secret Store 参考实现：实例级短期凭据，值不落日志/信封/镜像",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

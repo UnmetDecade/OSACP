@@ -1,0 +1,27 @@
+{
+  "name": "pcs-issuer",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "PCS 控制面：主机名册、部署计划、签名命令、Agent/API 档案与审计",
+  "scripts": {
+    "keygen": "node scripts/keygen.mjs",
+    "start": "tsx src/main.ts",
+    "dev": "tsx watch src/main.ts",
+    "migrate": "tsx src/migrate.ts",
+    "issue": "tsx src/issue.ts",
+    "pcs": "tsx src/pcs.ts",
+    "pretest": "PCS_DATABASE_URL=${PCS_DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/platform_control_test} tsx src/migrate.ts",
+    "test": "PCS_DATABASE_URL=${PCS_DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/platform_control_test} tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

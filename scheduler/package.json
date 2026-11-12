@@ -1,0 +1,25 @@
+{
+  "name": "scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "调度机：任务状态机、队列、租约与 fencing、事件、重试与死信",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "migrate": "tsx src/migrate.ts",
+    "seed": "tsx src/migrate.ts --seed",
+    "pretest": "DATABASE_URL=${DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test} tsx src/migrate.ts",
+    "test": "DATABASE_URL=${DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test} tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
