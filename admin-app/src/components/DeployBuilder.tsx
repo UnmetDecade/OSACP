@@ -7,10 +7,10 @@ import type { Host } from "../types";
 import { Button, Callout, Modal } from "./ui";
 
 /**
- * 部署构建机：先讲清楚容器构建机和裸机构建机的取舍，再选一种落地。
+ * Deploy builder: first explain the trade-off between container and bare-metal builders, then pick one.
  *
- * 容器构建机走原来的 CreateBuilderModal；裸机构建机把主机角色切成 builder，
- * 控制面会在主机上自动创建并拉起一个 native 构建机进程。
+ * A container builder uses the existing CreateBuilderModal; a bare-metal builder switches the host role to builder,
+ * and the control plane automatically creates and starts a native builder process on the host.
  */
 export function DeployBuilderModal({
   host,

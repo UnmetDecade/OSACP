@@ -383,7 +383,7 @@ test("对账：STOPPED 的部署不再被拉起", async () => {
     await reconciler.execute(command("DEPLOY", depId, insId), true);
     await reconciler.execute(command("STOP", depId, insId, 2), true);
 
-    // 有人手工把容器拉起来，对账应把它停回去
+    // Someone starts the container by hand; reconciliation should stop it again
     await engine.start(containerName(insId));
     await reconciler.reconcile(true);
     assert.equal(engine.containers.get(containerName(insId))?.state, "exited");

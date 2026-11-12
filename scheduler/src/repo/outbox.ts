@@ -1,6 +1,6 @@
 import { q, q1 } from "../db.js";
 
-/** outbox 是对外事件通知的唯一可靠来源；SSE 与轮询 API 都从这里读。 */
+/** outbox is the only reliable source for external event notifications; both SSE and the polling API read from it. */
 
 export interface OutboxRow {
   event_id: string | number;
@@ -23,7 +23,7 @@ export async function listOutbox(after: number, limit = 200): Promise<OutboxRow[
   );
 }
 
-/** 新连接默认从当前最新开始，只推“连上之后”的事件；断线重连用 Last-Event-ID 续传 */
+/** New connections start from the current latest by default and only push events after connecting; reconnects resume with Last-Event-ID */
 export async function latestEventId(): Promise<number> {
   const row = await q1<{ id: string | null }>(`SELECT max(event_id) AS id FROM outbox_events`);
   return Number(row?.id ?? 0);

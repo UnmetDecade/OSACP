@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 故障演练：两个真实实例跑任务 → 强杀一个 → 租约过期回收 → 另一个实例接手 → 被杀的实例重启归队
+# Fault drill: two real instances run tasks → force-kill one → lease expires and is reclaimed → the other instance takes over → the killed instance restarts and rejoins
 #
-# 全程真实时间，不跳时钟：把租约压到 6s、退避压到 5s，所以十几秒就能看到完整的接管过程。
-# 生产值由 scheduler_config 决定（默认 300s / 5m→15m→45m），这里只是把参数调小。
+# Real time throughout, no clock skipping: leases are compressed to 6s and backoff to 5s, so the full takeover is visible within a dozen or so seconds.
+# Production values come from scheduler_config (defaults 300s / 5m→15m→45m); here we just turn the parameters down.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="${BASE:-http://127.0.0.1:7801}"

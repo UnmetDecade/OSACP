@@ -10,8 +10,8 @@ export type TaskStatus =
   | "CANCELLED";
 
 /**
- * 表驱动迁移。§4.3 的迁移表逐条落在这里；
- * 任何不在表里的迁移一律 409 STATE_CONFLICT，不靠 service 里散落的 if。
+ * Table-driven transitions. The transition table from §4.3 is spelled out here entry by entry;
+ * any transition not in the table is always 409 STATE_CONFLICT, not scattered ifs in services.
  */
 export const TRANSITIONS: Record<TaskStatus, Partial<Record<TaskStatus, string>>> = {
   QUEUED: {

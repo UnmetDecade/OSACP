@@ -1,5 +1,5 @@
--- P4：任务信封中的 Agent / API Profile 引用。
--- 调度机只保存/回传引用，不解析 Profile 内容，也不接触密钥。
+-- P4: Agent / API Profile references in the task envelope.
+-- The scheduler only stores/returns references; it does not parse Profile contents or touch secrets.
 
 ALTER TABLE role_instances
   ADD COLUMN IF NOT EXISTS agent_profile_version TEXT,

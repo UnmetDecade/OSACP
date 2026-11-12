@@ -8,8 +8,8 @@ import type { Instance, Role } from "../types";
 import { Button, Callout, Field, Modal, Tag } from "../components/ui";
 
 /**
- * 选择实例使用哪个 Agent 与哪些 API。
- * 只写控制面绑定；实例重启后按新绑定加载 Profile。
+ * Choose which Agent and APIs an instance uses.
+ * Only the control plane bindings are written; the instance loads Profiles from the new bindings after a restart.
  */
 export function InstanceProfilesModal({
   instance,

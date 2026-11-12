@@ -1,243 +1,247 @@
-# 总体架构
+# Overall Architecture
 
-> 版本：v4.3 · 2026-11-12
-> 定位：小型、单团队、研发专用。两个角色：调度机与构建机；两级控制面：PCS 与 host-runtime。
+> English · [简体中文](architecture.zh-CN.md)
+
+> Version: v4.3 · 2026-11-12
+> Positioning: small, single-team, built for R&D. Two roles: scheduler and builder; two levels of control plane: PCS and host-runtime.
 
 ---
 
-## 1. 架构目标
+## 1. Architecture Goals
 
-| 目标 | 做法 |
+| Goal | Approach |
 |---|---|
-| 一台开发机即可运行 | Docker Compose 起调度机 + PostgreSQL + N 个构建机 |
-| 主机可扩展 | 主机页管理本地主机与 SSH 远程主机；容器由主机上的 host-runtime 拉起 |
-| 角色少到不用解释 | 只有 `scheduler` 与 `builder` |
-| 构建环境可复现 | 构建机使用固定 digest 的官方 Ubuntu 20.04 / 22.04 / 24.04 / 26.04 镜像 |
-| 排障不被平台挡路 | 构建机内置 sshd，直接 `ssh root@host -p <port>` |
-| 不做组织模型 | 没有管理员/审核员/审批/角色权限；默认全部权限 |
-| 保留真正有用的可靠性 | 任务状态机、租约、fencing、幂等、审计、失败重试 |
+| Runs on a single dev machine | Docker Compose brings up the scheduler + PostgreSQL + N builders |
+| Hosts are extensible | The Hosts page manages local hosts and remote SSH hosts; containers are launched by host-runtime on the host |
+| So few roles they need no explanation | Only `scheduler` and `builder` |
+| Reproducible build environments | Builders use official Ubuntu 20.04 / 22.04 / 24.04 / 26.04 images pinned by digest |
+| Troubleshooting isn't blocked by the platform | Builders ship with sshd, so you can `ssh root@host -p <port>` directly |
+| No organizational model | No admins/reviewers/approvals/role permissions; full permissions by default |
+| Keep the reliability that actually matters | Task state machine, leases, fencing, idempotency, auditing, failure retries |
 
-**非目标**：多租户、跨组织审批、生产级 HA、跨公网多集群、Kubernetes 编排、通用工作流引擎。
+**Non-goals**: multi-tenancy, cross-organization approval, production-grade HA, multiple clusters across the public internet, Kubernetes orchestration, a generic workflow engine.
 
 ---
 
-## 2. 两个角色
+## 2. The Two Roles
 
-| `role_id` | 角色 | 职责 | 不做什么 |
+| `role_id` | Role | Responsibilities | Out of scope |
 |---|---|---|---|
-| `scheduler` | 调度机 | 接收任务、排队、准入、派发、租约、状态权威、管理 API、审计；可绑定调度 Agent 做解释与答疑 | 不执行构建、不编译代码、不持有构建机 SSH 私钥、不让 Agent 改派发规则 |
-| `builder` | 构建机 | 运行 Agent、执行构建/脚本/测试命令、产出制品、提供完整 SSH | 不改调度状态、不派发任务 |
+| `scheduler` | Scheduler | Receives tasks, queues, admission, dispatches, leases, is the source of truth for state, management API, auditing; can bind a scheduler Agent for explanations and Q&A | Does not run builds, compile code, hold builder SSH private keys, or let the Agent change dispatch rules |
+| `builder` | Builder | Runs Agents, executes build/script/test commands, produces artifacts, offers full SSH | Does not change scheduler state or dispatch tasks |
 
-> 测试、审核、售后都是**普通构建任务**，由使用者自己决定在构建机里跑什么命令，平台不再为它们单设角色。
+> Testing, review, and after-sales support are all **ordinary build tasks**: users decide which commands to run inside the builder, and the platform no longer creates dedicated roles for them.
 
 ---
 
-## 3. 部署拓扑
+## 3. Deployment Topology
 
 ```
-┌──────────────────────────── Docker 宿主机 ────────────────────────────┐
+┌──────────────────────────── Docker Host ──────────────────────────────┐
 │                                                                       │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────────────────┐  │
-│  │ scheduler    │   │ postgres     │   │ builder-ubuntu22         │  │
-│  │ :8443        │──▶│ :5432        │   │ :8080 agent              │  │
-│  │ 调度 API     │   └──────────────┘   │ :2222 sshd → 宿主 2222   │  │
-│  └──────┬───────┘                      └──────────────────────────┘  │
-│         │                              ┌──────────────────────────┐  │
-│         │                              │ builder-ubuntu24         │  │
-│         └─────────────────────────────▶│ :8080 / :2222 → 2223     │  │
-│                                        └──────────────────────────┘  │
-│                                        ┌──────────────────────────┐  │
-│                                        │ builder-ubuntu26         │  │
-│                                        │ :8080 / :2222 → 2224     │  │
-│                                        └──────────────────────────┘  │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────────────────┐   │
+│  │ scheduler    │   │ postgres     │   │ builder-ubuntu22         │   │
+│  │ :8443        │──▶│ :5432        │   │ :8080 agent              │   │
+│  │ Scheduler API│   └──────────────┘   │ :2222 sshd → host 2222   │   │
+│  └──────┬───────┘                      └──────────────────────────┘   │
+│         │                              ┌──────────────────────────┐   │
+│         │                              │ builder-ubuntu24         │   │
+│         └─────────────────────────────▶│ :8080 / :2222 → 2223     │   │
+│                                        └──────────────────────────┘   │
+│                                        ┌──────────────────────────┐   │
+│                                        │ builder-ubuntu26         │   │
+│                                        │ :8080 / :2222 → 2224     │   │
+│                                        └──────────────────────────┘   │
 └───────────────────────────────────────────────────────────────────────┘
                  ▲
-                 │ HTTPS（管理 API）        SSH（排障 / 手工操作）
+                 │ HTTPS (Management API)   SSH (troubleshooting / manual)
                  │
-        ┌────────┴─────────┐
-        │ 管理应用（浏览器） │
-        └──────────────────┘
+        ┌────────┴───────────┐
+        │ Admin app (browser) │
+        └─────────────────────┘
 ```
 
-- 所有容器在同一 Docker 网络 `platform-net`。
-- 只有调度机 API 与构建机 SSH 端口映射到宿主机。
-- 管理应用连 PCS（控制面）与调度机（任务面）；SSH 是独立通道，不经过调度机。
-- PostgreSQL 只在 Docker 网络内可见。
+- All containers share the same Docker network, `platform-net`.
+- Only the scheduler API and the builder SSH ports are mapped to the host.
+- The admin app connects to PCS (control plane) and the scheduler (task plane); SSH is a separate channel and does not go through the scheduler.
+- PostgreSQL is visible only inside the Docker network.
 
-### 3.1 多主机
+### 3.1 Multiple Hosts
 
-上面的 Compose 是**单机参考部署**。主机页把同一套容器模型扩展到多台机器：
+The Compose setup above is a **single-machine reference deployment**. The Hosts page extends the same container model to multiple machines:
 
 ```
-                 ┌────────────── PCS 控制面 ──────────────┐
-                 │ 主机接入 · 部署计划 · 签名命令 · 审计   │
-                 └───────┬──────────────────────┬─────────┘
-                         │ 出站长轮询            │ 出站长轮询
-              ┌──────────┴─────────┐   ┌────────┴──────────┐
-              │ 本地主机            │   │ SSH 远程主机       │
-              │ host-runtime        │   │ host-runtime       │
-              │ ├ scheduler 容器    │   │ ├ builder 容器     │
-              │ └ builder 容器      │   │ └ builder 容器     │
-              └────────────────────┘   └───────────────────┘
+                 ┌───────────── PCS control plane ──────────────┐
+                 │ Host onboarding · Deployment plan ·          │
+                 │ Signed commands · Audit                      │
+                 └───────┬─────────────────────────┬────────────┘
+                         │ outbound long poll      │ outbound long poll
+              ┌──────────┴───────────┐   ┌─────────┴──────────┐
+              │ Local host           │   │ SSH remote host    │
+              │ host-runtime         │   │ host-runtime       │
+              │ ├ scheduler container│   │ ├ builder container│
+              │ └ builder container  │   │ └ builder container│
+              └──────────────────────┘   └────────────────────┘
 ```
 
-- **本地主机**：运行管理页面 / PCS 的机器，不需要 SSH。PCS 直接在本机执行探测与引导。
-- **SSH 远程主机**：平台保存私钥（AES-256-GCM 加密，接口只回指纹），用于探测与一次性引导。
-- **引导**：PCS 通过 SSH 把 host-runtime 的 bundle、配置和命令公钥写到
-  `$HOME/.platform/host-runtime/<host_id>/`，用一次性注册令牌启动；之后主机**主动**连 PCS，
-  PCS 不再需要长期 SSH 会话。
-- **部署**：PCS 只写期望态与签名命令；容器生命周期由主机上的 host-runtime 执行。
-- **放置**：调度机与构建机可以落在任意已入网主机；每台主机有一台根调度机，可再挂任意多台结点调度机，构建机按部署时选择的调度机归属。拓扑见 [federation.md](federation.md)。
-- **权限边界**：PCS 不直接 Docker、不暴露主机管理端口；私钥只用于探测与引导。
+- **Local host**: the machine running the admin app / PCS; no SSH needed. PCS runs probes and bootstrap directly on the local machine.
+- **SSH remote host**: the platform stores the private key (AES-256-GCM encrypted; the API returns only the fingerprint) for probing and one-time bootstrap.
+- **Bootstrap**: over SSH, PCS writes the host-runtime bundle, configuration, and command public key to
+  `$HOME/.platform/host-runtime/<host_id>/` and starts it with a one-time registration token; afterwards the host
+  connects to PCS **outbound**, and PCS no longer needs a long-lived SSH session.
+- **Deployment**: PCS writes only desired state and signed commands; the container lifecycle is executed by host-runtime on the host.
+- **Placement**: schedulers and builders can land on any onboarded host; each host has one root scheduler and can attach any number of child schedulers, and builders belong to the scheduler chosen at deployment time. See [federation.md](federation.md) for the topology.
+- **Permission boundary**: PCS does not talk to Docker directly and does not expose host management ports; the private key is used only for probing and bootstrap.
 
-远程主机的前置条件：Docker Engine、可从主机访问的 PCS 地址（`PCS_RUNTIME_URL`）、
-Node 22+（用于跑 host-runtime，或由部署方预装）。镜像仍需 digest 固定并落在
-`PCS_IMAGE_ALLOWLIST` 内。
+Remote host prerequisites: Docker Engine, a PCS address reachable from the host (`PCS_RUNTIME_URL`),
+and Node 22+ (to run host-runtime, or preinstalled by the deployer). Images still need to be pinned by
+digest and included in `PCS_IMAGE_ALLOWLIST`.
 
 ---
 
-## 4. 组件职责
+## 4. Component Responsibilities
 
-### 4.1 调度机容器 `scheduler`
+### 4.1 Scheduler Container `scheduler`
 
-- HTTP API：任务提交/查询/取消、实例注册/心跳/领取/结果、队列统计、事件流。
-- 内存 + PostgreSQL：任务、实例、租约、事件、审计。
-- 确定性的调度循环：FIFO + 优先级 + 老化；**大模型不参与分配**。
-- 调度 Agent 的本地 MCP `builders` 工具：`list_builders`、`builder_exec`、`builder_ask`、`task_status`，只用于查看或操作构建机，不参与派发决策。
-- 不创建容器、不保存构建机 SSH 私钥；容器生命周期属于 PCS 与 host-runtime，SSH 由使用者直接连接。
+- HTTP API: task submission/query/cancellation, instance registration/heartbeat/claim/result, queue stats, event stream.
+- In-memory + PostgreSQL: tasks, instances, leases, events, audit.
+- Deterministic scheduling loop: FIFO + priority + aging; **the LLM plays no part in allocation**.
+- The scheduler Agent's local MCP `builders` tools: `list_builders`, `builder_exec`, `builder_ask`, `task_status`; they are used only to inspect or operate builders and never influence dispatch decisions.
+- Does not create containers or store builder SSH private keys; container lifecycle belongs to PCS and host-runtime, and users connect via SSH directly.
 
-### 4.2 构建机容器 `builder`
+### 4.2 Builder Container `builder`
 
-- 基础镜像：官方 `ubuntu:20.04` / `22.04` / `24.04` / `26.04`，按 digest 固定；运行时载荷（Node、CLI、sshd 配置）从主机缓存注入。
-- 进程：`sshd` + `builder-agent`（注册、心跳、领取、执行、上报）。
-- 执行器：Agent Adapter（Claude Code / Codex / DeepSeek / 自定义 CLI 或 HTTP Agent）或确定性 Shell。
-- 工作区：`/opt/platform/workspace`（持久卷），任务产物在 `/opt/platform/artifacts`。
-- SSH：容器内 `sshd` 监听 22（单机 Compose 为 2222），宿主映射到唯一端口；默认 `root`，只接受主机登录公钥。
-- 完全权限：容器内可 `apt install`、编译、改文件、跑任意命令；这是研发平台的刻意选择。
+- Base images: official `ubuntu:20.04` / `22.04` / `24.04` / `26.04`, pinned by digest; the runtime payload (Node, CLI, sshd config) is injected from the host cache.
+- Processes: `sshd` + `builder-agent` (register, heartbeat, claim, execute, report).
+- Executor: an Agent Adapter (Claude Code / Codex / DeepSeek / custom CLI or HTTP Agent) or deterministic Shell.
+- Workspace: `/opt/platform/workspace` (persistent volume); task artifacts live under `/opt/platform/artifacts`.
+- SSH: `sshd` inside the container listens on 22 (2222 in the single-machine Compose setup), mapped by the host to a unique port; `root` by default, accepting only the host login public key.
+- Full permissions: inside the container you can `apt install`, compile, edit files, and run arbitrary commands; this is a deliberate choice for an R&D platform.
 
-### 4.3 管理应用
+### 4.3 Admin App
 
-- 单页应用，打开即连接 PCS 与调度机 API；不内置演示数据。
-- 页面：总览、主机、构建机、调度机、档案（Agent/API）、任务、终端（SSH）、对话、日志。
-- 形象：两个可爱的机器人（调度机器人 / 构建机器人），状态用表情与动画表达。
-- 无登录角色切换、无审批中心、无权限矩阵。
+- Single-page app; connects to PCS and the scheduler API on open; no built-in demo data.
+- Pages: Overview, Builders, Scheduler, Profiles (Agent/API), Tasks, Terminal (SSH), Chat, Logs.
+- Mascots: two cute robots (scheduler robot / builder robot), with state expressed through expressions and animation.
+- No login role switching, no approval center, no permission matrix.
 
-### 4.4 基础设施
+### 4.4 Infrastructure
 
-| 组件 | 是否必需 | 说明 |
+| Component | Required | Notes |
 |---|---|---|
-| Docker Engine 24+ | 是 | 运行所有容器 |
-| PostgreSQL 16 | 推荐 | 调度机持久化；单机也可用内置 SQLite 模式（后续） |
-| Redis | 否 | 仅在高并发事件流时启用 |
-| 反向代理（Caddy/Nginx） | 可选 | TLS 终止、统一域名 |
+| Docker Engine 24+ | Yes | Runs all containers |
+| PostgreSQL 16 | Recommended | Scheduler persistence; a built-in SQLite mode will also be available for single-machine use (later) |
+| Redis | No | Enabled only for high-concurrency event streams |
+| Reverse proxy (Caddy/Nginx) | Optional | TLS termination, unified domain |
 
 ---
 
-## 5. 数据流
+## 5. Data Flow
 
-### 5.1 提交构建
-
-```
-管理应用 ──POST /v1/tasks──▶ 调度机
-调度机：校验 → 入队(QUEUED) → 事件 TASK_CREATED
-构建机 ──POST /v1/claim──▶ 调度机
-调度机：资格过滤 → 准入 → 租约 → ASSIGNED
-构建机：执行 → progress → POST /v1/result（fencing 校验）
-调度机：SUCCEEDED/FAILED → 事件 → 释放租约
-管理应用：轮询或 SSE 刷新
-```
-
-### 5.2 创建构建机
+### 5.1 Submitting a Build
 
 ```
-管理应用 ──POST /api/v1/platform/deployments──▶ PCS
-PCS：写期望态 → 签名命令 ──长轮询──▶ host-runtime
-host-runtime：校验签名/generation → 创建容器 → 注入 token → 启动
-构建机：注册到归属调度机 → 心跳 → ONLINE
-管理应用：显示 SSH 地址与端口
+Admin app ──POST /v1/tasks──▶ scheduler
+scheduler: validate → enqueue (QUEUED) → event TASK_CREATED
+builder ──POST /v1/claim──▶ scheduler
+scheduler: eligibility filter → admission → lease → ASSIGNED
+builder: execute → progress → POST /v1/result (fencing check)
+scheduler: SUCCEEDED/FAILED → event → release lease
+admin app: poll or refresh via SSE
 ```
 
-> 两条路径都可用：`deploy/compose.yaml` 预置 1–4 个不同 Ubuntu 版本的构建机；
-> 管理应用「新建构建机」走 PCS 部署计划，宿主 SSH 端口随部署意图下发
-> （`instance.ports`），由 Host Runtime 写进 `PortBindings`。
-> 资源档位提供轻量 / 标准 / 重型三档，也可以自定义 CPU、内存、磁盘；
-> Agent 可选 Claude Code、Codex、DeepSeek 或自定义，DeepSeek 通过 llm 类型的 API Profile 接入。
-
-### 5.3 SSH 排障
+### 5.2 Creating a Builder
 
 ```
-使用者 ──ssh root@<host> -p <port>──▶ builder 容器
+Admin app ──POST /api/v1/platform/deployments──▶ PCS
+PCS: write desired state → signed commands ──long poll──▶ host-runtime
+host-runtime: verify signature/generation → create container → inject token → start
+builder: register with its owning scheduler → heartbeat → ONLINE
+admin app: show SSH address and port
 ```
 
-不经过调度机、不产生任务、不受白名单限制。所有操作由容器自身的 shell 历史 / 审计插件记录（可选）。
+> Both paths work: `deploy/compose.yaml` pre-provisions 1–4 builders on different Ubuntu versions;
+> the admin app's "New Builder" goes through a PCS deployment plan, and the host SSH port is delivered
+> with the deployment intent (`instance.ports`), which Host Runtime writes into `PortBindings`.
+> Resource tiers come in light / standard / heavy, and you can also customize CPU, memory, and disk;
+> the Agent can be Claude Code, Codex, DeepSeek, or custom, with DeepSeek connected through an
+> `llm`-type API Profile.
+
+### 5.3 SSH Troubleshooting
+
+```
+User ──ssh root@<host> -p <port>──▶ builder container
+```
+
+It does not go through the scheduler, creates no task, and is not subject to an allowlist. All operations are recorded by the container's own shell history / audit plugin (optional).
 
 ---
 
-## 6. 任务模型
+## 6. Task Model
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| `task_type` | v4 只有 `task.build`、`task.chat.builder`、`task.console.builder` |
+| `task_type` | In v4 there are only `task.build`, `task.chat.builder`, `task.console.builder` |
 | `target_role` | `builder` |
-| `payload` | 命令、仓库、分支、环境变量引用等，由使用者定义 |
+| `payload` | Commands, repository, branch, environment variable references, etc., defined by the user |
 | `state` | `QUEUED → ASSIGNED → RUNNING → SUCCEEDED / FAILED / CANCELLED` |
-| `attempt` | 每次领取一个 attempt；失败可按策略重试 |
-| `lease` | 租约 + fencing token，防止旧实例覆盖新结果 |
-| `audit` | 事件表 + 可选结构化日志 |
+| `attempt` | One attempt per claim; failures can be retried according to policy |
+| `lease` | Lease + fencing token, preventing an old instance from overwriting a new result |
+| `audit` | Event table + optional structured logs |
 
-**没有 APPROVE / REVIEW / COMMIT / VERIFY 阶段。** 需要审核时，把审核命令写成任务的一部分，或在构建机里手工执行。
-
----
-
-## 7. 安全边界（v4 的取舍）
-
-保留：
-
-- 调度机不直接执行构建。
-- 任务结果带 fencing token，防止并发覆盖。
-- 构建机 token 只用于调度 API；不写入日志。
-- PostgreSQL 不暴露公网；API 建议放在反向代理后。
-
-主动放宽：
-
-- 构建机默认 `root`，SSH 完全权限。
-- 管理应用不做 RBAC，所有操作可用。
-- 不强制审批、不强制读写真分离。
-- 构建机可以访问外网（研发需要）；可用 Compose 网络策略按需收紧。
-
-> 这是「小型研发专用平台」的明确取舍：**用可恢复性和可观测性换效率**，而不是用审批流程限制人。
+**There are no APPROVE / REVIEW / COMMIT / VERIFY stages.** When review is needed, write the review commands as part of the task, or run them manually inside the builder.
 
 ---
 
-## 8. 可靠性
+## 7. Security Boundaries (v4 Trade-offs)
 
-| 场景 | 行为 |
+Retained:
+
+- The scheduler does not execute builds directly.
+- Task results carry a fencing token to prevent concurrent overwrites.
+- Builder tokens are used only for the scheduling API and are never written to logs.
+- PostgreSQL is not exposed to the public internet; the API should sit behind a reverse proxy.
+
+Deliberately relaxed:
+
+- Builders run as `root` by default with full SSH access.
+- The admin app has no RBAC; every operation is available.
+- Approval is not enforced, and read/write isolation is not enforced.
+- Builders can reach the internet (R&D needs it); Compose network policies can tighten this as needed.
+
+> This is an explicit trade-off for a "small R&D-only platform": **exchange recoverability and observability for efficiency**, rather than restricting people through approval workflows.
+
+---
+
+## 8. Reliability
+
+| Scenario | Behavior |
 |---|---|
-| 构建机崩溃 | 租约到期 → 任务重新入队；旧 fencing token 失效 |
-| 调度机重启 | PostgreSQL 恢复队列与租约；构建机重新注册 |
-| 网络抖动 | 心跳超时标记 SUSPECT，暂停派发，不立即回收在途任务 |
-| 任务失败 | 按 `max_attempts` 重试；超过后 BLOCKED，等待人工 |
-| 磁盘满 | 构建机上报资源，调度机暂停派发 |
-| 误删构建机 | 容器可重建；工作区卷可保留 |
+| Builder crash | Lease expires → task is requeued; the old fencing token becomes invalid |
+| Scheduler restart | PostgreSQL restores the queue and leases; builders re-register |
+| Network jitter | Heartbeat timeout marks SUSPECT, dispatch pauses, and in-flight tasks are not reclaimed immediately |
+| Task failure | Retried up to `max_attempts`; after that BLOCKED, waiting for manual intervention |
+| Disk full | Builders report resource status, and the scheduler pauses dispatch |
+| Builder accidentally deleted | The container can be recreated; the workspace volume can be retained |
 
 ---
 
-## 9. 端口
+## 9. Ports
 
-| 服务 | 容器端口 | 宿主端口 | 暴露范围 |
+| Service | Container port | Host port | Exposure |
 |---|---|---|---|
-| PCS 管理面 | 7901 | 7901 | 内网 / 反代 |
-| 调度机 API | 8443 | 8443 | 内网 / 反代 |
-| 调度机指标 | 9090 | 127.0.0.1:9090 | 本机 |
-| 构建机 agent | 8080 | 不映射 | Docker 网络 |
-| 构建机 SSH | 22 | 2222–2231（按部署递增） | 内网 |
-| PostgreSQL | 5432 | 不映射 | Docker 网络 |
+| PCS management plane | 7901 | 7901 | Internal network / reverse proxy |
+| Scheduler API | 8443 | 8443 | Internal network / reverse proxy |
+| Scheduler metrics | 9090 | 127.0.0.1:9090 | Local machine |
+| Builder agent | 8080 | Not mapped | Docker network |
+| Builder SSH | 22 | 2222–2231 (incrementing per deployment) | Internal network |
+| PostgreSQL | 5432 | Not mapped | Docker network |
 
 ---
 
-## 10. 与 v3 的删除清单
+## 10. Removals Relative to v3
 
-- 删除角色：`worker`、`tester`、`reviewer`、`after_sales`。
-- 删除页面：审批中心、审计权限页、角色办公室（五角色版）。
-- 删除机制：审批请求/审批令牌/审批门、RBAC、角色切换、受控终端白名单、跨机 mTLS 主线。
-- 删除文档主线：五角色规范与 12 接口全量协议；控制面收敛为 PCS + host-runtime 一层。
+- Removed roles: `worker`, `tester`, `reviewer`, `after_sales`.
+- Removed pages: approval center, audit permissions page, role office (five-role version).
+- Removed mechanisms: approval requests/tokens/gates, RBAC, role switching, controlled terminal allowlist, cross-machine mTLS mainline.
+- Removed documentation mainlines: the five-role specification and the full 12-interface protocol; the control plane is reduced to a single layer, PCS + host-runtime.

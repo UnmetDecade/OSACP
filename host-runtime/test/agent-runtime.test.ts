@@ -21,7 +21,7 @@ import type { Assignment } from "../src/client.js";
 import { SecretDenied, type SecretClient } from "../src/agent-runtime/secret-client.js";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "agent-runtime-test-"));
-// 默认用仓库内的 agents/；测试机把它同步到别的目录时可用 AGENT_FILE 覆盖
+// Use the repo's agents/ by default; set AGENT_FILE to override when the test machine syncs it elsewhere
 const AGENT_FILE =
   process.env.AGENT_FILE ?? path.resolve(process.cwd(), "..", "agents", "demo-agent.mjs");
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
@@ -384,7 +384,7 @@ describe("API Adapter 本地代理", () => {
       () => adapter.call("api_missing", "GET", "/", {}),
       (e: any) => e instanceof ApiAdapterError && e.status === 403,
     );
-    // 第一次成功；第二次被 rpm=1 拒绝
+    // First succeeds; the second is rejected by rpm=1
     const first = await adapter.call("api_test", "GET", "/first", {});
     assert.equal(first.status, 200);
     let second: any = null;

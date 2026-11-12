@@ -35,7 +35,7 @@ function mediaFor(file: string): string {
 }
 
 function sanitizedTask(task: Assignment) {
-  // 只给 Adapter 业务字段；租约、fencing、主机等调度语义不进入 Agent 上下文
+  // Only business fields are given to the Adapter; scheduling semantics such as lease, fencing and host do not enter the Agent context
   return {
     task_id: task.task_id,
     task_type: task.task_type,
@@ -47,7 +47,7 @@ function sanitizedTask(task: Assignment) {
   };
 }
 
-/** 附件上限：任务请求体本身有上限，这里再兜一层，防止异常载荷写满工作区。 */
+/** Attachment limits: the task request body already has a limit; this adds another layer so an abnormal payload cannot fill the workspace. */
 const MAX_ATTACHMENT_FILES = 16;
 const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_BYTES = 128 * 1024 * 1024;
@@ -63,7 +63,7 @@ function attachmentName(raw: unknown, index: number): string {
   return name.startsWith(".") ? `_${name}` : name;
 }
 
-/** 取附件内容：优先用控制面的一次性地址，兼容旧任务里的 base64。 */
+/** Fetch attachment content: prefer the control plane's one-time URL, with compatibility for base64 in older tasks. */
 async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | null> {
   let data = String(rec.data_base64 ?? "");
   const comma = data.indexOf(",");
@@ -80,7 +80,7 @@ async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | nu
   } catch {
     throw new TaskFailed("ATTACHMENT_URL_INVALID", "附件地址不合法");
   }
-  // 只允许 http(s)；任务里的地址不应把构建机引到 file:/gopher: 之类的协议。
+  // Only http(s) is allowed; a task URL should not lead the builder to schemes such as file:/gopher:.
   if (target.protocol !== "http:" && target.protocol !== "https:") {
     throw new TaskFailed("ATTACHMENT_URL_INVALID", "附件地址必须是 http 或 https");
   }
@@ -104,10 +104,10 @@ async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | nu
 }
 
 /**
- * 把任务附件落到 <workspace>/attachments/，再把路径交给 Agent。
+ * Materialize task attachments under <workspace>/attachments/, then hand the paths to the Agent.
  *
- * 附件内容只在这一步进内存；Agent 拿到的是文件路径和元数据。大文件通过
- * 控制面的一次性地址下载，任务 JSON 本身保持很小。
+ * Attachment content enters memory only at this step; the Agent receives file paths and metadata. Large files are downloaded
+ * via the control plane's one-time URL, keeping the task JSON itself small.
  */
 async function materializeAttachments(
   task: Assignment,
@@ -162,13 +162,13 @@ async function materializeAttachments(
 }
 
 /**
- * 宿主 → Agent 适配器的环境变量放行表。
+ * Host → Agent adapter environment variable allowlist.
  *
- * agent-executor 交给适配器的 env 是白名单构造的，不是 process.env 的拷贝：
- * 实例令牌、Docker Socket、云厂商凭据都不该因为“是子进程”就被自动继承。
- * 模型凭据因此要在部署时显式列出（PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,...），
- * 再由 Profile 的 --pass-env 决定哪些真正交给外部 CLI——两层都显式，
- * 少配一层就只是 Agent 起不来，而不是密钥意外外泄。
+ * The env that agent-executor gives the adapter is built from an allowlist, not a copy of process.env:
+ * instance tokens, the Docker Socket and cloud provider credentials should not be inherited automatically just because "it is a child process".
+ * Model credentials therefore must be listed explicitly at deploy time (PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,...),
+ * and then the Profile's --pass-env decides which are actually handed to the external CLI—both layers are explicit,
+ * so missing one layer only means the Agent fails to start, not that a secret leaks by accident.
  */
 function agentPassEnv(): string[] {
   return (process.env.PLATFORM_AGENT_PASS_ENV ?? "")
@@ -181,17 +181,17 @@ function apiHandles(profiles: RuntimeProfiles, adapter?: ApiAdapter) {
   return [...profiles.api.values()].map((p: ApiProfile) => ({
     api_profile_id: p.api_profile_id,
     kind: p.kind,
-    // Agent 只拿到本地代理句柄，不是 base_url，更不是 secret
+    // The Agent only gets the local proxy handle, not a base_url, and certainly not a secret
     handle: adapter ? `${adapter.url}/${encodeURIComponent(p.api_profile_id)}` : null,
     scopes: p.scopes,
   }));
 }
 
 /**
- * Agent-backed 执行器。
+ * Agent-backed executor.
  *
- * 与确定性角色执行器共用 ExecContext；区别只在于“谁来做”，
- * 上传制品、摘要校验、结果上报的路径完全一致。
+ * Shares ExecContext with the deterministic role executors; the only difference is "who does it",
+ * while artifact upload, digest verification and result reporting follow exactly the same path.
  */
 export async function runAgentTask(
   task: Assignment,
@@ -230,7 +230,7 @@ export async function runAgentTask(
           const out = await opts.apiAdapter!.call(input.api_profile_id, input.method, input.path, {
             body: input.body,
           });
-          // 工具返回内容是不可信输入；这里只做结构包装，不据此扩权
+          // Tool return content is untrusted input; this only wraps it structurally and does not expand privileges based on it
           return {
             untrusted: true,
             status: out.status,
@@ -282,7 +282,7 @@ export async function runAgentTask(
     PLATFORM_PHASE: phase,
     PLATFORM_DEADLINE: task.deadline_at ?? "",
     PLATFORM_API_PROFILES: JSON.stringify(apiHandles(opts.profiles, opts.apiAdapter)),
-    // Agent 的人格配置；不含任何密钥，供适配器拼进提示词。
+    // The Agent's persona config; contains no secrets, for the adapter to assemble into the prompt.
     PLATFORM_AGENT_PROFILE: JSON.stringify({
       name: profile.name,
       role_id: profile.role_id,
@@ -294,8 +294,8 @@ export async function runAgentTask(
     }),
   };
   if (opts.apiAdapter) env.PLATFORM_API_PROXY = opts.apiAdapter.url;
-  // 只放行部署方显式列出的变量；平台自身前缀的一律拒绝，避免误配把
-  // 工具令牌或 API 代理句柄交给 Agent。
+  // Pass through only variables the deployer listed explicitly; anything with the platform's own prefix is rejected, so a misconfiguration cannot
+  // hand the tool token or API proxy handle to the Agent.
   for (const name of agentPassEnv()) {
     if (name.startsWith("PLATFORM_")) continue;
     if (process.env[name] !== undefined) env[name] = process.env[name];
@@ -360,7 +360,7 @@ export async function runAgentTask(
       const uploaded = await ctx.uploadArtifact(fs.readFileSync(file), mediaFor(rel));
       outputs.push({ name: out.name, ...uploaded });
     }
-    // artifact 事件里声明但没有出现在 result.outputs 的，也只在日志提示，不自动上传
+    // Artifacts declared in artifact events but absent from result.outputs are only noted in the log, not uploaded automatically
     for (const e of artifactPaths) {
       if (!outputs.some((o) => o.name === e.name)) {
         ctx.log(`Agent 事件声明了产物 ${e.name}，但未在最终 result 中返回，已忽略`);
@@ -380,8 +380,8 @@ export async function runAgentTask(
       log_events: events.filter((e) => e.type === "log").length,
     };
     if (task.task_type.startsWith("task.chat.")) {
-      // 对话任务的回复优先取适配器显式 reply，其次才退回 summary。
-      // 上层据此渲染气泡；不把 Agent 的原始日志当成回复。
+      // For chat tasks, prefer the adapter's explicit reply, falling back to summary only second.
+      // The layer above renders bubbles from this; the Agent's raw log is not treated as the reply.
       outputsPayload.reply = String(result.reply ?? result.summary ?? "");
       outputsPayload.mode = "agent";
     }

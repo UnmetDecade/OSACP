@@ -150,8 +150,9 @@ code, pre { font-family: var(--mono); }
 
 .main { flex: 1; min-width: 0; overflow-y: auto; }
 /*
- * 内容区撑满视口高度，页面再按 flex 分配剩余空间：对话/终端这类整屏
- * 页面不用再靠 calc(100vh - Npx) 猜头部高度，短页面也不会在底部空一大块。
+ * The content area fills the viewport height, and pages share the remaining space with flex:
+ * full-screen pages such as chat/terminal no longer guess the header height with calc(100vh - Npx),
+ * and short pages do not leave a large empty area at the bottom.
  */
 .content {
   width: 100%; min-height: 100%; padding: 22px 28px 22px;
@@ -159,8 +160,8 @@ code, pre { font-family: var(--mono); }
 }
 
 /* ---------- type & shared ---------- */
-/* 页面吃掉 .content 的剩余高度：内容短的页面不会被压在顶部留白， */
-/* 需要整屏的页面（对话/终端）直接用 flex:1 撑开，无需估算头部高度。 */
+/* Pages consume the remaining height of .content: short pages are not pushed to the top with empty space below, */
+/* and full-screen pages (chat/terminal) simply stretch with flex:1, without estimating the header height. */
 .page { animation: page-in 0.18s ease-out; flex: 1 0 auto; display: flex; flex-direction: column; min-width: 0; }
 @keyframes page-in { from { opacity: 0; transform: translateY(2px); } }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
@@ -212,7 +213,7 @@ code, pre { font-family: var(--mono); }
   border: 0; border-radius: 6px; background: transparent; color: var(--text-2);
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
-/* 语言切换：图标 + 目标语言缩写；窄屏只留图标。 */
+/* Language switch: icon + target-language abbreviation; narrow screens keep only the icon. */
 .lang-switch { width: auto; padding: 0 7px; gap: 4px; font-size: 11px; font-weight: 600; }
 .lang-switch-label { line-height: 1; }
 .input {
@@ -257,7 +258,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   padding: 13px 15px; box-shadow: var(--shadow);
 }
 .card + .card, .grid-2 + .card, .grid-3 + .card, .card + .grid-2 { margin-top: 10px; }
-/* 网格内的卡片由 gap 控制间距：相邻卡片的 margin-top 会把右列整体压下去，导致上下沿不齐。 */
+/* Gap controls spacing between cards in a grid: a margin-top between adjacent cards pushes the right column down and misaligns the top/bottom edges. */
 .grid-2 > .card + .card,
 .grid-3 > .card + .card,
 .detail-grid > .card + .card { margin-top: 0; }
@@ -285,7 +286,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .list { display: flex; flex-direction: column; }
 
 /* ---------- host fold ---------- */
-/* 并入主机按主机名折叠：列表里只露出分组标题，展开才显示机器。 */
+/* Merged hosts are collapsed by hostname: the list shows only the group header, and machines appear when expanded. */
 .host-fold { display: flex; flex-direction: column; }
 .host-fold-head {
   display: flex; align-items: center; gap: 7px; width: 100%;
@@ -302,7 +303,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .host-fold-head svg { flex: none; color: var(--text-3); transform: rotate(-90deg); transition: transform 0.15s ease; }
 .host-fold.open > .host-fold-head svg { transform: none; }
 .host-fold-body { display: flex; flex-direction: column; }
-/* 侧栏（终端 / 对话）里的分组标题更轻，和 roster-item 同一套内边距。 */
+/* Group headers in the sidebar (terminal / chat) are lighter and share roster-item's padding. */
 .roster .host-fold-head,
 .term-roster .host-fold-head {
   padding: 6px 9px; border-bottom: 0; border-radius: 6px; background: transparent;
@@ -557,11 +558,11 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 
 /* ---------- chat ---------- */
 /*
- * 对话页占满剩余视口高度：.page 已经是 flex 容器、撑满 .content，
- * .chat-layout 用 flex:1 吃掉 page-head 之外的空间，滚动只发生在 .chat-log。
+ * The chat page fills the remaining viewport height: .page is already a flex container filling .content,
+ * and .chat-layout consumes the space outside page-head with flex:1, so scrolling happens only in .chat-log.
  */
-/* flex-basis:0 是关键：基准取 auto 时页面高度会跟着对话内容长高，
-   整页跟着滚、输入框被顶下去；取 0 则高度只由可用空间决定，和终端一致。 */
+/* flex-basis:0 is the key: with an auto basis the page grows with the conversation,
+   the whole page scrolls and the composer is pushed down; with 0 the height is decided only by available space, matching the terminal. */
 .page-chat { min-height: 460px; flex: 1 1 0; }
 .page-chat .page-head { flex: none; }
 .chat-layout {
@@ -581,7 +582,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .roster-item b { display: block; font-size: 12.5px; font-weight: 540; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .roster-item small { display: block; font-size: 11px; color: var(--text-3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .roster-item .working-pip { width: 5px; height: 5px; border-radius: 50%; background: var(--info); flex: none; }
-/* grid 子项默认 min-height:auto，不归零的话 .chat-log 会被内容撑高而不是滚动 */
+/* Grid children default to min-height:auto; without resetting it, .chat-log grows with its content instead of scrolling. */
 .chat-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-head { min-height: 62px; padding: 10px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 11px; }
 .chat-head-info { flex: 1; min-width: 0; }
@@ -623,22 +624,22 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   font-size: 13px; line-height: 1.45; outline: none;
 }
 .chat-composer textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-/* 与输入框同高同圆角，单行时上下边缘完全对齐 */
+/* Same height and radius as the input, so a single-line layout aligns exactly on both edges. */
 .send-btn { flex: none; width: 40px; height: 40px; border-radius: 10px; border: 0; background: var(--text); color: var(--surface); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .send-btn.stop-btn { background: var(--bad); }
 .chat-footnote { font-size: 11px; color: var(--text-3); padding: 0 20px 12px; }
 
 /* ---------- terminal ---------- */
-/* 终端页同样吃满剩余高度：.page-term 是 flex 容器，.term-layout flex:1 撑开。 */
+/* The terminal page also fills the remaining height: .page-term is a flex container and .term-layout stretches with flex:1. */
 .page-term { min-height: 0; flex: 1 1 0; }
 .term-layout {
   display: grid; grid-template-columns: 240px minmax(0, 1fr); flex: 1; min-height: 380px;
   border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
   box-shadow: var(--shadow);
 }
-/* min-height:0 必须显式写：grid/flex 子项默认 min-height:auto，
-   会被 xterm 的内容高度撑开，形成 fit() ↔ 容器变高的死循环。 */
+/* min-height:0 must be explicit: grid/flex children default to min-height:auto,
+   which lets xterm's content height stretch them and creates a fit() ↔ container-grows loop. */
 .term-panel { background: #0e0f13; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; color: #d7dae2; }
 .term-head { height: 48px; flex: none; padding: 0 15px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 12px; }
 .term-head b { font-weight: 550; color: #eceef2; }
@@ -658,7 +659,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .term-run:disabled { opacity: 0.4; }
 .term-foot { flex: none; display: flex; justify-content: space-between; gap: 12px; padding: 7px 16px 9px; color: #5f646e; font-size: 10.5px; }
 
-/* xterm 自己管理滚动与尺寸：外层只负责占满剩余高度。 */
+/* xterm manages its own scrolling and size; the outer element only fills the remaining height. */
 .term-xterm { padding: 10px 12px; overflow: hidden; position: relative; }
 .term-xterm .xterm { height: 100%; }
 .term-xterm .xterm-viewport { scrollbar-width: thin; }
@@ -787,16 +788,16 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .scheduler-hero-copy p { color: var(--text-2); font-size: 12.5px; margin-top: 5px; max-width: 380px; }
 .scheduler-hero-copy .hero-actions { margin-top: 12px; }
 .scheduler-metrics { display: grid; grid-template-columns: repeat(4, minmax(80px, 120px)); gap: 12px; justify-content: start; padding-top: 12px; border-top: 1px solid var(--border); }
-/* 队列/运行中两块吃掉页面剩余高度，底部不再空一大块 */
+/* The Queued/Running panels consume the remaining page height, so no large empty area remains at the bottom. */
 .sched-split { flex: 1; min-height: 240px; }
 .sched-split > .card { display: flex; flex-direction: column; }
 .sched-split .rail-list { flex: 1; display: flex; flex-direction: column; }
 .sched-split .empty { flex: 1; display: flex; align-items: center; justify-content: center; }
 
 /*
- * 调度机详情整屏：页面本身不滚动。
- * 概览与 Agent 配置并排放在 .sched-top，下面的队列/运行中吃掉剩余高度，
- * 内容超出时只让卡片内部滚（高度太小时 .sched-top 自己收缩）。
+ * The scheduler detail page is full-screen and does not scroll itself.
+ * Overview and Agent configuration sit side by side in .sched-top; the Queued/Running panels below consume the remaining height,
+ * and on overflow only the card interiors scroll (.sched-top shrinks when height is scarce).
  */
 .content:has(> .page-sched) { height: 100%; min-height: 0; }
 .main:has(> .content > .page-sched) { overflow: hidden; }
@@ -804,7 +805,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .page-sched .back, .page-sched .page-head, .page-sched > .callout { flex: none; }
 .sched-top { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; flex: 0 1 auto; min-height: 0; }
 .sched-top > .card { margin-top: 0; min-height: 0; overflow-y: auto; }
-/* 左右两卡都是「标题 + KV 行」结构，行高一致，卡片自然等高。 */
+/* Both cards use a "title + KV rows" structure, so consistent row heights make the cards equal-height naturally. */
 .page-sched .sched-split { flex: 1 1 0; min-height: 160px; }
 .page-sched .sched-split > .card { min-height: 0; }
 .page-sched .sched-split .rail-list { min-height: 0; overflow-y: auto; }
@@ -834,7 +835,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .role-option b { font-size: 12.5px; font-weight: 600; }
 .role-option small { font-size: 11px; color: var(--text-3); }
 .add-role-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-/* 部署构建机：容器构建机 / 裸机构建机的优缺点对照。 */
+/* Deploy builder: pros and cons of container builders vs. bare-metal builders. */
 .builder-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .builder-choice-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
 .builder-choice-card header { display: flex; align-items: center; gap: 8px; }
@@ -900,7 +901,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   .grid-2, .detail-grid, .console-grid { grid-template-columns: 1fr; }
   .console-grid .wide { grid-column: auto; }
   .chat-layout, .term-layout { grid-template-columns: 210px minmax(0, 1fr); }
-  /* 窄屏放不下并排：回到普通文档流，允许页面滚动。 */
+  /* Side-by-side does not fit on narrow screens: return to normal document flow and allow page scrolling. */
   .content:has(> .page-sched) { height: auto; }
   .main:has(> .content > .page-sched) { overflow-y: auto; }
   .page-sched { height: auto; }
@@ -947,9 +948,9 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 
 /* ---------- overview studio ---------- */
 /*
- * 总览是整屏页面：只让工作室画布自己滚动，外层页面不跟着滚。
- * 需要先给 .content / .page 一个确定高度，画布的 flex:1 + overflow:auto
- * 才有可分配的空间；否则内容一高就把整个 .main 撑出滚动条。
+ * Overview is a full-screen page: only the studio canvas scrolls; the outer page does not.
+ * .content / .page need an explicit height first, so the canvas's flex:1 + overflow:auto
+ * has space to allocate; otherwise tall content makes the whole .main scroll.
  */
 .content:has(> .page-dashboard) { height: 100%; min-height: 0; }
 .main:has(> .content > .page-dashboard) { overflow: hidden; }
@@ -971,27 +972,27 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
     radial-gradient(ellipse at 50% 16%, var(--accent-soft), transparent 46%),
     linear-gradient(var(--surface), var(--surface-2));
 }
-/* 总览整屏时画布可以缩到可视高度以内，滚动条只出现在画布自己身上。 */
+/* When Overview is full-screen, the canvas can shrink to the visible height, and the scrollbar appears only on the canvas itself. */
 .page-dashboard .scene { min-height: 0; }
-/* 调度树：根在上，构建机与子调度机逐层向下排；内容不满时整体垂直居中。 */
+/* Scheduler tree: the root is on top, with builders and child schedulers laid out downward level by level; the whole tree is vertically centered when content does not fill the space. */
 .scene-tree {
   position: relative; z-index: 1; display: flex; flex-direction: column;
   align-items: center; width: 100%; min-width: min-content; margin: auto 0;
 }
 .scene-subtree { display: flex; flex-direction: column; align-items: center; flex: none; }
-/* 分支只负责排版；连线交给按实际位置测量的 SVG（见 .scene-edges）。 */
+/* Branches handle layout only; edges are drawn by an SVG measured from actual positions (see .scene-edges). */
 .scene-branch {
   position: relative;
   display: flex; flex-wrap: nowrap; justify-content: center; align-items: flex-start;
-  /* 间距只用 gap，不再给子树加 padding：子树宽度保持「卡片宽 or 子分支宽」，
-     父卡片才会正好落在正中间那张卡片的中线上，而不是差半个内边距。 */
+  /* Use only gap for spacing, not padding on subtrees: a subtree's width stays "card width or child-branch width",
+     so the parent card lands exactly on the center card's centerline instead of being off by half a padding. */
   gap: 12px; padding-top: 48px;
 }
 .scene-branch > .scene-subtree { position: relative; }
 .scene-subtree:not(.is-root) > .scene-scheduler { width: 180px; max-width: 100%; }
 .scene-subtree.is-add > .scene-builder { width: 180px; }
 .scene-node-title { display: inline-flex; align-items: baseline; gap: 6px; }
-/* 主机名单独一行钉在卡片最底部，每张卡片都显示自己的主机。 */
+/* The hostname sits on its own line pinned to the bottom of the card, so every card shows its own host. */
 .scene-node-host {
   width: 100%; margin-top: auto; padding-top: 4px;
   border-top: 1px solid var(--border);
@@ -1013,7 +1014,7 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 }
 .scene-scheduler:hover { border-color: var(--accent); }
 .scene-scheduler.is-empty { width: min(360px, 100%); height: auto; min-height: 200px; gap: 6px; padding: 11px 14px 12px; }
-/* 还没部署任何角色时：调度机、构建机两张入口卡片并排。 */
+/* When no role is deployed yet: the scheduler and builder entry cards sit side by side. */
 .scene-empty-roles {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px; width: min(640px, 100%);
@@ -1042,8 +1043,8 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .scene-action:disabled:hover { border-color: var(--border); color: var(--text-2); }
 
 /*
- * 连线层：从父卡片底部中线出发，圆角拐到子卡片顶部中线。
- * 信号从调度机滑到构建机、再从构建机滑回调度机，完整往返一圈。
+ * Edge layer: starts at the bottom center of the parent card and turns with rounded corners to the top center of the child card.
+ * The signal slides from scheduler to builder and back again, completing one full round trip.
  */
 .scene-edges {
   position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0;
@@ -1059,12 +1060,12 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 @keyframes scene-flow {
   0% { stroke-dashoffset: 0; opacity: 0; }
   9% { opacity: 0.95; }
-  36% { stroke-dashoffset: 94; opacity: 0.95; }   /* 到达构建机 */
+  36% { stroke-dashoffset: 94; opacity: 0.95; }   /* reaches builder */
   44% { stroke-dashoffset: 94; opacity: 0; }
   52% { stroke-dashoffset: 94; opacity: 0; }
-  60% { stroke-dashoffset: 94; opacity: 0.95; }   /* 从构建机返回 */
+  60% { stroke-dashoffset: 94; opacity: 0.95; }   /* returning from builder */
   87% { stroke-dashoffset: 0; opacity: 0.95; }
-  96% { stroke-dashoffset: 0; opacity: 0; }       /* 回到调度机 */
+  96% { stroke-dashoffset: 0; opacity: 0; }       /* back at scheduler */
   100% { stroke-dashoffset: 0; opacity: 0; }
 }
 
@@ -1125,6 +1126,6 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   .scene-scheduler.is-empty { width: 100%; height: auto; }
   .scene-builder { width: calc(50% - 6px); height: 184px; }
   .scene-builder.is-empty { width: 100%; min-height: 110px; }
-  /* 窄屏允许换行；连线是测量出来的，折行后也能连对卡片。 */
+  /* Narrow screens may wrap; edges are measured, so they still connect the right cards after wrapping. */
   .scene-branch { flex-wrap: wrap; gap: 0 8px; padding-top: 36px; }
 }

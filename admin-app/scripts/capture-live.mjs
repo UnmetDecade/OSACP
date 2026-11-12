@@ -1,10 +1,10 @@
 /**
- * 用本机 Chrome + CDP 截取“实时模式”页面。
+ * Capture the "live mode" page with local Chrome + CDP.
  *
- * 令牌从进程环境 ADMIN_TOKEN 读取（默认从 macOS 剪贴板取），只写进当前标签页的
- * sessionStorage，不落盘、不打印。输出只包含截图文件名与页面标题。
+ * The token is read from the ADMIN_TOKEN environment variable (defaults to the macOS
+ * clipboard) and written only into the current tab's sessionStorage; never persisted or printed. Output lists only screenshot filenames and page titles.
  *
- * 用法：
+ * Usage:
  *   ADMIN_TOKEN=$(pbpaste) node scripts/capture-live.mjs
  */
 import { spawn, execSync } from "node:child_process";
@@ -118,13 +118,13 @@ try {
 
   for (const [name, route] of ROUTES) {
     await send("Page.navigate", { url: `${BASE}${route}` });
-    await sleep(6000); // 首次同步 + 15s 轮询之间留出渲染时间
+    await sleep(6000); // Allow render time between the first sync and the 15s poll
     const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     fs.writeFileSync(path.join(OUT, `${name}.png`), Buffer.from(shot.data, "base64"));
     const title = await send("Runtime.evaluate", { expression: "document.title", returnByValue: true });
     console.log(`${name}.png  ${title?.result?.value ?? ""}`);
 
-    // 实时交互：打开 Agent 选择、对话点第一个预设、终端执行 help。
+    // Live interaction: open the Agent picker, click the first preset in chat, run help in the terminal.
     if (name === "office-live") {
       await send("Runtime.evaluate", {
         expression: `(() => {

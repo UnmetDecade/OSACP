@@ -3,8 +3,8 @@ import { db } from "../store";
 import { Badge, Card, Empty, PageHead } from "../components/ui";
 
 /**
- * 日志：调度机与控制面的操作记录。
- * 数据来自控制面审计日志。
+ * Logs: operation records from the scheduler and control plane.
+ * Data comes from control plane audit logs.
  */
 export function LogsPage() {
   const logs = db.logs;

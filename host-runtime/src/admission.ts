@@ -1,12 +1,12 @@
 /**
- * 本机二次准入（§8.4 的简化版）。
+ * Local second-stage admission (a simplified version of §8.4).
  *
- * 调度机的准入基于 15s 前的样本，启动前必须用实时数据再判一次，防超卖。
- * 这里把「校验 + 占用」放在同一把锁里串行执行——两个任务同时看到同一份可用内存，
- * 就是超卖的来源。
+ * The scheduler's admission is based on samples taken 15s earlier, so a real-time check must be run once more before starting, to prevent oversubscription.
+ * Here "check + reserve" run serially under the same lock—two tasks seeing the same available memory at the same time
+ * is exactly where oversubscription comes from.
  *
- * 与规范的差异：规范由 role-agent 调 runtime.sock 的 /admission/check，
- * 按 grant_id 记账；这里在进程内记账，grant 状态仍由调度机持有。
+ * Difference from the spec: the spec has role-agent call /admission/check on runtime.sock
+ * and account by grant_id; here accounting is in-process, and grant state is still held by the scheduler.
  */
 
 export interface AdmissionResult {
@@ -28,7 +28,7 @@ export class LocalAdmission {
     private readonly perSlotBytes: number,
   ) {}
 
-  /** 串行化：任何时候只有一个调用能看到并修改 reserved */
+  /** Serialize: at most one call can see and modify `reserved` at any time */
   tryAcquire(): Promise<AdmissionResult> {
     const run = this.chain.then(() => {
       const available = this.availableBytes();

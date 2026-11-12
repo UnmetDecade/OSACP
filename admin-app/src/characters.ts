@@ -1,10 +1,10 @@
 import type { Instance, Role, Task } from "./types";
 
 /**
- * v4 机器人形象注册表。
+ * v4 robot character registry.
  *
- * 只有两个角色：构建机器人「夯台」与调度机器人「派令」。
- * 全部为自绘 SVG，不引入外部图片；状态决定表情与动画，不是装饰。
+ * Only two characters: the builder robot 「夯台」 and the scheduler robot 「派令」.
+ * Everything is hand-drawn SVG with no external images; state drives expression and animation, not decoration.
  */
 export type CharacterState = "working" | "idle" | "rest" | "alert" | "offline";
 
@@ -13,13 +13,13 @@ export interface RoleCharacter {
   name: string;
   title: string;
   tagline: string;
-  /** 外壳主色 */
+  /** Shell primary color */
   color: string;
-  /** 深色描边 / 阴影 */
+  /** Dark outline / shadow */
   accent: string;
-  /** 屏幕脸底色 */
+  /** Screen face base color */
   screen: string;
-  /** LED 眼睛 / 指示灯 */
+  /** LED eyes / indicator lights */
   led: string;
   props: string;
   quotes: Record<CharacterState, string>;
@@ -70,7 +70,7 @@ export const CHARACTERS: Record<Role, RoleCharacter> = {
   },
 };
 
-/** 由实例与任务推导机器人当前状态。 */
+/** Derive the robot's current state from instances and tasks. */
 export function characterState(instance: Instance | undefined, runningTask?: Task): CharacterState {
   if (!instance) return "idle";
   if (instance.state === "OFFLINE" || instance.state === "FAILED") return "offline";

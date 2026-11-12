@@ -5,10 +5,10 @@ import type { Assignment } from "../client.js";
 import { TaskAborted, TaskFailed, type ExecContext } from "../exec-types.js";
 
 /**
- * 角色执行器的公共部分。
+ * Shared parts of role executors.
  *
- * 铁律：上游制品只能从调度机交接的 `requirements.upstream_artifacts` 里拿；
- * 拿到之后必须按交接单里的 sha256 自己重算一遍。传输成功不等于内容可信。
+ * Iron rule: upstream artifacts may only come from `requirements.upstream_artifacts` handed over by the scheduler;
+ * once received, recompute the sha256 yourself against the handoff record. A successful transfer does not mean the content is trustworthy.
  */
 
 export interface UpstreamRef {
@@ -30,7 +30,7 @@ export const MEDIA = {
   response: "text/plain; charset=utf-8",
 } as const;
 
-/** 可中断的 sleep：租约丢了就立刻停手，不要继续干活 */
+/** Abortable sleep: stop immediately once the lease is lost; do not keep working */
 export function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
   const abortReason = (): "cancelled" | "lease_lost" | "shutdown" => {
     const r = signal.reason;
@@ -68,7 +68,7 @@ export function upstreamRefs(task: Assignment): UpstreamRef[] {
   );
 }
 
-/** 按产出阶段挑制品。交接单里的 task_type 是调度机写入的，不是执行器自报。 */
+/** Pick an artifact by output stage. The task_type in the handoff record is written by the scheduler, not self-reported by the executor. */
 export function refFromTask(task: Assignment, taskType: string): UpstreamRef | undefined {
   return upstreamRefs(task).find((r) => r.task_type === taskType);
 }
@@ -77,7 +77,7 @@ export function refByDigest(task: Assignment, digest: string): UpstreamRef | und
   return upstreamRefs(task).find((r) => r.sha256 === digest);
 }
 
-/** 下载并复核交接摘要；不一致立即失败，不进入后续步骤 */
+/** Download and re-verify the handoff digest; fail immediately on mismatch and do not proceed to later steps */
 export async function fetchVerified(ctx: ExecContext, ref: UpstreamRef): Promise<Buffer> {
   const got = await ctx.downloadArtifact(ref.artifact_id);
   const actual = sha256Of(got.data);
@@ -98,7 +98,7 @@ export async function fetchVerified(ctx: ExecContext, ref: UpstreamRef): Promise
   return got.data;
 }
 
-/** 严格 JSON 解析：制品是外部输入，坏格式按不可重试的产物错误处理 */
+/** Strict JSON parsing: artifacts are external input, so bad format is treated as a non-retryable artifact error */
 export function parseJson<T = any>(buf: Buffer, what: string): T {
   try {
     return JSON.parse(buf.toString("utf8")) as T;
@@ -109,7 +109,7 @@ export function parseJson<T = any>(buf: Buffer, what: string): T {
   }
 }
 
-/** 工作目录内的相对路径，拒绝绝对路径与 ..，避免制品清单把文件写到目录外 */
+/** Relative path within the workspace; reject absolute paths and .. so an artifact manifest cannot write files outside the directory */
 export function safeJoin(root: string, rel: string): string {
   const abs = path.resolve(root, rel);
   if (abs !== root && !abs.startsWith(root + path.sep)) {
@@ -134,8 +134,8 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
 ];
 
 /**
- * 在交接过来的内容里找凭据样式。发现即拒绝，不做“也许没事”的判断。
- * 制品多是 JSON，先把 `\"` 之类的转义还原，否则值里的引号会把匹配截断。
+ * Look for credential patterns in handed-over content. Any hit is rejected; no "it is probably fine" judgement.
+ * Artifacts are mostly JSON, so unescape sequences such as `\"` first; otherwise quotes inside values truncate the match.
  */
 export function scanForSecrets(text: string): Array<{ rule: string; sample: string }> {
   const normalized = text.replace(/\\(["'\\/bfnrt])/g, "$1");

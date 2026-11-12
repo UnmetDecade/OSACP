@@ -11,26 +11,26 @@ import type { TaskAttachment } from "../types";
 import { Button, Callout, Field, Modal, Tag } from "./ui";
 
 /**
- * 创建任务弹窗。
+ * Create task dialog.
  *
- * 任务只交给本机根调度机，由它按调度算法派发；所以这里不选构建机、不填难度。
- * 附件（截图、md、txt、代码文件夹等）先传到控制面，任务里只带一次性地址；
- * 构建机执行时把内容落到工作区的 attachments/ 目录，再把路径交给 Agent。
+ * Tasks go only to the local root scheduler, which dispatches them by the scheduling algorithm; so no builder is chosen and no difficulty is entered here.
+ * Attachments (screenshots, md, txt, code folders, etc.) are uploaded to the control plane first, and the task carries only a one-time URL;
+ * when the builder runs, it unpacks the content into the workspace's attachments/ directory and passes the paths to the Agent.
  *
- * 文件夹在浏览器里先打包成 zip，并跳过 node_modules / .git / 构建产物等
- * 目录，避免一个前端项目把依赖全传上去。
+ * Folders are zipped in the browser, skipping node_modules / .git / build output and other
+ * such directories, so a frontend project does not upload all its dependencies.
  */
 
-/** 单个附件（压缩后）上限；控制面单次请求 32MiB，留出 base64 膨胀空间。 */
+/** Per-attachment (compressed) limit; the control plane caps a single request at 32MiB, leaving room for base64 expansion. */
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
-/** 文件夹打包后的上限，超过就让用户先排除依赖或改用 Git 仓库。 */
+/** Limit for a packed folder; above it, ask the user to exclude dependencies or use a Git repository. */
 const MAX_ZIP_BYTES = 20 * 1024 * 1024;
-/** 文件夹展开后的读取上限，防止误选整个主目录。 */
+/** Read limit for an unfolded folder, to prevent accidentally selecting the entire home directory. */
 const MAX_FOLDER_RAW = 120 * 1024 * 1024;
 const MAX_FOLDER_FILES = 6000;
 const MAX_FILES = 32;
 
-/** 依赖目录和构建产物不随任务上传。 */
+/** Dependency directories and build output are not uploaded with the task. */
 const SKIP_DIRS = new Set([
   "node_modules", ".git", ".svn", ".hg", ".cache", ".next", ".nuxt", ".turbo",
   "dist", "build", "out", "target", "coverage", "__pycache__", ".venv", "venv",
@@ -41,7 +41,7 @@ const SKIP_FILE = /^(\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
 const SKIP_EXT = /\.(pyc|pyo|class|o|obj|so|dylib|dll|exe)$/i;
 
 interface PickedEntry {
-  /** 相对于文件夹根目录的路径。 */
+  /** Path relative to the folder root. */
   path: string;
   file: File;
 }
@@ -60,7 +60,7 @@ function relativeFromWebkit(file: File): { root: string; path: string } {
   return { root: parts[0] ?? "folder", path: parts.slice(1).join("/") };
 }
 
-/** 拖入的目录递归展开；readEntries 一次只返回一批，要读到空为止。 */
+/** Dropped directories are expanded recursively; readEntries returns one batch at a time, so read until it is empty. */
 async function walkDirectory(
   dir: FileSystemDirectoryEntry,
   prefix: string,
@@ -103,7 +103,7 @@ function sizeLabel(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 大图先缩到 1600px 以内再转 JPEG；小图原样保留，避免截图文字被压糊。 */
+/** Large images are scaled below 1600px and converted to JPEG; small ones are kept as-is so text in screenshots stays sharp. */
 async function imagePayload(file: File): Promise<{ blob: Blob; name: string; mediaType: string }> {
   const keep = { blob: file, name: file.name || "image", mediaType: file.type || "image/png" };
   if (file.size <= 500_000) return keep;
@@ -152,7 +152,7 @@ async function readFile(file: File): Promise<TaskAttachment> {
 export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const live = useLive();
   const { host } = useHostScope();
-  // 任务统一交给本机根调度机，由它按调度算法派发到构建机或结点调度机。
+  // Tasks are always handed to the local root scheduler, which dispatches them to a builder or node scheduler by the scheduling algorithm.
   const rootScheduler = db.instances.find(
     (i) =>
       i.role === "scheduler" &&
@@ -184,8 +184,8 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
     }
   }, [open]);
 
-  // 点菜单外面就收起「文件 / 文件夹」选择。
-  // 用捕获阶段：弹窗自身会拦住冒泡，冒泡阶段的 document 监听收不到弹窗内部的点击。
+  // Clicking outside the menu collapses the file / folder picker.
+  // Use the capture phase: the dialog stops bubbling, so a document listener in the bubble phase misses clicks inside it.
   useEffect(() => {
     if (!menuOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -215,7 +215,7 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
     }
   }
 
-  /** 文件夹先打包成一个 zip 再作为单个附件上传。 */
+  /** Pack the folder into one zip and upload it as a single attachment. */
   async function addFolder(root: string, entries: PickedEntry[]) {
     setReading(true);
     setError("");
@@ -298,7 +298,7 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
         }
       }
     } catch {
-      // 浏览器不支持目录拖入时退回普通文件列表。
+      // Fall back to a plain file list when the browser does not support dropping directories.
     }
     if (entries.length) {
       await addFolder(root || "folder", entries);

@@ -3,10 +3,10 @@ import type { AdapterHooks, AdapterResult } from "./stdio-adapter.js";
 import { AdapterCrash } from "./stdio-adapter.js";
 
 /**
- * localhost HTTP Adapter（`http-local`）。
+ * localhost HTTP Adapter (`http-local`).
  *
- * 参考实现只支持请求/响应，不支持 Adapter 反向发起 tool.call——需要工具回调的
- * Agent 必须用 `stdio-jsonrpc`。这一点在 README 中明确写出，避免“看起来支持”。
+ * The reference implementation only supports request/response and does not let the Adapter initiate tool.call in reverse—Agents
+ * that need tool callbacks must use `stdio-jsonrpc`. This is stated explicitly in the README to avoid "looks like it's supported".
  */
 export class HttpLocalAdapter {
   private seq = 0;
@@ -66,7 +66,7 @@ export class HttpLocalAdapter {
     try {
       await this.request("agent.cancel", { reason }, 1500);
     } catch {
-      // 无状态或已崩溃
+      // Stateless or already crashed
     }
     this.closed = true;
   }

@@ -24,7 +24,7 @@ function writePair(name: string, pair: { privateKey: KeyObject; publicKey: KeyOb
 }
 
 before(async () => {
-  // 部署计划会给内置角色带上部署载荷；测试用临时目录代替真实的 app/。
+  // Deployment plans attach a deployment payload to built-in roles; the test uses a temp directory instead of the real app/.
   for (const role of ["scheduler", "builder"]) {
     const dir = path.join(tmp, `${role}-app`);
     fs.mkdirSync(dir, { recursive: true });
@@ -42,7 +42,7 @@ before(async () => {
     approvalMfaCode: "123456",
     schedulerAppDir: path.join(tmp, "scheduler-app"),
     builderAppDir: path.join(tmp, "builder-app"),
-    // 构建机部署要求能解析出本机调度机地址；测试里固定一个回环地址。
+    // Builder deployments need a resolvable local scheduler address; the test pins a loopback address.
     schedulerUrl: "http://127.0.0.1:8443",
     schedulerDatabaseUrl: "postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test",
   });
@@ -320,7 +320,7 @@ test("Agent Profile 校验角色/Adapter 矩阵与固定 digest", async () => {
   assert.equal(p.role_id, "builder");
   assert.deepEqual(p.allowed_tools, ["demo.echo"]);
 
-  // v4 只剩 builder / scheduler 两个角色，scheduler 同样合法
+  // v4 has only the builder / scheduler roles left, and scheduler is equally valid
   const sched = await svc.createAgentProfile(
     { ...base, role_id: "scheduler", adapter: "http-local", agent_profile_id: "agp_sched_ok" },
     "alice",
@@ -328,12 +328,12 @@ test("Agent Profile 校验角色/Adapter 矩阵与固定 digest", async () => {
   assert.equal(sched.role_id, "scheduler");
   assert.equal(sched.adapter, "http-local");
 
-  // 已删除的角色不再被接受
+  // Removed roles are no longer accepted
   await assert.rejects(
     () => svc.createAgentProfile({ ...base, role_id: "reviewer", agent_profile_id: "agp_rev" }, "alice"),
     (e: any) => e.code === "ROLE_AGENT_NOT_ALLOWED",
   );
-  // 角色合法但 Adapter 不在矩阵里
+  // The role is valid but the Adapter is not in the matrix
   await assert.rejects(
     () =>
       svc.createAgentProfile(
@@ -680,7 +680,7 @@ test("审批令牌签发要求 MFA、绑定操作者，并带 approval:decide sc
 });
 
 // ---------------------------------------------------------------------------
-// 工作能力值 W / 任务难度 / 主机并入（架构规则 1–4）
+// Capability score W / task difficulty / host federation (architecture rules 1–4)
 // ---------------------------------------------------------------------------
 
 async function onlineHost(name: string, memBytes = 8589934592): Promise<string> {
@@ -720,7 +720,7 @@ test("构建机部署冻结 W 并注入 CAPABILITY_SCORE / CAPABILITY_DETAIL", a
   assert.equal(dep.env.CAPABILITY_SCORE, "1000");
   assert.deepEqual(JSON.parse(dep.env.CAPABILITY_DETAIL), detail);
 
-  // 显式分值优先于公式；明细原样保留，便于界面解释 W 的构成。
+  // An explicit score takes precedence over the formula; the detail is kept as-is so the UI can explain how W is composed.
   const explicit = await svc.previewDeploymentPlan(
     {
       host_id: hostId,
@@ -743,7 +743,7 @@ test("构建机部署冻结 W 并注入 CAPABILITY_SCORE / CAPABILITY_DETAIL", a
   assert.equal(applied2.deployments[0].capability_score, 420);
   assert.equal(applied2.deployments[0].env.CAPABILITY_SCORE, "420");
 
-  // 调度机不参与 W：分值为 0，也不注入能力环境变量。
+  // Schedulers do not participate in W: the score is 0 and no capability env vars are injected.
   await svc.createDeployment({
     host_id: hostId,
     instance_id: "cap-sched",
@@ -788,7 +788,7 @@ test("主机并入形成联邦树，ΣW 逐级累加且拒绝环", async () => {
     });
   }
 
-  // createDeployment 只落 PLANNED/SYNCING；ΣW 只统计真正在跑的构建机。
+  // createDeployment only lands PLANNED/SYNCING; ΣW counts only builders that are actually running.
   await query(
     `UPDATE pcs_deployments SET status='HEALTHY' WHERE instance_id = ANY($1::text[])`,
     [builders.map(([, instanceId]) => instanceId)],
@@ -806,7 +806,7 @@ test("主机并入形成联邦树，ΣW 逐级累加且拒绝环", async () => {
   assert.equal(byId.get(b)!.subtree_score, 650);
   assert.equal(byId.get(c)!.subtree_score, 400);
   assert.equal(byId.get(a)!.subtree_builder_count, 4);
-  // 同库还有前面用例留下的根主机，这里只断言本测试的三台主机。
+  // The same database also holds root hosts left by earlier cases; only assert on this test's three hosts.
   assert.ok(tree.roots.includes(a));
   assert.ok(!tree.roots.includes(b));
   assert.ok(!tree.roots.includes(c));
@@ -819,11 +819,11 @@ test("主机并入形成联邦树，ΣW 逐级累加且拒绝环", async () => {
     () => svc.mergeHost(a, c, "alice"),
     (e: any) => e.code === "HOST_MERGE_CYCLE",
   );
-  // 没有根调度机的主机也能直接并入：裸机构建机可以独立于调度机存在。
+  // A host without a root scheduler can also be merged directly: bare-metal builders can exist independently of schedulers.
   const mergedD = await svc.mergeHost(d, a, "alice");
   assert.equal(mergedD.parent_host_id, a);
   assert.ok(!(await svc.getFleetTree()).roots.includes(d));
-  // 但上级必须有根调度机，否则没有接收结点的一方。
+  // But the parent must have a root scheduler, otherwise there is no side to accept the node.
   await assert.rejects(
     () => svc.mergeHost(a, d, "alice"),
     (e: any) => e.code === "PARENT_SCHEDULER_MISSING",
@@ -837,7 +837,7 @@ test("主机并入形成联邦树，ΣW 逐级累加且拒绝环", async () => {
 });
 
 test("主机角色三选一，裸机角色不能再部署另一种角色", async () => {
-  // 只有本地/SSH 接入的主机才有凭据行；updateHost 走凭据表，所以这里用本地主机。
+  // Only local/SSH-onboarded hosts have a credential row; updateHost goes through the credential table, so use a local host here.
   const hostId = (await svc.createLocalHost({ name: "role-host" })).host_id;
   await svc.updateHost(hostId, { role_mode: "builder" });
   await assert.rejects(
@@ -852,7 +852,7 @@ test("主机角色三选一，裸机角色不能再部署另一种角色", async
     (e: any) => e.code === "HOST_ROLE_CONFLICT",
   );
 
-  // 裸机调度机还没有执行路径：在裸机构建机上切到 scheduler 会被拒绝。
+  // There is no execution path for bare-metal schedulers yet: switching a bare-metal builder to scheduler is rejected.
   await assert.rejects(
     () => svc.updateHost(hostId, { role_mode: "scheduler" }),
     (e: any) => e.code === "NATIVE_SCHEDULER_NOT_SUPPORTED",
@@ -866,7 +866,7 @@ test("主机角色三选一，裸机角色不能再部署另一种角色", async
 
 test("同一主机可跑多个调度机容器：根唯一，结点挂父调度机，构建机绑定到指定调度机", async () => {
   const hostId = await onlineHost("tree-host");
-  // 调度机地址按「主机地址 + 宿主端口」推导；测试里补一条 SSH 接入地址。
+  // Scheduler addresses are derived from "host address + host port"; the test adds an SSH access address.
   await query(
     `INSERT INTO pcs_host_credentials (host_id, transport, address, ssh_port)
      VALUES ($1, 'ssh', '127.0.0.1', 22)
@@ -875,7 +875,7 @@ test("同一主机可跑多个调度机容器：根唯一，结点挂父调度�
     [hostId],
   );
 
-  // 第一台自动成为根调度机。
+  // The first one automatically becomes the root scheduler.
   const root = (
     await svc.createDeployment({
       host_id: hostId,
@@ -890,7 +890,7 @@ test("同一主机可跑多个调度机容器：根唯一，结点挂父调度�
   assert.equal(root.parent_deployment_id, null);
   assert.equal(root.scheduler_url, "http://127.0.0.1:18443");
 
-  // 第二台必须指定父调度机；走部署计划，控制面会注入父地址和独立数据库。
+  // The second one must specify a parent scheduler; going through a deployment plan, the control plane injects the parent address and a separate database.
   const nodePlan = await svc.previewDeploymentPlan(
     {
       host_id: hostId,
@@ -919,7 +919,7 @@ test("同一主机可跑多个调度机容器：根唯一，结点挂父调度�
   assert.match(String(nodeDep.env.DATABASE_URL), /scheduler_test_node_1$/);
   assert.ok(nodeDep.env.SCHEDULER_FEDERATION_TOKEN);
 
-  // 根调度机唯一；结点必须有父；父必须在本主机上。
+  // The root scheduler is unique; a node must have a parent; the parent must be on this host.
   await assert.rejects(
     () =>
       svc.createDeployment({
@@ -968,7 +968,7 @@ test("同一主机可跑多个调度机容器：根唯一，结点挂父调度�
     (e: any) => e.code === "PARENT_SCHEDULER_NOT_FOUND",
   );
 
-  // 重部署结点沿用原位置，不会误判成新根。
+  // Redeploying a node keeps its original position and is not mistaken for a new root.
   const redeployed = (
     await svc.createDeployment({
       host_id: hostId,
@@ -982,7 +982,7 @@ test("同一主机可跑多个调度机容器：根唯一，结点挂父调度�
   assert.equal(redeployed.scheduler_role, "node");
   assert.equal(redeployed.parent_deployment_id, root.deployment_id);
 
-  // 构建机注册到选中的调度机（redev 后旧部署已 REMOVED，必须用当前这一代）。
+  // The builder registers with the selected scheduler (after redeploy the old deployment is REMOVED, so the current generation must be used).
   const builder = (
     await svc.createDeployment({
       host_id: hostId,

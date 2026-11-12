@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 端到端演示：创建任务 → 领取 → 启动 → 实例失联 → 租约回收 → 毒消息被拒 → 重领 → 成功
-# 用法：BASE=http://127.0.0.1:7801 ./scripts/demo.sh
+# End-to-end demo: create task → claim → start → instance lost → lease reaped → poison message rejected → reclaim → success
+# Usage: BASE=http://127.0.0.1:7801 ./scripts/demo.sh
 set -euo pipefail
 
 BASE="${BASE:-http://127.0.0.1:7801}"
@@ -9,11 +9,11 @@ PG_CONTAINER="${PG_CONTAINER:-pg-sched}"
 jget() { python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("'"$1"'",""))'; }
 hr() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-# 仅测试环境：用可控时钟做“时间旅行”，生产不会这么用
+# Test-only: "time travel" with a controllable clock; never done in production
 travel() {
   docker exec "$PG_CONTAINER" psql -U postgres -d scheduler -q \
     -c "UPDATE _clock SET offset_ms = offset_ms + $1" >/dev/null
-  sleep 1.5   # 等后台扫描跑一轮
+  sleep 1.5   # wait for the background sweep to run one round
 }
 
 hr "0. 健康检查"
@@ -55,7 +55,7 @@ curl -s "$BASE/v1/tasks/$TASK_ID" | python3 -c \
 
 hr "7. 退避结束后 worker-b 接手（fencing 应为 2）"
 travel 301000
-# 时间推进后 worker-b 也会被判成 SUSPECT/OFFLINE，先心跳把它拉回 ONLINE
+# After time advances worker-b is also marked SUSPECT/OFFLINE; send a heartbeat first to bring it back ONLINE
 curl -s -X POST "$BASE/v1/instances/heartbeat" -H 'content-type: application/json' \
   -d '{"instance_id":"worker-b","state":"ONLINE"}' >/dev/null
 B=$(curl -s -X POST "$BASE/v1/claim" -H 'content-type: application/json' \

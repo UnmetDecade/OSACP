@@ -130,9 +130,9 @@ test("同实例重新部署不把旧容器占用算进准入", async () => {
   const b = broker(8 * G, 8 * G);
   b.setDeploymentGrants([{ grant_id: "rgr_old", instance_id: "ins_dep", memory_bytes: 6 * G }]);
 
-  // 其他实例仍然放不下：旧容器的 6G 仍在占用。
+  // Other instances still cannot fit: the old container's 6G is still counted.
   assert.equal((await b.checkDeployment("rgr_other", "ins_other", 4 * G)).allowed, false);
-  // 同实例的新部署会接管旧容器，旧的 6G 不能挡自己。
+  // A new deployment of the same instance takes over the old container, so the old 6G must not block itself.
   assert.equal((await b.checkDeployment("rgr_new", "ins_dep", 6 * G)).allowed, true);
 });
 
@@ -153,7 +153,7 @@ test("unix socket 权限 0600，客户端可检查与释放", async () => {
 
     assert.equal(b.summary().task_grants, 1);
 
-    // 崩溃后对账用：能拿到单个 grant 的 instance / attempt
+    // Used for post-crash reconciliation: obtain the instance / attempt of an individual grant
     const listed = await listHostGrants(socketPath);
     assert.equal(listed.items.length, 1);
     assert.equal(listed.items[0].instance_id, "ins_1");

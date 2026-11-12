@@ -1,16 +1,16 @@
-/** v4：平台只有调度机与构建机两个角色，默认全部权限。 */
+/** v4: the platform has only the scheduler and builder roles, with all permissions by default. */
 export type Role = "scheduler" | "builder";
 
-/** 构建机可选的基础系统。 */
+/** Base OS options for builders. */
 export type BuilderOs = "ubuntu20.04" | "ubuntu22.04" | "ubuntu24.04" | "ubuntu26.04";
 
 export const BUILDER_OS: {
   id: BuilderOs;
   label: string;
   short: string;
-  /** 界面显示的镜像名 */
+  /** Image name shown in the UI */
   tag: string;
-  /** 部署用的 digest 固定镜像 */
+  /** Digest-pinned image used for deployment */
   image: string;
   note: string;
   preview?: boolean;
@@ -20,7 +20,7 @@ export const BUILDER_OS: {
     label: "Ubuntu 20.04 LTS",
     short: "20.04",
     tag: "ubuntu:20.04",
-    // 官方镜像 + 主机缓存里的运行时，不构建平台专属镜像。
+    // The official image plus the runtime cached on the host; no platform-specific image is built.
     image:
       "docker.m.daocloud.io/library/ubuntu@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214",
     note: "旧 glibc / 旧内核头文件，兼容老项目",
@@ -57,7 +57,7 @@ export const BUILDER_OS: {
 
 export type HostState = "PENDING" | "ONLINE" | "OFFLINE" | "WARNING" | "THROTTLED" | "PROTECTING" | "DEGRADED" | "REVOKED";
 
-/** 工作能力值 W 的六项明细，0–1000 分由它们加权归一化得出。 */
+/** The six details of work capability W; the 0–1000 score is derived from their weighted normalization. */
 export type CapabilityDetail = {
   cores?: number;
   freq_ghz?: number;
@@ -67,10 +67,10 @@ export type CapabilityDetail = {
   api?: number;
 };
 
-/** 主机角色：跑容器，或裸机直接充当构建机 / 调度机（二选一）。 */
+/** Host role: run containers, or a bare-metal host acting directly as builder / scheduler (pick one). */
 export type HostRoleMode = "containers" | "builder" | "scheduler";
 
-/** 联邦树里的一台主机；subtree_score 是它和全部下级主机的 ΣW。 */
+/** A host in the federation tree; subtree_score is the ΣW of it and all descendant hosts. */
 export type FleetHost = {
   host_id: string;
   hostname: string;
@@ -104,10 +104,10 @@ export type InstanceState =
 
 export type TaskState = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED";
 
-/** 主机接入方式：本地主机（运行管理页面的机器）或 SSH 远程主机。 */
+/** Host onboarding mode: local host (the machine running the admin app) or remote SSH host. */
 export type HostTransport = "local" | "ssh";
 
-/** PCS 探测结果；私钥原文不在这里，界面只显示可达性与 Docker 状态。 */
+/** PCS probe result; the raw private key is not here, and the UI shows only reachability and Docker status. */
 export type HostProbe = {
   ok: boolean;
   checked_at: string;
@@ -132,7 +132,7 @@ export type Host = {
   disk: number;
   cpu_total: number;
   mem_total_mb: number;
-  /** 最近一次上报的可用内存；0 表示还没上报。 */
+  /** Last reported available memory; 0 means nothing reported yet. */
   mem_available_mb: number;
   labels: Record<string, string>;
   capabilities: string[];
@@ -142,32 +142,32 @@ export type Host = {
   address?: string;
   ssh_port?: number;
   ssh_user?: string;
-  /** key = 私钥，password = 密码；凭据本身永远不会回到浏览器。 */
+  /** key = private key, password = password; the credential itself never returns to the browser. */
   auth_type?: "key" | "password" | null;
-  /** 只用于辨认是哪把私钥；私钥本身永远不会回到浏览器。 */
+  /** Used only to identify which private key; the key itself never returns to the browser. */
   key_fingerprint?: string;
   last_probe?: HostProbe;
   last_probe_at?: string;
-  /** 并入的上级主机；为空表示联邦树的根。 */
+  /** Parent host it is folded into; empty means it is a root of the federation tree. */
   parent_host_id?: string | null;
-  /** containers = 容器宿主；builder / scheduler = 裸机直接充当该角色。 */
+  /** containers = container host; builder / scheduler = bare metal acting directly as that role. */
   role_mode?: HostRoleMode;
-  /** 本机在册构建机的 ΣW；联邦树里有 subtree_score。 */
+  /** ΣW of builders registered on this host; use subtree_score in the federation tree. */
   local_score?: number;
   subtree_score?: number;
 };
 
 export type Instance = {
-  /** 实例名是主机本地的：不同主机可以重名，界面/列表统一用 key 区分。 */
+  /** Instance names are host-local: different hosts may reuse a name, so the UI/list distinguishes them by key. */
   key: string;
   id: string;
-  /** 控制面部署 id（dep_…）；传给 PCS 的调度机/父调度机引用都用它。 */
+  /** Control plane deployment id (dep_...); scheduler/parent scheduler references passed to PCS all use it. */
   deployment_id?: string;
   name: string;
   role: Role;
-  /** container = 容器实例；native = 直接跑在主机上的裸机角色。 */
+  /** container = container instance; native = bare-metal role running directly on the host. */
   execution?: "container" | "native";
-  /** 构建机的基础系统；调度机没有。 */
+  /** Base OS of the builder; schedulers have none. */
   os?: BuilderOs;
   host_id: string;
   agent_profile_id: string;
@@ -176,7 +176,7 @@ export type Instance = {
   api_profile_ids: string[];
   task_types: string[];
   resource_profile: string;
-  /** 资源画像的直接字段，界面用它画进度条。 */
+  /** Direct resource-profile fields; the UI uses them to draw progress bars. */
   cpu_limit: number;
   mem_limit_mb: number;
   disk_gb: number;
@@ -188,27 +188,27 @@ export type Instance = {
   ssh_port?: number;
   ssh_user?: string;
   workspace?: string;
-  /** 构建机工作能力值 W（0–1000）；调度机为 0。 */
+  /** Builder work capability W (0–1000); 0 for schedulers. */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
-  /** 调度机身份：每台主机最多一个根调度机，结点调度机挂在父调度机下。 */
+  /** Scheduler identity: each host has at most one root scheduler; node schedulers hang under a parent scheduler. */
   scheduler_role?: "root" | "node";
-  /** 结点调度机的父调度机（deployment_id）。 */
+  /** Parent scheduler of a node scheduler (deployment_id). */
   parent_scheduler_id?: string | null;
   /**
-   * 父调度机的实例名（由 parent_scheduler_id 解析）。
-   * 调度机重启会换新的 deployment_id，实例名才是不变的那一层。
+   * Instance name of the parent scheduler (resolved from parent_scheduler_id).
+   * A scheduler restart changes the deployment_id; the instance name is the layer that stays stable.
    */
   parent_scheduler_instance_id?: string | null;
-  /** 调度机 API 的宿主端口。 */
+  /** Host port of the scheduler API. */
   port?: number;
-  /** 构建机注册到哪台调度机（deployment_id）；旧数据为空时按主机根调度机处理。 */
+  /** Scheduler the builder registers with (deployment_id); legacy empty data falls back to the host root scheduler. */
   scheduler_id?: string | null;
-  /** 构建机所属调度机的实例名（由 scheduler_id 解析）。 */
+  /** Instance name of the scheduler the builder belongs to (resolved from scheduler_id). */
   scheduler_instance_id?: string | null;
   /**
-   * 所属调度机的当前部署 id（调度机自己就是它的部署）。
-   * 管理页把这个实例的任务请求经控制面代理到对应调度机；空时用默认调度机。
+   * Current deployment id of the owning scheduler (a scheduler is its own deployment).
+   * The admin app proxies this instance's task requests to that scheduler through the control plane; empty uses the default scheduler.
    */
   scheduler_deployment_id?: string | null;
   created_at: string;
@@ -220,24 +220,24 @@ export type AgentProfile = {
   role: Role;
   version: string;
   adapter: string;
-  /** 绑定的大模型 API Profile（DeepSeek / Claude / 本地 LLM）。 */
+  /** Bound LLM API Profile (DeepSeek / Claude / local LLM). */
   model_api_profile_id?: string;
   capabilities: string[];
-  /** Agent 自带镜像（digest 固定）；为空表示跑在实例镜像里。 */
+  /** Agent-provided image (digest-pinned); empty means run in the instance image. */
   artifact_image?: string;
-  /** stdio 为启动命令；http-local 为 http://127.0.0.1:<port>。 */
+  /** stdio means a launch command; http-local means http://127.0.0.1:<port>. */
   entrypoint?: string[];
-  /** 入口参数，例如 --provider claude。 */
+  /** Entry arguments, e.g. --provider claude. */
   args?: string[];
   task_types?: string[];
-  /** 面板识别用的一句话说明。 */
+  /** One-line description for panel identification. */
   description?: string;
-  /** 人格配置，运行时拼进提示词。 */
+  /** Persona config, spliced into the prompt at runtime. */
   system_prompt?: string;
   persona?: string;
   tone?: string;
   goals?: string;
-  /** 允许的 tool_id；空数组表示全部权限。 */
+  /** Allowed tool_ids; an empty array means all permissions. */
   allowed_tools?: string[];
   limits?: {
     max_turns?: number;
@@ -276,7 +276,7 @@ export type Task = {
   stage: string;
   target_role: Role;
   priority: number;
-  /** 任务难度 D；0 = 不限制，只有 W ≥ D 的构建机可领取。 */
+  /** Task difficulty D; 0 = unlimited, and only builders with W ≥ D can claim it. */
   difficulty?: number;
   state: TaskState;
   instance_id?: string;
@@ -285,11 +285,11 @@ export type Task = {
   created_at: string;
   started_at?: string;
   finished_at?: string;
-  /** 任务所在调度机的部署 id；空表示默认调度机。 */
+  /** Deployment id of the scheduler the task is on; empty means the default scheduler. */
   scheduler_deployment_id?: string | null;
-  /** 所在调度机实例名，列表里用来区分同名任务。 */
+  /** Instance name of that scheduler, used in lists to distinguish same-named tasks. */
   scheduler_instance_id?: string | null;
-  /** 任务被下推到结点调度机时的执行位置。 */
+  /** Execution location when the task is pushed down to a node scheduler. */
   relay?: {
     child_node_id: string;
     child_task_id: string;
@@ -310,7 +310,7 @@ export type LogEntry = {
   detail: string;
 };
 
-/** 部署计划：由控制面预览与下发。 */
+/** Deployment plan: previewed and issued by the control plane. */
 export type DeployPlan = {
   plan_id: string;
   host_id: string;
@@ -334,28 +334,28 @@ export type DeployPlan = {
   expires_at?: string;
 };
 
-/** 新建构建机时提交的配置。 */
+/** Config submitted when creating a builder. */
 export interface BuilderInput {
-  /** 目标主机；不填时选第一台在线主机。 */
+  /** Target host; if omitted, the first online host is chosen. */
   host_id?: string;
-  /** 实例名，只在主机内唯一；留空由控制面自动命名（builder-a、builder-b…）。 */
+  /** Instance name, unique only within the host; if empty, the control plane names it automatically (builder-a, builder-b, ...). */
   name?: string;
   os: BuilderOs;
   count: number;
-  /** 资源档位：预设 ID 或 custom；仅用于展示与审计。 */
+  /** Resource tier: preset ID or custom; used only for display and audit. */
   tier?: string;
   cpus: number;
   mem_mb: number;
   disk_gb: number;
   agent_profile_id: string;
   api_profile_ids: string[];
-  /** 注册到哪台调度机（deployment_id）；不填时用目标主机的根调度机。 */
+  /** Which scheduler to register with (deployment_id); if omitted, the target host's root scheduler is used. */
   scheduler_id?: string;
-  /** 工作能力明细；不填时只按资源档位折算核心/内存/磁盘三项。 */
+  /** Capability details; if omitted, only the cores/memory/disk items are derived from the resource tier. */
   capability_detail?: CapabilityDetail;
 }
 
-/** 主机接入：本地主机或 SSH 主机。凭据只在提交时经过浏览器内存，加密落库后不再回显。 */
+/** Host onboarding: local host or SSH host. Credentials pass through browser memory only at submit time and are never echoed after encrypted storage. */
 export type HostDraft =
   | { transport: "local"; name?: string }
   | {
@@ -364,38 +364,38 @@ export type HostDraft =
       address: string;
       port?: number;
       user?: string;
-      /** 私钥认证；与 password 二选一。 */
+      /** Private key auth; mutually exclusive with password. */
       private_key?: string;
-      /** 密码认证；与 private_key 二选一。 */
+      /** Password auth; mutually exclusive with private_key. */
       password?: string;
     };
 
-/** 提交构建任务。 */
+/** Submit a build task. */
 export interface SubmitTaskInput {
-  /** 自然语言任务描述；由根调度机派发给合适的构建机 Agent 执行。 */
+  /** Natural-language task description; the root scheduler dispatches it to a suitable builder Agent. */
   description: string;
-  /** 可选：指定构建机；不填由根调度机按调度算法自动选择。 */
+  /** Optional: specify a builder; if omitted, the root scheduler chooses by the scheduling algorithm. */
   target_instance_id?: string;
   priority?: number;
-  /** 任务难度 0–1000；0 或留空表示不限制（管理端不再展示）。 */
+  /** Task difficulty 0–1000; 0 or empty means unlimited (no longer shown in the admin UI). */
   difficulty?: number;
   deadline_minutes?: number;
-  /** 目标调度机的部署 id；空时使用默认调度机。 */
+  /** Deployment id of the target scheduler; empty uses the default scheduler. */
   scheduler_deployment_id?: string | null;
-  /** 随任务下发的附件（图片、md、txt 等），由构建机写入工作区。 */
+  /** Attachments sent with the task (images, md, txt, etc.), written to the workspace by the builder. */
   attachments?: TaskAttachment[];
 }
 
-/** 任务附件：管理端先上传，任务里只带一次性下载地址。 */
+/** Task attachment: uploaded by the admin UI first; the task carries only a one-time download URL. */
 export interface TaskAttachment {
   name: string;
   media_type: string;
   size: number;
-  /** 不含 data: 前缀的 base64；只在本地上传前使用。 */
+  /** base64 without the data: prefix; used only locally before upload. */
   data_base64: string;
 }
 
-/** 已上传到控制面的附件引用；构建机按 url 取内容。 */
+/** Reference to an attachment uploaded to the control plane; the builder fetches content by url. */
 export interface TaskAttachmentRef {
   attachment_id: string;
   name: string;

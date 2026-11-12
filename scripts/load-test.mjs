@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * P7 压力冒烟：向调度机提交 N 个 task.build，观察完成延迟、吞吐与宿主内存。
+ * P7 stress smoke test: submit N task.build tasks to the scheduler, observing completion latency, throughput and host memory.
  *
- * 用法：
+ * Usage:
  *   SCHEDULER_URL=http://127.0.0.1:7801 COUNT=30 TASK_TYPE=task.build \
  *   MONITOR_PIDS=123,456 node scripts/load-test.mjs
  *
- * 只创建任务、读状态；不接触密钥或审计正文。OOM 计数取自 /proc/vmstat，
- * 需要 Linux；其他平台跳过该项。
+ * Only creates tasks and reads status; does not touch keys or audit bodies. The OOM count comes from /proc/vmstat,
+ * so Linux is required; other platforms skip that item.
  */
 import fs from "node:fs";
 
@@ -113,7 +113,7 @@ while (pending.size && Date.now() < deadline) {
     const id = ids[i];
     if (terminal.has(t.status)) {
       statuses[t.status] = (statuses[t.status] ?? 0) + 1;
-      // 从该任务提交完成开始计时，包含排队时间；这是用户感知的端到端延迟。
+      // Time from when the task's submission completes, including queue time; this is the user-perceived end-to-end latency.
       latencies.push(Date.now() - Number(pending.get(id)));
       pending.delete(id);
     }

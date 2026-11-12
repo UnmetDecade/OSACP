@@ -1,20 +1,20 @@
 /**
- * 工作能力值 W（0–1000）。
+ * Capability score W (0–1000).
  *
- * 六项按权重归一化后求和：
- *   核心数 30% · 核心频率 15% · 内存 20% · 存储 10% · 模型能力 15% · API 能力 10%
+ * Six items are normalized by weight and summed:
+ *   cores 30% · core frequency 15% · memory 20% · storage 10% · model capability 15% · API capability 10%
  *
- * 归一化上限代表“单机当前一代的满配”：8 核 / 4.0GHz / 32GB / 256GB / 10 / 10。
- * 超过上限按满分计，避免一台怪兽机器把分值拉到无意义的量级。
+ * Normalization caps represent "a fully loaded current-generation single machine": 8 cores / 4.0GHz / 32GB / 256GB / 10 / 10.
+ * Anything above a cap scores full marks, so one monster machine cannot push the score to a meaningless scale.
  */
 export interface CapabilityDetail {
   cores?: number;
   freq_ghz?: number;
   mem_gb?: number;
   disk_gb?: number;
-  /** 0–10，由模型档位/上下文/推理能力折算 */
+  /** 0–10, derived from model tier/context/reasoning capability */
   model?: number;
-  /** 0–10，由 API 配额/并发/可用性折算 */
+  /** 0–10, derived from API quota/concurrency/availability */
   api?: number;
 }
 
@@ -65,7 +65,7 @@ export function normalizeCapabilityDetail(detail: unknown): CapabilityDetail {
   return out;
 }
 
-/** 任务难度：0 表示不限制；其余按 0–1000 截断。 */
+/** Task difficulty: 0 means unrestricted; anything else is clamped to 0–1000. */
 export function normalizeDifficulty(value: unknown): number {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 0;

@@ -8,7 +8,7 @@ export function newToken(): string {
   return randomBytes(24).toString("base64url");
 }
 
-/** 稳定序列化：对象键排序，用于摘要计算 */
+/** Stable serialization: sort object keys, used for digest calculation */
 export function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;

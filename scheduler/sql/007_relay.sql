@@ -1,19 +1,19 @@
--- 007：跨调度机任务中继（根 → 结点 → 孙结点）。
+-- 007: Cross-scheduler task relay (root → node → grandchild).
 --
--- 根调度机把本机接不住的任务转给某个直接子结点；子结点照常用自己的
--- 构建机领取并执行，父结点按周期把状态和结果镜像回本地任务行。
--- 中继是「下推」而不是复制：同一时刻只允许一个结点持有任务。
+-- The root scheduler forwards tasks it cannot handle to one of its direct children; the child uses its own
+-- builders to claim and execute, and the parent periodically mirrors status and results back to its local task row.
+-- Relay is "push-down", not replication: at any moment only one node may hold the task.
 
--- 子结点上报时额外带上可达地址、最大构建机 W、空闲构建机数和子树实例名册，
--- 父结点据此决定把目标任务/高难度任务转给谁。
+-- Child reports also carry the reachable address, max builder W, idle builder count and subtree instance roster,
+-- which the parent uses to decide which child gets targeted or high-difficulty tasks.
 ALTER TABLE scheduler_nodes ADD COLUMN IF NOT EXISTS url text;
 ALTER TABLE scheduler_nodes ADD COLUMN IF NOT EXISTS max_builder_score integer NOT NULL DEFAULT 0;
 ALTER TABLE scheduler_nodes ADD COLUMN IF NOT EXISTS idle_builder_count integer NOT NULL DEFAULT 0;
 ALTER TABLE scheduler_nodes
   ADD COLUMN IF NOT EXISTS instances jsonb NOT NULL DEFAULT '[]'::jsonb;
 
--- 被中继的任务在父结点本地仍是 QUEUED，但不再参与本机领取；
--- relay_parent_task_id 同时保证同一个上游任务重复投递时只落一条。
+-- A relayed task remains QUEUED locally on the parent but no longer participates in local claims;
+-- relay_parent_task_id also ensures a repeatedly delivered upstream task creates only one row.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS relay_parent_task_id text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS relay_depth integer NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS result_summary text;

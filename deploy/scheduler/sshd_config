@@ -1,4 +1,4 @@
-# 调度机容器 SSH：完全权限，root + 公钥。
+# Scheduler container SSH: full permissions, root + public key.
 Port 22
 PermitRootLogin yes
 PubkeyAuthentication yes

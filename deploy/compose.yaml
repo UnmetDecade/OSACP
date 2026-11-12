@@ -1,4 +1,4 @@
-# v4 单机部署：调度机 + PostgreSQL + 四台构建机，全部是容器。
+# v4 single-machine deployment: scheduler + PostgreSQL + four builders, all in containers.
 #
 #   cp deploy/.env.example deploy/.env
 #   mkdir -p deploy/keys deploy/tokens deploy/data/{postgres,artifacts}
@@ -6,8 +6,8 @@
 #   ssh-keygen -t ed25519 -N "" -f deploy/keys/builder22
 #   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
 #
-# 构建机 SSH：ssh root@<host> -p 2222/2223/2224/2225
-# 调度机 SSH：ssh root@<host> -p 2200，API：http://<host>:8443
+# Builder SSH: ssh root@<host> -p 2222/2223/2224/2225
+# Scheduler SSH: ssh root@<host> -p 2200, API: http://<host>:8443
 
 name: platform
 
@@ -25,14 +25,14 @@ x-builder: &builder
     INSTANCE_TOKEN_DIR: /opt/platform/tokens
     SSH_PUBKEY_FILE: /opt/platform/keys/builder.pub
     MAX_CONCURRENCY: "1"
-    # 模型凭据只在运行时注入容器环境，不烘焙进镜像，也不写进 Profile。
-    # PLATFORM_AGENT_PASS_ENV 是「容器环境 → Agent 适配器」的放行表；
-    # Agent Profile 的 --pass-env 是「适配器 → 外部 CLI」的第二层放行。
-    # 少配任一层都只是 Agent 认证失败，确定性 Shell 任务不受影响。
+    # Model credentials are injected into the container environment only at runtime; they are not baked into the image or written into the Profile.
+    # PLATFORM_AGENT_PASS_ENV is the "container environment → Agent adapter" allowlist;
+    # the Agent Profile's --pass-env is the second layer, "adapter → external CLI".
+    # Missing either layer only causes Agent authentication failure; deterministic Shell tasks are unaffected.
     DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     PLATFORM_AGENT_PASS_ENV: ${PLATFORM_AGENT_PASS_ENV:-ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CODEX_HOME}
-    # 领任务轮询间隔（秒）。默认 2 秒省数据库；终端/对话要跟手可以调小到 0.5。
+    # Task-claim polling interval (seconds). Default 2s saves the database; for snappy terminal/chat interaction it can be lowered to 0.5.
     CLAIM_INTERVAL_SECONDS: ${CLAIM_INTERVAL_SECONDS:-0.5}
 
 services:
@@ -71,7 +71,7 @@ services:
       SCHEDULER_INSTANCE_ID: scheduler
       SCHEDULER_AGENT_PROFILE_ID: ${SCHEDULER_AGENT_PROFILE_ID:-agp_scheduler}
       SCHEDULER_HOST_ID: docker-host-01
-      # 调度机上的 Claude Code / Codex 同样需要模型凭据（见 builder-env 注释）。
+      # Claude Code / Codex on the scheduler also need model credentials (see the builder-env comment).
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       PLATFORM_AGENT_PASS_ENV: ${PLATFORM_AGENT_PASS_ENV:-ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CODEX_HOME}

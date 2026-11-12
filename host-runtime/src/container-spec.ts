@@ -3,7 +3,7 @@ import path from "node:path";
 import type { InstanceSpec } from "./command-verify.js";
 import type { RuntimeHostConfig } from "./runtime-config.js";
 
-/** 主机缓存在容器内的固定挂载点。 */
+/** Fixed mount point for the host cache inside the container. */
 export const CACHE_MOUNT = "/opt/platform/cache";
 
 export interface ContainerSpecInput {
@@ -19,25 +19,25 @@ export function containerName(instanceId: string): string {
 
 export function volumeName(instanceId: string, name: string): string {
   const safe = (s: string) => s.replace(/[^a-zA-Z0-9_.-]/g, "-");
-  // shared- 前缀表示同一主机上所有实例共用（例如 apt 的 deb 缓存）：
-  // 卷名不带实例前缀，构建机之间复用已下载的包，但不共享各自的环境。
+  // The shared- prefix means shared by all instances on the same host (e.g. apt's deb cache):
+  // the volume name carries no instance prefix, so builders reuse downloaded packages without sharing their own environments.
   if (name.startsWith("shared-")) return `platform-${safe(name)}`;
   return `platform-${safe(instanceId)}-${safe(name)}`;
 }
 
 /**
- * v4 容器规范：研发容器默认 root + 可写根 + 完整 Capability，SSH 进来就是完全权限。
- * 隔离边界不再是容器内的权限收缩，而是：
- *   * 容器边界（不是宿主机进程）；
- *   * CPU / 内存 / PID / IO 资源限额；
- *   * 无 Docker Socket、无宿主机路径（只用命名卷 Mounts）；
- *   * 网络策略（host / container 网络仍拒绝）。
- * 这样构建机能 apt install、跑任意工具链，SSH 也能直接改系统配置。
+ * v4 container spec: development containers default to root + writable root + full capabilities, and SSH in is full power.
+ * The isolation boundary is no longer privilege reduction inside the container, but:
+ *   * the container boundary (not a host process);
+ *   * CPU / memory / PID / IO resource limits;
+ *   * no Docker Socket, no host paths (named-volume Mounts only);
+ *   * network policy (host / container networks are still rejected).
+ * This lets the builder apt install and run any toolchain, and SSH can directly change system config.
  */
 export function buildContainerConfig(
   input: ContainerSpecInput,
   cfg: RuntimeHostConfig,
-  /** 主机本地凭据文件里解析出来的值；同名变量以这里为准。 */
+  /** Values resolved from the host-local credentials file; for variables of the same name, these take precedence. */
   agentEnv: Record<string, string> = {},
 ): Record<string, unknown> {
   const spec = input.instance;
@@ -53,8 +53,8 @@ export function buildContainerConfig(
     Target: v.mount,
     ReadOnly: false,
   }));
-  // 运行环境（Node / Agent CLI / deb 包）放在主机缓存里，只读挂进容器：
-  // 镜像保持为纯 OS，升级运行时不用重建镜像，也不用每台主机重新下载。
+  // The runtime environment (Node / Agent CLI / deb packages) lives in the host cache and is mounted read-only into the container:
+  // images stay pure OS, so upgrading the runtime needs neither an image rebuild nor a re-download on every host.
   if (cfg.cache_dir) {
     mounts.unshift({
       Type: "bind",
@@ -66,8 +66,8 @@ export function buildContainerConfig(
   }
 
   const mergedEnv: Record<string, string> = { ...(spec.env ?? {}), ...agentEnv };
-  // 容器 sshd 只允许密钥登录；默认把主机上已有的登录公钥注入进去，
-  // 能登录这台主机的人就能直接 root 进容器。部署方显式给了公钥则不覆盖。
+  // The container sshd only allows key login; by default the host's existing login public keys are injected,
+  // so anyone who can log in to this host can root directly into the container. If the deployer provides a key explicitly, it is not overridden.
   if (!mergedEnv.SSH_AUTHORIZED_KEY) {
     const keys = hostAuthorizedKeys(cfg);
     if (keys) mergedEnv.SSH_AUTHORIZED_KEY = keys;
@@ -79,7 +79,7 @@ export function buildContainerConfig(
   const hostConfig: Record<string, unknown> = {
     NanoCpus: Math.round(profile.cpu_limit * 1e9),
     Memory: Math.round(profile.memory_limit_bytes),
-    // 禁止无界 swap：MemorySwap = Memory 即关闭 swap
+    // Forbid unbounded swap: MemorySwap = Memory disables swap
     MemorySwap: Math.round(profile.memory_limit_bytes),
     PidsLimit: Number(profile.pids_limit ?? 512),
     BlkioWeight: Number(profile.io_weight ?? 500),
@@ -131,9 +131,9 @@ export function buildContainerConfig(
 }
 
 /**
- * 收集主机上的登录公钥（authorized_keys + ~/.platform/keys/*.pub）。
- * 只接受合法公钥行：容器里 root 权限完全开放，不能把任意文本写进
- * authorized_keys。返回空串表示主机还没有可用公钥，容器只能用 PCS 终端进入。
+ * Collect login public keys on the host (authorized_keys + ~/.platform/keys/*.pub).
+ * Only valid public-key lines are accepted: root access inside the container is fully open, so arbitrary text must not be written into
+ * authorized_keys. An empty return means the host has no usable public keys yet, and the container can only be entered via the PCS console.
  */
 function hostAuthorizedKeys(cfg: RuntimeHostConfig): string {
   const lines: string[] = [];
@@ -151,18 +151,18 @@ function hostAuthorizedKeys(cfg: RuntimeHostConfig): string {
     try {
       collect(fs.readFileSync(file, "utf8"));
     } catch {
-      /* 文件不存在或不可读：跳过 */
+      /* File does not exist or is unreadable: skip */
     }
   };
   if (cfg.ssh_authorized_keys_file) readFile(cfg.ssh_authorized_keys_file);
-  // host-runtime 常以 root 运行，而被管理的用户可能不是 root：把本机所有
-  // 能登录的账号的公钥都算进来，效果就是“能 SSH 进这台主机就能进容器”。
+  // host-runtime often runs as root, while the managed user may not be root: include the public keys of all
+  // accounts that can log in to this host, so in effect "whoever can SSH into this host can enter the container".
   if (process.getuid?.() === 0) {
     readFile("/root/.ssh/authorized_keys");
     for (const home of safeList("/home")) {
       readFile(path.join("/home", home, ".ssh", "authorized_keys"));
     }
-    // 兼容 compose 时代的公钥目录。
+    // Compatible with the public key directory from the compose era.
     for (const dir of ["/opt/platform/keys"]) {
       for (const name of safeList(dir)) {
         if (name.endsWith(".pub")) readFile(path.join(dir, name));

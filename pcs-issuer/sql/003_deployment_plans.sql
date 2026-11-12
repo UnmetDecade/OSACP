@@ -1,6 +1,6 @@
--- 部署计划预览与摘要绑定（docs/admin-app-spec.md §4.6）。
--- 计划只保存构建计划所需的意图与预览快照；apply 时重新计算摘要，
--- 主机部署数量、实例 generation 等快照变化都会导致 409 PLAN_CHANGED。
+-- Deployment plan preview and digest binding (docs/admin-app-spec.md §4.6).
+-- A plan stores only the intent and preview snapshot needed to build it; the digest is recomputed on apply,
+-- so snapshot changes such as host deployment counts or instance generations result in 409 PLAN_CHANGED.
 
 CREATE TABLE IF NOT EXISTS deployment_plans (
   plan_id      TEXT PRIMARY KEY,

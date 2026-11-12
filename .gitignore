@@ -1,16 +1,16 @@
-# 依赖
+# Dependencies
 node_modules/
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# 构建产物
+# Build artifacts
 dist/
 build/
 *.tsbuildinfo
 coverage/
 
-# 本地配置与凭据（示例文件除外）
+# Local config and credentials (example files excepted)
 .env
 .env.*
 !.env.example
@@ -24,23 +24,23 @@ keys/
 tokens/
 run/
 
-# 主机运行时本地状态
+# Local host-runtime state
 host-runtime/runtime.config.json
 
-# 截图与浏览器配置
+# Screenshots and browser profile
 .screenshots/
 */.screenshots/
 docs/assets/.chrome-profile/
 docs/assets/.studio-frames/
 
-# 本地构建的镜像归档：1.6G，不随仓库发布
+# Locally built image archives: 1.6G, not published with the repo
 images/
 
-# 日志
+# Logs
 *.log
 logs/
 
-# 操作系统与编辑器
+# Operating systems and editors
 .DS_Store
 Thumbs.db
 .idea/

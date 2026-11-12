@@ -20,9 +20,9 @@ export interface InstanceSpec {
   instance_id: string;
   role_id: string;
   display_name: string | null;
-  /** container = Docker 容器（默认）；native = 直接在宿主机上拉起角色进程。 */
+  /** container = Docker container (default); native = launch the role process directly on the host. */
   execution?: "container" | "native";
-  /** native 没有镜像；容器角色必填且必须固定 digest。 */
+  /** native has no image; container roles require one, pinned to a digest. */
   image: string;
   resource_profile: ResourceProfile;
   env: Record<string, string>;
@@ -32,13 +32,13 @@ export interface InstanceSpec {
   config_version: number;
   command?: string[];
   /**
-   * 部署时写进容器的配置文件（例如 Agent Profile 视图）。
-   * 内容随签名命令下发，不经过浏览器。
+   * Config files written into the container at deploy time (e.g. an Agent Profile view).
+   * The content arrives with the signed command and does not pass through the browser.
    */
   files?: Array<{ path: string; content: string }>;
   /**
-   * 从主机本地凭据文件（默认 $HOME/.config/platform/agent-env）读取的变量名。
-   * 只下发名字，值由主机运行时补齐，控制面与日志都看不到。
+   * Variable names read from the host-local credentials file (default $HOME/.config/platform/agent-env).
+   * Only names are sent; the host runtime fills in the values, which neither the control plane nor the logs can see.
    */
   agent_env?: string[];
 }
@@ -73,7 +73,7 @@ export class CommandRejected extends Error {
   }
 }
 
-/** 与 PCS 的 canonicalJson 必须逐字节一致。 */
+/** Must match PCS's canonicalJson byte for byte. */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -101,8 +101,8 @@ export function verifyCommandSignature(payload: CommandPayload, publicKeyPem: st
 
 const COMMAND_TYPES = new Set(["DEPLOY", "START", "STOP", "RESTART", "REMOVE"]);
 const SECRET_KEY = /(secret|token|password|passwd|credential|private[_-]?key)/i;
-// 控制面签发的联邦令牌不是用户凭据：根用它校验子结点上报，结点用它上报。
-// 它随签名命令下发，和 API 密钥不同，不会写进实例的 PROFILE 文件。
+// The federation token issued by the control plane is not a user credential: the root uses it to verify child-node reports, and nodes use it to report.
+// It arrives with the signed command and, unlike API keys, is not written into the instance's PROFILE file.
 const PLATFORM_INJECTED_SECRETS = new Set(["SCHEDULER_FEDERATION_TOKEN"]);
 
 function assertArray<T>(value: unknown, name: string): asserts value is T[] {
@@ -110,8 +110,8 @@ function assertArray<T>(value: unknown, name: string): asserts value is T[] {
 }
 
 /**
- * 验签 + 每一项策略检查。任何一项失败都拒绝执行，并把这个 command_id 记为失败，
- * 防止 PCS 反复重投同一条命令。
+ * Signature verification + every policy check. Any failure rejects execution and records this command_id as failed,
+ * preventing PCS from repeatedly redelivering the same command.
  */
 export function validateCommand(
   payload: CommandPayload,

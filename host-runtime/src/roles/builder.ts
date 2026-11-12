@@ -5,15 +5,15 @@ import { TaskAborted, TaskFailed, type ExecContext, type Executor } from "../exe
 import type { Assignment } from "../client.js";
 
 /**
- * builder：构建机内唯一的执行角色。
+ * builder: the only execution role inside the builder.
  *
- * v4 只有调度机和构建机。task.build 直接执行 requirements.build.command：
- * 在独立 workspace 里跑 `/bin/sh -lc`，完整采集退出码、stdout、stderr，
- * 把构建日志作为制品上传。没有命令时保留一个确定性的清单构建，供演示与
- * 调度器冒烟测试使用。
+ * v4 has only the scheduler and the builder. task.build directly executes requirements.build.command:
+ * run `/bin/sh -lc` in an isolated workspace, fully capture the exit code, stdout and stderr,
+ * and upload the build log as an artifact. When there is no command, keep a deterministic manifest build for demos and
+ * scheduler smoke tests.
  *
- * 这里刻意不做命令白名单：构建机是专用容器，root Shell 就是它的工作方式；
- * 隔离靠容器边界、资源限额、网络策略和审计，而不是字符串过滤。
+ * Deliberately no command allowlist here: the builder is a dedicated container, and a root shell is how it works;
+ * isolation comes from the container boundary, resource limits, network policy and audit, not string filtering.
  */
 export const taskBuild: Executor = async (task, ctx) => {
   const raw = (task.requirements?.build ?? {}) as Record<string, unknown>;
@@ -28,8 +28,8 @@ export const taskBuild: Executor = async (task, ctx) => {
         )
       : {};
 
-  // 自然语言任务只能由绑定了 Agent 的构建机执行。这里失败关闭，
-  // 避免把「用 C++ 打印 Hello World」当成一条 shell 命令直接跑。
+  // Natural-language tasks can only be executed by a builder with a bound Agent. This fails closed,
+  // to avoid running "print Hello World in C++" directly as a shell command.
   const instruction = typeof raw.instruction === "string" ? raw.instruction.trim() : "";
   if (!command && instruction) {
     throw new TaskFailed(
@@ -120,8 +120,8 @@ function taskAbortReason(signal: AbortSignal): "cancelled" | "lease_lost" | "shu
 function resolveWorkdir(root: string, rel: string): string {
   if (!rel || rel === ".") return root;
   const base = path.resolve(root);
-  // 管理应用默认填的是容器内的 workspace 根（/opt/platform/workspace），
-  // 实际执行目录是 workspace/<attempt_id>；把根路径映射到本次 attempt 目录。
+  // The admin app fills in the container workspace root by default (/opt/platform/workspace),
+  // while the actual execution directory is workspace/<attempt_id>; map the root path to this attempt's directory.
   const workspaceRoot = path.dirname(base);
   const requested = path.isAbsolute(rel) ? path.resolve(rel) : path.resolve(base, rel);
   const abs =
@@ -130,7 +130,7 @@ function resolveWorkdir(root: string, rel: string): string {
       : requested.startsWith(workspaceRoot + path.sep)
         ? path.resolve(base, path.relative(workspaceRoot, requested))
         : requested;
-  // 与 safeJoin 同样的约束，但构建机是完整权限，只要求留在 workspace 内
+  // Same constraint as safeJoin, but the builder has full permissions, so only staying inside the workspace is required
   if (abs !== base && !abs.startsWith(base + path.sep)) {
     throw new TaskFailed("BUILD_WORKDIR_INVALID", `工作目录越界：${rel}`);
   }
@@ -138,8 +138,8 @@ function resolveWorkdir(root: string, rel: string): string {
 }
 
 /**
- * 没有 command 时生成一份确定性的构建清单。
- * 保留这条路径是为了让演示模式、调度器冒烟测试与旧任务信封仍然可跑。
+ * Generate a deterministic build manifest when there is no command.
+ * This path is kept so demo mode, scheduler smoke tests and old task envelopes still run.
  */
 async function legacyManifest(task: Assignment, ctx: ExecContext) {
   ctx.progress(10, "准备 workspace");

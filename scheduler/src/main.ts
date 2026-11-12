@@ -24,14 +24,14 @@ let reporting = false;
 let syncingRelays = false;
 
 /**
- * 三个后台扫描：
- *   - 心跳扫描：45s → SUSPECT（不参与新领取），90s → OFFLINE
- *   - drain 超时：过了截止时间仍是 DRAINING → OFFLINE
- *   - 租约清理：启动窗口超时 / 租约过期 → 回收、回队、死信
- * 都是“幂等 + SKIP LOCKED”，多进程跑也不会重复处理。
+ * Three background sweeps:
+ *   - heartbeat sweep: 45s → SUSPECT (excluded from new claims), 90s → OFFLINE
+ *   - drain timeout: still DRAINING past the deadline → OFFLINE
+ *   - lease cleanup: start-window timeout / lease expired → reap, requeue, dead-letter
+ * All are "idempotent + SKIP LOCKED", so multiple processes never double-process.
  */
 async function tick() {
-  if (running) return; // 上一轮没跑完就跳过，不堆积
+  if (running) return; // Skip if the previous round has not finished, so nothing piles up
   running = true;
   try {
     const cfg = await readTuning();
@@ -60,10 +60,10 @@ async function tick() {
 }
 
 /**
- * 结点调度机向上级上报聚合能力。
+ * Node schedulers report aggregated capability to their parent.
  *
- * 只在配置了 SCHEDULER_PARENT_URL + SCHEDULER_FEDERATION_TOKEN 时运行；上报失败只记日志，
- * 不影响本地派发。上级把本次上报的 parent_node_id 记成自己，因此这里不需要知道对方 id。
+ * Runs only when SCHEDULER_PARENT_URL + SCHEDULER_FEDERATION_TOKEN are configured; a failed report is only logged,
+ * without affecting local dispatch. The parent records parent_node_id as itself for this report, so this side need not know the parent id.
  */
 async function reportUpstream() {
   const parentUrl = getFederationParentUrl();
@@ -83,10 +83,10 @@ async function reportUpstream() {
         host_id: config.hostId || snap.node_id,
         local_score: snap.local_score,
         subtree_score: snap.subtree_score,
-        // 容量指标报整棵子树的值：中间结点自己可能没有构建机，但子树里有。
+        // Capacity metrics report whole-subtree values: an intermediate node may have no builders itself, but its subtree does.
         builder_count: snap.subtree_builder_count,
         child_count: snap.child_count,
-        // 父结点中继任务需要：可达地址、最大 W、空闲数、子树实例名册。
+        // The parent needs for relaying: reachable address, max W, idle count, subtree instance roster.
         url: config.advertiseUrl || null,
         max_builder_score: snap.subtree_max_builder_score,
         idle_builder_count: snap.subtree_idle_builder_count,
@@ -105,8 +105,8 @@ async function reportUpstream() {
 }
 
 /**
- * 中继同步：把子结点上执行中的任务状态拉回来。和本地派发完全独立，
- * 子结点不可达时只记错误，父任务保持原状，不会回收重跑。
+ * Relay sync: pull back the state of tasks running on children. Completely independent of local dispatch;
+ * when a child is unreachable only the error is recorded, and the parent task stays as is, never reaped and re-run.
  */
 async function relayTick() {
   if (syncingRelays) return;
@@ -133,12 +133,12 @@ server.listen(config.port, config.host, () => {
   if (config.loops) {
     timer = setInterval(tick, config.tickMs);
     void tick();
-    // 上级可能在运行时被设置（主机并入），所以定时器常开，没上级时上报函数直接跳过。
+    // The parent may be set at runtime (host join), so the timer always runs; the report function skips when there is no parent.
     if (config.federationToken) {
       federationTimer = setInterval(reportUpstream, config.federationIntervalMs);
       void reportUpstream();
     }
-    // 没有中继时这轮只是查一张空表；跳过的代价比判断「有没有子结点」还低。
+    // Without relays this round just queries an empty table; skipping costs less than checking "are there child nodes".
     relayTimer = setInterval(relayTick, config.relaySyncMs);
   }
 });

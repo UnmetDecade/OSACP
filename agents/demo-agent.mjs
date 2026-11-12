@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * P4 验收入口 Adapter：stdio JSON-RPC 2.0（每行一个 JSON）。
+ * P4 acceptance entry Adapter: stdio JSON-RPC 2.0 (one JSON per line).
  *
- * 它刻意是一个“没有特权”的 Agent：
- * - 没有实例令牌，读不到 Secret Store；
- * - 外部 API 只能通过 PLATFORM_API_PROXY 的本地句柄；
- * - 工具调用必须带 role-agent 注入的 tool_token，并经 Policy Guard。
+ * It is deliberately an Agent with "no privileges":
+ * - no instance token, cannot read the Secret Store;
+ * - external APIs can only be reached through the local handle of PLATFORM_API_PROXY;
+ * - tool calls must carry the tool_token injected by role-agent and pass through the Policy Guard.
  *
- * 换 Agent 不改代码：同一个文件通过 --marker 区分 Profile，任务结果里带 marker。
+ * Swapping Agents does not require code changes: the same file distinguishes Profiles via --marker, and task results carry the marker.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -53,7 +53,7 @@ async function execute(id) {
   event({ type: "log", level: "info", message: `demo-agent ${MARKER} 开始` });
 
   if (req.crash === true) {
-    // 模拟 Adapter 崩溃：不返回 result，role-agent 必须按可重试失败处理
+    // Simulate an Adapter crash: return no result; role-agent must handle it as a retryable failure
     process.exit(7);
   }
 
@@ -148,7 +148,7 @@ rl.on("line", (line) => {
     if (msg.error) {
       const data = msg.error.data ?? {};
       const code = data.code ?? msg.error.code;
-      // 错误回执里的 code 是平台拒绝原因；message 是给人和日志看的原因说明。
+      // The code in the error receipt is the platform rejection reason; message is the explanation for humans and logs.
       const e = new Error(`${code ?? "TOOL_DENIED"}: ${data.message ?? msg.error.message ?? "tool denied"}`);
       e.code = code;
       w.reject(e);

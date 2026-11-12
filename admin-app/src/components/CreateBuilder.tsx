@@ -7,7 +7,7 @@ import { createBuilder, type BuilderDraft } from "../api";
 import { Button, Callout, Field, Modal, Tag } from "./ui";
 import { Icon } from "./Icon";
 
-// 档位文案在渲染时再翻译；模块级常量只求值一次，不能在这里调 t()。
+// Tier copy is translated at render time; module-level constants are evaluated once, so t() must not be called here.
 const PRESETS = [
   { id: "small", label: "轻量", cpus: 1, mem: 2048, disk: 16, note: "小脚本 / 对话" },
   { id: "medium", label: "标准", cpus: 2, mem: 4096, disk: 32, note: "日常编译" },
@@ -15,8 +15,8 @@ const PRESETS = [
 ];
 
 /**
- * 新建构建机：只在 AI Agent 工作室里打开。
- * 构建机必须挂到目标主机的一台调度机上，默认根调度机。
+ * Create builder: opened only from the AI Agent studio.
+ * A builder must hang under a scheduler on the target host, by default the root scheduler.
  */
 export function CreateBuilderModal({
   open,
@@ -27,7 +27,7 @@ export function CreateBuilderModal({
 }: {
   open: boolean;
   defaultHostId?: string;
-  /** 从某台结点调度机的「＋」进来时，默认挂到它下面。 */
+  /** When opened from a node scheduler's "+", hang under it by default. */
   defaultSchedulerId?: string;
   onClose: () => void;
   onCreated: () => Promise<void>;
@@ -55,21 +55,21 @@ export function CreateBuilderModal({
       if (!db.agents.find((a) => a.id === agent && a.role === "builder")) {
         setAgent(db.agents.find((a) => a.role === "builder" && a.enabled !== false)?.id ?? "");
       }
-      // 弹窗固定在工作台当前主机上，不再让用户在这里换主机。
+      // The dialog is pinned to the current host in the workspace; users can no longer switch hosts here.
       if (defaultHostId) {
         setHostId(defaultHostId);
       } else if (!deployableHosts.some((h) => h.id === hostId)) {
         setHostId(deployableHosts[0]?.id ?? "");
       }
     }
-    // deployableHosts 每次同步都会重建；用 host id 列表做依赖，避免打开弹窗时反复重置。
+    // deployableHosts is rebuilt on every sync; depend on the host id list to avoid repeatedly resetting when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, agent, defaultHostId, deployableHosts.map((h) => h.id).join(",")]);
 
   const targetHost = db.hosts.find((h) => h.id === hostId);
   const hostOnline = targetHost?.state === "ONLINE" || targetHost?.state === "WARNING";
   const availMb = targetHost?.mem_available_mb ?? 0;
-  // 控制面按「可用内存」做准入；开弹窗时落到能装下的最大档位，避免提交后才报错。
+  // The control plane admits based on available memory; when the dialog opens, fall back to the largest tier that fits so errors do not surface only after submit.
   useEffect(() => {
     if (!open || availMb <= 0) return;
     const fits = [...PRESETS].reverse().find((x) => x.mem * count <= availMb);
@@ -77,8 +77,8 @@ export function CreateBuilderModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, hostId, count, availMb]);
 
-  // 构建机必须挂到本机的一台调度机上。父结点不再让用户选：
-  // 从哪台调度机的「＋」进来就挂哪台；没有指定时用主机入口（根）。
+  // A builder must hang under a scheduler on this host. The parent is no longer user-selectable:
+  // it hangs under whichever scheduler's "+" was used; when unspecified, the host entry point (root) is used.
   const hostSchedulers = db.instances
     .filter((i) => i.role === "scheduler" && i.host_id === hostId)
     .sort((a, b) =>
@@ -86,7 +86,7 @@ export function CreateBuilderModal({
         ? a.name.localeCompare(b.name)
         : (a.scheduler_role ?? "root") === "root" ? -1 : 1,
     );
-  // 控制面用 deployment_id 引用调度机；实例名只用于显示。
+  // The control plane references schedulers by deployment_id; the instance name is for display only.
   const refOf = (s: Instance | undefined) => s?.deployment_id ?? s?.id ?? "";
   const selectedScheduler =
     (defaultSchedulerId
@@ -165,7 +165,7 @@ export function CreateBuilderModal({
         <Field label={t("基础系统")}>
           <div className="os-grid">
             {BUILDER_OS.map((item) => {
-              // 只有 digest 固定且已构建的镜像能真正部署；其余暂不可选。
+              // Only built images with a fixed digest can actually be deployed; the rest are temporarily unselectable.
               const pinned = item.image.includes("@sha256:");
               return (
               <button

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Host Runtime 守护进程（每台物理机一个）。
+ * Host Runtime daemon (one per physical machine).
  *
- * 只出站：注册 → 心跳 → 长轮询命令 → 验签/过期/镜像白名单/generation 检查 →
- * 执行容器生命周期 → ack → 上报。另开一个本机 unix socket 给角色容器做二次准入。
+ * Outbound only: enroll → heartbeat → long-poll commands → signature/expiry/image allowlist/generation checks →
+ * run the container lifecycle → ack → report. It also opens a local unix socket for second-level admission of role containers.
  *
- * 它不持有任务、不选择任务、不挂 Docker Socket 到角色容器，也不提供任意命令执行。
+ * It holds no tasks, selects no tasks, does not mount the Docker Socket into role containers, and offers no arbitrary command execution.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -83,7 +83,7 @@ function markContact(): void {
     fs.writeFileSync(tmp, JSON.stringify({ at: lastContactAt }), { mode: 0o600 });
     fs.renameSync(tmp, contactFile);
   } catch {
-    // 看门狗读不到会按失联处理，这是安全的一侧
+    // If the watchdog cannot read it, it treats the host as lost; that is the safe side
   }
 }
 
@@ -297,7 +297,7 @@ async function ack(commandId: string, ok: boolean, result: Record<string, unknow
     await withAuthRetry(() => client!.ack(commandId, ok, result));
     markContact();
   } catch (e) {
-    // 命令会被重投；processed_commands 保证不会重复执行
+    // The command will be redelivered; processed_commands guarantees it is not executed twice
     notePcsError(e);
     log(`ack ${commandId} 失败：${describePcsError(e)}`);
   }
@@ -452,7 +452,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     fs.unlinkSync(cfg.admission_socket);
   } catch {
-    // 忽略
+    // Ignore
   }
   const deadline = Date.now() + 10_000;
   while (inFlight && Date.now() < deadline) await sleep(100);

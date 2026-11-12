@@ -1,12 +1,12 @@
--- v4.1：主机接入方式与 SSH 凭据。
+-- v4.1: host access modes and SSH credentials.
 --
--- 一台主机只有一种接入方式：
---   local —— PCS 所在机器（管理页面所在主机），不需要 SSH；
---   ssh   —— 远程主机，PCS 用平台保存的私钥做探测与引导。
+-- A host has exactly one access mode:
+--   local — the machine where the PCS runs (the host serving the admin UI); no SSH needed;
+--   ssh   — a remote host; the PCS uses the platform-stored private key for probing and bootstrapping.
 --
--- 私钥只用 AES-256-GCM 密文落库（key_ciphertext / key_iv / key_tag），
--- 加密密钥放在 PCS_CREDENTIAL_KEY_FILE 指向的文件里，与数据库分离。
--- 接口只返回 key_fingerprint，私钥原文永不回显。
+-- Private keys are stored only as AES-256-GCM ciphertext (key_ciphertext / key_iv / key_tag),
+-- with the encryption key in the file pointed to by PCS_CREDENTIAL_KEY_FILE, separate from the database.
+-- The API returns only key_fingerprint; the private key plaintext is never echoed back.
 
 CREATE TABLE IF NOT EXISTS pcs_host_credentials (
   host_id         TEXT PRIMARY KEY REFERENCES pcs_hosts(host_id) ON DELETE CASCADE,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建机容器入口：生成实例配置 → 起 sshd → 前台跑 role-agent。
+# Builder container entrypoint: generate instance config → start sshd → run role-agent in the foreground.
 set -euo pipefail
 
 : "${SCHEDULER_URL:?缺少 SCHEDULER_URL}"
@@ -13,10 +13,10 @@ SLOTS="${MAX_CONCURRENCY:-1}"
 
 mkdir -p /root/.ssh /var/run/sshd "$WORKSPACE_DIR" /opt/platform/{artifacts,logs,tokens,keys,audit}
 chmod 700 /root/.ssh
-# keys 通常以只读卷挂入，chmod 会返回 EROFS；权限由宿主机侧决定。
+# keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
-# 授权公钥：优先用挂载的 keys 目录，其次用 SSH_AUTHORIZED_KEY 环境变量。
+# Authorized public keys: prefer the mounted keys directory, then the SSH_AUTHORIZED_KEY environment variable.
 if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
   cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
 elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
@@ -27,7 +27,7 @@ chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
 ssh-keygen -A >/dev/null
 /usr/sbin/sshd -e
 
-# 每个容器只跑一个实例；配置从环境变量生成，不把宿主机配置带进来。
+# Each container runs only one instance; the config is generated from environment variables, without bringing in host config.
 node -e '
 const fs = require("node:fs");
 let capabilityDetail;
@@ -46,7 +46,7 @@ const cfg = {
   workspace_dir: process.env.WORKSPACE_DIR || "/opt/platform/workspace",
   keep_workspace: process.env.KEEP_WORKSPACE === "1",
   audit_dir: "/opt/platform/audit",
-  // PCS 导出的运行时视图（agent_profiles + bindings）；没有它就只有确定性执行器。
+  // PCS-exported runtime view (agent_profiles + bindings); without it, only the deterministic executor is available.
   ...(process.env.PROFILES_FILE ? { profiles_file: process.env.PROFILES_FILE } : {}),
   instances: [{
     instance_id: process.env.INSTANCE_ID,
@@ -65,8 +65,8 @@ fs.writeFileSync("/opt/platform/runtime.config.json", JSON.stringify(cfg, null, 
 '
 export RUNTIME_CONFIG=/opt/platform/runtime.config.json
 export BUILDER_OS
-# 领任务的轮询间隔。控制台/对话的体感延迟主要是「任务入队 → 实例来领」；
-# 默认 2 秒是为大规模集群省数据库，单机或几台构建机用 0.5 秒更跟手。
+# Task-claim polling interval. The perceived latency of console/chat is mainly "task enqueued → instance claims it";
+# the default 2s saves the database for large clusters, while a single machine or a few builders is more responsive with 0.5s.
 export CLAIM_INTERVAL_SECONDS="${CLAIM_INTERVAL_SECONDS:-0.5}"
 
 cd /opt/platform/host-runtime

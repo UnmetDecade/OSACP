@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * PCS 的本地替身：签发调度机侧令牌（实例 / 审批）与管理面管理员令牌。
+ * Local stand-in for the PCS: issues scheduler-side tokens (instance / approval) and management-plane admin tokens.
  *
- * 用法：
+ * Usage:
  *   npm run issue -- instance --id builder-a --role builder --host host-a \
  *        [--scopes instance:register,instance:claim,task:report,config:read,artifact:write,artifact:read] \
  *        [--hours 24] [--out /path/builder-a.jwt]
@@ -12,7 +12,7 @@
  *
  *   npm run issue -- admin --operator alice [--hours 8] [--out /tmp/admin.jwt]
  *
- * 令牌写到 --out 或 stdout。私钥不打印、不进日志。
+ * The token is written to --out or stdout. Private keys are never printed or logged.
  */
 import fs from "node:fs";
 import path from "node:path";

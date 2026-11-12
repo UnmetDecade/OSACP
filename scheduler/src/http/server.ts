@@ -57,7 +57,7 @@ type Route = {
   scopes: string[];
 };
 
-/** 304 不是错误，用哨兵值从 handler 传回 HTTP 层 */
+/** 304 is not an error; pass a sentinel value from the handler back to the HTTP layer */
 const NOT_MODIFIED = Symbol("NOT_MODIFIED");
 
 const routes: Route[] = [];
@@ -80,7 +80,7 @@ function route(
   routes.push({ method, re, keys, handler, auth, scopes: opts.scopes ?? [] });
 }
 
-// ---------------- 实例（Host Runtime 调用）
+// ---------------- Instances (called by Host Runtime)
 route(
   "POST",
   "/v1/instances/register",
@@ -101,11 +101,11 @@ route(
 );
 route("GET", "/v1/instances", async () => ({ items: await listInstances() }));
 
-// ---------------- 主机名册（控制面定时同步）
-// 实例注册要求主机已在名册里；名册由 PCS 在主机上报时推送，调度机自己不去拉 PCS。
+// ---------------- Host roster (periodically synced from the control plane)
+// Instance registration requires the host to be in the roster; PCS pushes the roster when a host reports in, and the scheduler never pulls from PCS itself.
 route("POST", "/v1/hosts", (c) => upsertHost(c.body ?? {}));
 
-// ---------------- 实例生命周期（§7.3 / §7.10–7.12）
+// ---------------- Instance lifecycle (§7.3 / §7.10–7.12)
 route(
   "PUT",
   "/v1/instances/:id/capabilities",
@@ -158,7 +158,7 @@ route(
   { auth: true, scopes: ["config:read"] },
 );
 
-// ---------------- 领取与执行（Worker 协议）
+// ---------------- Claim and execution (Worker protocol)
 route(
   "POST",
   "/v1/claim",
@@ -188,11 +188,11 @@ route("POST", "/v1/attempts/:id/result", (c) => submitResult(c.params.id, proof(
   scopes: ["task:report"],
 });
 
-// ---------------- 任务
-// 建完就尝试下推：本机接不住的任务交给子树里合适的结点调度机。
-// 中继进来的任务同样要走这一步：父结点按子树实例名册选到了本机，但真正持有
-// 该实例的可能是更下一层的调度机，任务要沿树继续往下走。
-// 下推失败只在日志里留痕，任务仍留在本机队列，提交本身不会失败。
+// ---------------- Tasks
+// After creation, try pushing down: hand tasks this machine cannot handle to a suitable node scheduler in the subtree.
+// Relayed-in tasks go through this step too: the parent picked this machine from the subtree instance roster, but the actual holder
+// of the instance may be a deeper scheduler, so the task must continue down the tree.
+// Push-down failure is only logged; the task stays in the local queue and the submission itself does not fail.
 route("POST", "/v1/tasks", async (c) => {
   const task = await createTask(c.body);
   const relayed = await maybeRelayTask(task, c.body);
@@ -209,7 +209,7 @@ route("GET", "/v1/tasks", async (c) => ({
 route("GET", "/v1/tasks/:id", (c) => getTask(c.params.id));
 route("GET", "/v1/tasks/:id/events", async (c) => ({ items: await listEvents(c.params.id) }));
 
-// ---------------- 事件（§8.1）
+// ---------------- Events (§8.1)
 route("GET", "/v1/events", async (c) => {
   const after = Number(c.query.get("after") ?? 0);
   const limit = c.query.get("limit") ? Number(c.query.get("limit")) : undefined;
@@ -221,12 +221,12 @@ route("GET", "/v1/events", async (c) => {
 });
 route("POST", "/v1/tasks/:id/cancel", async (c) => {
   const out = await cancelTask(c.params.id, c.body?.actor ?? "operator");
-  // 任务已经下推到子结点时，取消必须跟着下推，否则子结点会继续跑。
+  // When a task was pushed down to a child, cancellation must be pushed down too, or the child keeps running.
   await requestRelayCancel(c.params.id);
   return out;
 });
 
-// ---------------- 制品（§7.8）
+// ---------------- Artifacts (§7.8)
 route(
   "POST",
   "/v1/artifacts",
@@ -250,7 +250,7 @@ route(
   { auth: true, scopes: ["artifact:read"] },
 );
 
-// ---------------- 工作流（§7）
+// ---------------- Workflows (§7)
 route("POST", "/v1/workflows", (c) => createWorkflowRun(c.body));
 route("GET", "/v1/workflows", async (c) => ({
   items: await listWorkflowRuns(c.query.get("limit") ? Number(c.query.get("limit")) : undefined),
@@ -268,20 +268,20 @@ route("GET", "/v1/task-definitions", async () => ({
   ),
 }));
 route("GET", "/v1/workflows/:id", (c) => getWorkflowRun(c.params.id));
-// 审批决策：凭据是 PCS 签发的审批 JWT（body.approval_token），在 decideApproval 内验签。
-// 未配置 PCS 公钥 → 503，绝不降级成共享令牌。
+// Approval decision: the credential is a PCS-issued approval JWT (body.approval_token), verified inside decideApproval.
+// No PCS public key → 503; never downgrade to a shared token.
 route("POST", "/v1/tasks/:id/approve", (c) =>
   decideApproval({ ...c.body, task_id: c.params.id }),
 );
 
-// ---------------- 能力与联邦树（架构规则 2/3）
-// 本机 ΣW = 本地未离线构建机 + 全部直接子结点已上报的整棵子树。
+// ---------------- Capability and federation tree (architecture rules 2/3)
+// Local ΣW = local non-offline builders + the entire subtrees reported by all direct children.
 route("GET", "/v1/capability", async () => capabilitySnapshot(selfNodeId()));
 route("GET", "/v1/nodes", async () => ({
   self: await capabilitySnapshot(selfNodeId()),
   items: await listNodes(),
 }));
-// 子结点调度机周期上报。parent_node_id 永远由接收方填成自己，子结点无法伪造挂载位置。
+// Child schedulers report periodically. parent_node_id is always filled by the receiver with itself, so a child cannot forge its attachment point.
 route("POST", "/v1/nodes/report", (c) => {
   if (!config.federationToken) {
     throw new ApiError(503, "FEDERATION_DISABLED", "未配置 SCHEDULER_FEDERATION_TOKEN");
@@ -293,8 +293,8 @@ route("POST", "/v1/nodes/report", (c) => {
   }
   return upsertNodeReport({ ...c.body, parent_node_id: selfNodeId(), role: "node" });
 });
-// 主机并入 / 脱离：PCS 只改上级地址，不重启调度机。
-// 根调度机默认没有上级，这里设置后它就开始按联邦周期向上汇报整棵子树的 ΣW。
+// Host join / leave: PCS only changes the parent URL; the scheduler is not restarted.
+// The root scheduler has no parent by default; once set here, it starts reporting the whole subtree's ΣW upward on the federation period.
 route("GET", "/v1/federation/parent", async () => ({
   parent_url: getFederationParentUrl() || null,
 }));
@@ -310,7 +310,7 @@ route("POST", "/v1/federation/parent", async (c) => {
   return { parent_url: setFederationParentUrl(c.body?.parent_url) || null };
 });
 
-// ---------------- 运维
+// ---------------- Operations
 route("GET", "/healthz", async () => ({ ok: true }));
 route("GET", "/readyz", async () => {
   const db = await q1<{ ok: number }>("SELECT 1 AS ok");
@@ -339,11 +339,11 @@ route("GET", "/v1/queue/stats", async () => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * SSE 事件流（§8）。
+ * SSE event stream (§8).
  *
- * 只是通知通道：允许丢、允许重连续传，事实以 outbox / 事件 API 为准。
- * `Last-Event-ID` 或 `?after=` 指定起点；新连接不给就从当前最新开始。
- * 单控制面进程内轮询；多进程部署时每个进程都会推一遍，消费者按 event_id 去重。
+ * It is only a notification channel: loss is allowed and reconnects may resume; the outbox / events API is the source of truth.
+ * `Last-Event-ID` or `?after=` sets the starting point; a new connection without one starts from the current latest.
+ * Polls within a single control-plane process; with multi-process deployment each process pushes once, and consumers dedupe by event_id.
  */
 async function streamEvents(
   req: http.IncomingMessage,
@@ -391,7 +391,7 @@ async function streamEvents(
   res.end();
 }
 
-/** 制品内容是原始字节，不是 JSON */
+/** Artifact content is raw bytes, not JSON */
 function readRawBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -473,13 +473,13 @@ export function createServer(): http.Server | https.Server {
       return;
     }
     try {
-      // SSE 长连接需要直接写 res，不能走“handler 返回 JSON”的通用路径
+      // SSE long connections must write res directly; they cannot use the generic "handler returns JSON" path
       if (req.method === "GET" && url.pathname === "/v1/events/stream") {
         await streamEvents(req, res, url);
         return;
       }
 
-      // 制品内容是原始字节，绕过 JSON 解析
+      // Artifact content is raw bytes; bypass JSON parsing
       const contentMatch = /^\/v1\/artifacts\/([^/]+)\/content$/.exec(url.pathname);
       if (contentMatch && req.method === "PUT") {
         const auth = requireInstanceAuth(req);
@@ -535,7 +535,7 @@ export function createServer(): http.Server | https.Server {
         res.writeHead(304);
         res.end();
       } else if (out && typeof out === "object" && (out as any).noop) {
-        // claim 无候选 → 204，让 Worker 按自己的节奏退避
+        // No claim candidates → 204, letting the Worker back off at its own pace
         send(res, 204, null, true);
       } else {
         send(res, 200, out);
@@ -565,7 +565,7 @@ export function createServer(): http.Server | https.Server {
   };
   if (config.tlsCaFile) options.ca = fs.readFileSync(config.tlsCaFile);
   if (config.mtls) {
-    // 角色实例 / Worker 必须出示内部 CA 签发的客户端证书；JWT 仍单独校验。
+    // Role instances / Workers must present a client certificate issued by the internal CA; JWT is still verified separately.
     options.requestCert = true;
     options.rejectUnauthorized = true;
   }

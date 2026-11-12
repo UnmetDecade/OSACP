@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 起停本机 Host Runtime 守护进程 + 独立看门狗（开发用；生产用 systemd 两个 unit）
-# 用法：./scripts/runtime.sh start|stop|status|logs
+# Start/stop the local Host Runtime daemon + standalone watchdog (for development; use two systemd units in production)
+# Usage: ./scripts/runtime.sh start|stop|status|logs
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CFG="${RUNTIME_HOST_CONFIG:-$DIR/runtime.host.json}"

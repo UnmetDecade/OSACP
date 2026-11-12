@@ -38,7 +38,7 @@ export interface JwtClaims {
 
 const b64urlJson = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
 
-/** 与调度机 src/jwt.ts 的 signJwt 同一算法：ES256 + ieee-p1363 */
+/** Same algorithm as signJwt in the scheduler's src/jwt.ts: ES256 + ieee-p1363 */
 export function signJwt(claims: JwtClaims, privateKeyPem: string): string {
   const header = { alg: "ES256", typ: "JWT" };
   const input = `${b64urlJson(header)}.${b64urlJson(claims)}`;

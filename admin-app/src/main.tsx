@@ -2,8 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { I18nProvider } from "./i18n";
-// xterm 自带样式（隐藏 IME 输入框、视口定位与滚动）必须先于本地样式加载，
-// 否则终端左上角会露出一个原生 textarea，输入区也不受 xterm 管理。
+// xterm's bundled styles (hidden IME input, viewport positioning and scrolling) must load before local styles,
+// otherwise a native textarea shows in the terminal's top-left corner and the input area is not managed by xterm.
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 

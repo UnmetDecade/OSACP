@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 /**
- * 把 host-runtime 的两个入口打成一个自包含的 .mjs。
+ * Bundle the two host-runtime entry points into a single self-contained .mjs.
  *
- * 远程主机不想装 tsx / 源码目录，只需要 Node 22 + Docker；PCS 在引导时
- * 把 bundle 连同配置一起写过去，重启也只需要这两个文件。
- * 结果按源目录缓存，源码更新后自动重建。
+ * Remote hosts do not want to install tsx or the source tree; they only need Node 22 + Docker. During
+ * bootstrapping the PCS writes the bundle over together with the config, and a restart needs only these two files.
+ * Results are cached per source directory and rebuilt automatically when the source changes.
  */
 export type RuntimeBundle = {
   dir: string;
@@ -65,7 +65,7 @@ export async function ensureRuntimeBundle(): Promise<RuntimeBundle> {
   }
 }
 
-/** 任一入口或 src 目录里的文件比 bundle 新，就重建。 */
+/** Rebuild if either entry point, or any file under src, is newer than the bundle. */
 function isFresh(bundle: string, source: string): boolean {
   if (!fs.existsSync(bundle)) return false;
   const stamp = fs.statSync(bundle).mtimeMs;

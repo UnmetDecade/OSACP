@@ -1,9 +1,9 @@
 # platform/scheduler:4.0
 #
-# 调度机也是一个容器：root + 完整权限 SSH，容器内可排障。
-# 控制面本身无状态，状态都在 PostgreSQL。
+# The scheduler is also a container: root + full-privilege SSH, so it can be debugged from inside the container.
+# The control plane itself is stateless; all state is in PostgreSQL.
 #
-# 构建上下文是仓库根目录：
+# The build context is the repository root:
 #   docker build -f deploy/scheduler/Dockerfile -t platform/scheduler:4.0 .
 
 FROM ubuntu:24.04
@@ -11,7 +11,7 @@ FROM ubuntu:24.04
 ARG NODE_VERSION=22.20.0
 ARG CLAUDE_CODE_VERSION=2.1.322
 ARG CODEX_VERSION=0.167.1
-# 国内网络可用 --build-arg APT_MIRROR=http://mirrors.aliyun.com/ubuntu
+# For networks in mainland China, use --build-arg APT_MIRROR=http://mirrors.aliyun.com/ubuntu
 ARG APT_MIRROR=
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
@@ -32,8 +32,8 @@ RUN arch="$(dpkg --print-architecture)"; \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
       | tar -xJ -C /usr/local --strip-components=1
 
-# 调度机上的 Agent CLI：task.chat.scheduler 在绑定了 Agent Profile 时由
-# host-runtime 通过 stdio JSON-RPC 拉起 Claude Code / Codex。
+# Agent CLI on the scheduler: when an Agent Profile is bound, task.chat.scheduler
+# launches Claude Code / Codex via stdio JSON-RPC through host-runtime.
 RUN npm install -g --no-fund --no-audit --registry=https://registry.npmmirror.com \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@openai/codex@${CODEX_VERSION}"
@@ -49,8 +49,8 @@ RUN cd /opt/platform/scheduler && npm ci
 
 COPY scheduler /opt/platform/scheduler
 
-# 调度机自己也要跑一个 host-runtime 实例：承担 task.chat.scheduler / task.console.scheduler，
-# 让「派令」可以对话和排障。它不碰 Docker Socket，也不管理构建机容器。
+# The scheduler also runs its own host-runtime instance: it handles task.chat.scheduler / task.console.scheduler,
+# allowing the scheduler bot ("Relay") to chat and troubleshoot. It does not touch the Docker Socket and does not manage builder containers.
 COPY host-runtime/package.json host-runtime/package-lock.json /opt/platform/host-runtime/
 RUN cd /opt/platform/host-runtime && npm ci
 COPY host-runtime /opt/platform/host-runtime

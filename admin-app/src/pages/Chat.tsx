@@ -20,12 +20,12 @@ type Msg = {
   meta?: string;
 };
 
-/** 对话记录长期保存在本机：切页面、刷新、重开浏览器都还在。 */
+/** Chat history is kept locally long-term: it survives page switches, refreshes and browser restarts. */
 const THREADS_KEY = "platform.chat.threads.v1";
 const SELECTED_KEY = "platform.chat.selected.v1";
 const MAX_MESSAGES = 200;
 
-/** 同一实例名在不同主机上可以重名，记录必须用带主机前缀的 key。 */
+/** The same instance name can repeat across hosts, so records must use a host-prefixed key. */
 function threadKeyOf(instance: Instance): string {
   return instance.key || `${instance.host_id}:${instance.id}`;
 }
@@ -34,7 +34,7 @@ function loadThreads(): Record<string, Msg[]> {
   try {
     let raw = localStorage.getItem(THREADS_KEY);
     if (!raw) {
-      // 上一版存在 sessionStorage，升级时迁移一次，避免已有记录丢失。
+      // The previous version stored this in sessionStorage; migrate once on upgrade so existing records are not lost.
       raw = sessionStorage.getItem(THREADS_KEY);
       if (raw) {
         localStorage.setItem(THREADS_KEY, raw);
@@ -73,12 +73,12 @@ const PRESETS: Record<Role, string[]> = {
 export function ChatPage() {
   const [params] = useSearchParams();
   const { host } = useHostScope();
-  // 和构建机 / 调度机页一样，按主机子树看：并入的主机也要能对话。
+  // Like the builder / scheduler pages, scope to the host subtree: folded hosts must be able to chat too.
   const scopedHostIds = hostTreeIds(host?.id);
   const builders = db.instances.filter(
     (i) => i.role === "builder" && (!host || scopedHostIds.has(i.host_id)),
   );
-  // 一台主机可以有多台调度机（根 + 结点），对话列表要全部列出。
+  // A host can have multiple schedulers (root + nodes); the chat list must show them all.
   const schedulers = db.instances.filter(
     (i) => i.role === "scheduler" && (!host || scopedHostIds.has(i.host_id)),
   );
@@ -91,13 +91,13 @@ export function ChatPage() {
   const [selected, setSelected] = useState(() => {
     const param = params.get("instance");
     if (param) {
-      // 新链接带的是 key（主机:实例名）；旧链接只有实例名，也能对上。
+      // New links carry a key (host:instance name); old links have only the instance name and still resolve.
       const match = roster.find((i) => threadKeyOf(i) === param) ??
         roster.find((i) => i.id === param);
       if (match) return threadKeyOf(match);
       return param;
     }
-    // 回到对话页时接着看上次那个机器人，而不是跳回第一个。
+    // On returning to the chat page, resume the previous robot instead of jumping back to the first one.
     const saved = loadSelected();
     const match = roster.find((i) => threadKeyOf(i) === saved);
     return match ? threadKeyOf(match) : initial;
@@ -107,12 +107,12 @@ export function ChatPage() {
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
-  // 停止：abort 让轮询立刻结束，task_id 到了之后同时取消调度任务。
+  // Stop: abort ends polling immediately, then cancel the scheduled task once task_id arrives.
   const abortRef = useRef<AbortController | null>(null);
   const taskIdRef = useRef("");
   const stopRequested = useRef(false);
-  // 中文输入法：回车是确认候选，不是发送。composition 期间以及刚结束的
-  // 一小段时间内都忽略 Enter（Safari 会先 fire compositionend 再 fire keydown）。
+  // Chinese IME: Enter confirms a candidate, it does not send. Ignore Enter during composition and for
+  // a short time after it ends (Safari fires compositionend before keydown).
   const composing = useRef(false);
   const composedAt = useRef(0);
 
@@ -121,7 +121,7 @@ export function ChatPage() {
   const messages = threadKey ? threads[threadKey] ?? [] : [];
 
   useEffect(() => {
-    // 首屏实例列表为空时别把 URL/上次选择清掉。
+    // Do not clear the URL/last selection when the instance list is empty on first paint.
     if (!roster.length) return;
     if (!selected || !roster.some((i) => threadKeyOf(i) === selected)) {
       setSelected(threadKeyOf(roster[0]));
@@ -137,8 +137,8 @@ export function ChatPage() {
     });
   }, [instance]);
 
-  // 对话记录与当前选中项都写进 localStorage：切到别的页面再回来、
-  // 甚至刷新页面，记录都还在；关掉标签页才清空。
+  // Chat history and the current selection are both written to localStorage: switching pages and coming back,
+  // or even refreshing the page, keeps them; only closing the tab clears them.
   useEffect(() => {
     try {
       const trimmed: Record<string, Msg[]> = {};
@@ -147,7 +147,7 @@ export function ChatPage() {
       }
       localStorage.setItem(THREADS_KEY, JSON.stringify(trimmed));
     } catch {
-      // 存储不可用或已满：只保留内存里的记录，不影响对话。
+      // Storage unavailable or full: keep records in memory only; chat is unaffected.
     }
   }, [threads]);
 
@@ -191,7 +191,7 @@ export function ChatPage() {
         schedulerDeploymentId: target.scheduler_deployment_id,
         onTaskCreated: (taskId) => {
           taskIdRef.current = taskId;
-          // 任务还没创建完就按了停止：拿到 id 后立刻取消。
+          // Stop was pressed before task creation finished: cancel immediately once the id arrives.
           if (stopRequested.current)
             void stopChatTask(taskId, target.scheduler_deployment_id).catch(() => {});
         },
@@ -260,7 +260,7 @@ export function ChatPage() {
 
       <div className="chat-layout">
         <aside className="roster">
-          {/* 和终端一样分调度机 / 构建机，组内再按主机名折叠。 */}
+          {/* Like the terminal, split into schedulers / builders, then group by host name within each. */}
           {(["scheduler", "builder"] as const).map((role) => {
             const items = roster.filter((i) => i.role === role);
             if (!items.length) return null;

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# 在本机前台/后台起停调度机（开发用，不是生产部署方式）
+# Start/stop the scheduler in the foreground/background on this machine (for development, not production deployment)
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PIDFILE="$DIR/server.pid"
 LOGFILE="$DIR/server.log"
 PATTERN="node --import tsx src/main.ts"
-# 兜底匹配必须锚定行尾：主机运行时的进程是 `... src/main.ts --instance worker-a`，
-# 不加 $ 会把 agent 当成调度机，stop 时误杀
+# The fallback match must anchor at end of line: the host runtime process is `... src/main.ts --instance worker-a`,
+# Without $ it treats agent as the scheduler and kills the wrong process on stop
 FIND_PATTERN="node --import tsx src/main.ts\$"
 
-# pidfile 可能丢（比如被 rsync --delete 清掉），所以再按进程名兜底找一次
+# The pidfile may be lost (e.g. removed by rsync --delete), so fall back to finding by process name
 find_pid() {
   if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     cat "$PIDFILE"
@@ -23,7 +23,7 @@ case "${1:-}" in
     running="$(find_pid || true)"
     if [[ -n "$running" ]]; then echo "already running: $running"; exit 0; fi
     cd "$DIR"
-    # 子 shell 自己写 pidfile：exec 之后 pid 不变，停的时候不会误杀
+    # The subshell writes the pidfile itself: the pid stays the same after exec, so stop won't kill the wrong process
     setsid bash -c "echo \$\$ > '$PIDFILE'; exec $PATTERN" \
       > "$LOGFILE" 2>&1 < /dev/null &
     sleep 2

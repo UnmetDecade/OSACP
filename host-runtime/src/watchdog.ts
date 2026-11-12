@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 独立看门狗进程（生产由 systemd 单独管理，不随 host-runtime 退出）。
- * 只读 /proc、磁盘统计与 supervisor 写的 PCS 联系时间；不持有任何任务或凭据。
+ * Standalone watchdog process (managed separately by systemd in production, and does not exit with host-runtime).
+ * Only reads /proc, disk stats and the PCS contact time written by the supervisor; holds no tasks or credentials.
  *
- * 输出 state/host-state.json，supervisor 在启动任何新容器前必须读它。
+ * Writes state/host-state.json, which the supervisor must read before starting any new container.
  */
 import fs from "node:fs";
 import path from "node:path";

@@ -3,16 +3,16 @@ import fs from "node:fs";
 import { ApiError } from "./errors.js";
 
 /**
- * 最小 JWT（ES256）实现，不引第三方库。
+ * Minimal JWT (ES256) implementation with no third-party libraries.
  *
- * 规范 §3.2 要求实例令牌由 PCS 签发、调度机验签。这里只做验证侧；
- * 签发在 `pcs-issuer/`（PCS 的替身），私钥永远不出现在调度机进程里。
+ * Spec §3.2 requires instance tokens to be issued by PCS and verified by the scheduler. This is the verification side only;
+ * issuance lives in `pcs-issuer/` (a PCS stand-in); the private key never appears in the scheduler process.
  *
- * 密钥来源：
- *   PCS_PUBLIC_KEY       PEM 内容（换行可用 \n）
- *   PCS_PUBLIC_KEY_FILE  PEM 文件路径
- * 两者都没配置时，实例鉴权退回 AUTH_TOKEN 共享令牌（仅限本地开发），
- * 审批接口则直接 503 —— 审批不允许降级。
+ * Key sources:
+ *   PCS_PUBLIC_KEY       PEM contents (newlines may be written as \n)
+ *   PCS_PUBLIC_KEY_FILE  path to a PEM file
+ * When neither is configured, instance auth falls back to the shared AUTH_TOKEN (local development only),
+ * while the approval endpoint returns 503 directly — approvals may not degrade.
  */
 
 export const ISSUER = "platform-control";
@@ -33,7 +33,7 @@ export interface TokenClaims {
   [key: string]: unknown;
 }
 
-/** 读取 PCS 公钥；每次调用都重新读，方便测试和轮换 */
+/** Read the PCS public key; re-read on every call to ease testing and rotation */
 export function pcsPublicKeyPem(): string | null {
   const inline = process.env.PCS_PUBLIC_KEY;
   if (inline) return inline.replace(/\\n/g, "\n");
@@ -64,7 +64,7 @@ function parsePart<T>(part: string, what: string): T {
   }
 }
 
-/** 签发（测试与 pcs-issuer 共用同一算法实现） */
+/** Sign (tests and pcs-issuer share the same algorithm implementation) */
 export function signJwt(
   claims: TokenClaims,
   privateKeyPem: string,
@@ -81,7 +81,7 @@ export function signJwt(
 export interface VerifyOptions {
   issuer?: string;
   audience?: string;
-  /** 允许的时钟偏差（秒） */
+  /** Allowed clock skew (seconds) */
   skewSeconds?: number;
   nowSeconds?: number;
 }
@@ -138,7 +138,7 @@ export function verifyJwt(token: string, opts: VerifyOptions = {}): TokenClaims 
   return claims;
 }
 
-/** 验签 + 校验 scope。scope 不是提示信息，是硬性边界。 */
+/** Verify signature + check scope. Scope is not a hint; it is a hard boundary. */
 export function requireScope(claims: TokenClaims, scope: string): void {
   const scopes = Array.isArray(claims.scopes) ? claims.scopes : [];
   if (!scopes.includes(scope)) {
@@ -158,10 +158,10 @@ export interface ApprovalClaims extends TokenClaims {
 }
 
 /**
- * 验证审批令牌。除了签名与有效期，还要满足：
- *   - typ = approval，且带 approval:decide scope
- *   - 声明了 approval_request_id / operator_id / action_scope
- * 与具体审批请求的绑定在 decideApproval 里做（需要读库）。
+ * Validate an approval token. Beyond signature and validity, it must satisfy:
+ *   - typ = approval, with the approval:decide scope
+ *   - declares approval_request_id / operator_id / action_scope
+ * Binding to the specific approval request happens in decideApproval (which needs database access).
  */
 export function verifyApprovalToken(token: string): ApprovalClaims {
   const claims = verifyJwt(token, { issuer: ISSUER, audience: AUDIENCE });

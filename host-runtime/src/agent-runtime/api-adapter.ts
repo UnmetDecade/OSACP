@@ -38,7 +38,7 @@ export interface ApiAdapterOptions {
   egress: EgressPolicyOptions;
   port?: number;
   host?: string;
-  /** 注入用（测试） */
+  /** For injection (tests) */
   fetchImpl?: typeof fetch;
   audit?: ApiAudit;
 }
@@ -130,8 +130,8 @@ export class ApiAdapter {
   }
 
   /**
-   * 统一的出站入口。Agent 只能通过这里访问外部 API；认证头由这里注入，
-   * Agent 自带的 authorization / cookie / host 一律丢弃。
+   * Unified egress entry point. The Agent can only reach external APIs through here; auth headers are injected here,
+   * and any authorization / cookie / host supplied by the Agent are discarded.
    */
   async call(
     profileId: string,
@@ -214,7 +214,7 @@ export class ApiAdapter {
 
     const idempotent = method === "GET" || method === "HEAD" || Boolean(init.idempotencyKey);
     let attempt = 0;
-    // 只重试可幂等请求；不确定结果时不盲目重放
+    // Retry only idempotent requests; do not blindly replay when the result is uncertain
     while (true) {
       let res: Response;
       try {
@@ -250,7 +250,7 @@ export class ApiAdapter {
           throw new ApiAdapterError("API_REDIRECT_DENIED", "非幂等请求不允许重定向", 502);
         }
         if (location) {
-          // 重定向目标同样要过白名单；这里直接返回 302 让 Agent 显式重发，避免静默跟随
+          // The redirect target must also pass the allowlist; return the 302 directly so the Agent re-issues explicitly, avoiding silent following
           const next = new URL(location, url);
           await assertEgressAllowed(next, profile.egress, this.opts.egress);
           this.audit({
@@ -332,7 +332,7 @@ export class ApiAdapter {
         ...r,
       });
     } catch {
-      // 审计失败不回滚已完成的调用；本地日志仍会记录
+      // An audit failure does not roll back a completed call; the local log still records it
     }
   }
 }

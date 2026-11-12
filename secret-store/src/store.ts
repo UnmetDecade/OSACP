@@ -24,10 +24,10 @@ interface Policy {
 }
 
 /**
- * 参考实现的 Secret Store。
+ * Reference Secret Store implementation.
  *
- * 授权只有一条规则：实例令牌的 sub 必须被 policy 允许读取该 secret_ref。
- * 因此 Worker A 拿到自己的令牌也解析不了 Worker B 的引用。
+ * Authorization follows a single rule: the instance token's sub must be allowed by the policy to read
+ * that secret_ref. So Worker A cannot resolve Worker B's reference even with its own token.
  */
 export class SecretStore {
   private revoked = new Set<string>();
@@ -39,7 +39,7 @@ export class SecretStore {
     assertPrivateFile(opts.policyFile);
   }
 
-  /** 每次读取文件，轮换 secrets 文件后下一次解析立即生效。 */
+  /** Read the file on every call, so rotating the secrets file takes effect on the next resolve. */
   private secrets(): Record<string, string> {
     try {
       return JSON.parse(fs.readFileSync(this.opts.secretsFile, "utf8")) as Record<string, string>;
@@ -67,7 +67,7 @@ export class SecretStore {
       throw new SecretError("SECRET_REF_INVALID", "secret_ref 格式非法", 400);
     }
     const policy = this.policy();
-    // "*" 表示平台级密钥：所有已入网实例都可读取（控制台写入的 API 服务商密钥）。
+    // "*" denotes a platform-wide secret: every enrolled instance can read it (API provider keys written from the console).
     const allowed = [...(policy[instanceId] ?? []), ...(policy["*"] ?? [])];
     if (!allowed.includes(secretRef)) {
       this.record("resolve", instanceId, secretRef, "DENY", "SECRET_NOT_ALLOWED");
@@ -84,8 +84,8 @@ export class SecretStore {
   }
 
   /**
-   * 管理面写入（控制台的「API Key」）。值只落 secrets 文件，审计只记引用。
-   * platformWide 为真时把引用写进 policy 的 "*"，所有实例可解析。
+   * Management-plane write (the console's "API Key"). Only the value is written to the secrets file; the audit log records only the reference.
+   * When platformWide is true, the reference is written into the policy's "*", so all instances can resolve it.
    */
   put(secretRef: string, value: string, platformWide = true): { secret_ref: string; updated_at: string } {
     if (!/^secret:\/\/[A-Za-z0-9._\-\/]+$/.test(secretRef)) {
@@ -137,16 +137,16 @@ export class SecretStore {
         secret_ref: secretRef,
         decision,
         code,
-        // 绝不记录 credential 或 secret 值
+        // Never record the credential or secret value
         ...extra,
       });
     } catch {
-      // 审计失败不返回给调用方，避免把内部信息带出去
+      // Audit failures are not surfaced to the caller, to avoid leaking internal information
     }
   }
 }
 
-/** 原子写入：同目录临时文件 0600 → fsync → rename，失败不会留下半个 JSON。 */
+/** Atomic write: temp file 0600 in the same directory → fsync → rename; a failure never leaves half a JSON file. */
 function writePrivateJson(file: string, data: unknown): void {
   const tmp = path.join(
     path.dirname(file),

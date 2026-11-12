@@ -19,7 +19,7 @@ var LocalAdmission = class {
   perSlotBytes;
   reserved = 0;
   chain = Promise.resolve();
-  /** 串行化：任何时候只有一个调用能看到并修改 reserved */
+  /** Serialize: at most one call can see and modify `reserved` at any time */
   tryAcquire() {
     const run = this.chain.then(() => {
       const available = this.availableBytes();
@@ -62,7 +62,7 @@ var SchedulerError = class extends Error {
   status;
   code;
   detail;
-  /** 写入被旧 attempt 顶掉：必须立刻放弃这个任务，不要重试 */
+  /** Write was overridden by a stale attempt: abandon this task immediately, do not retry */
   get isFencingLost() {
     return this.code === "FENCING_STALE" || this.code === "LEASE_EXPIRED" || this.code === "LEASE_MISMATCH";
   }
@@ -85,7 +85,7 @@ var SchedulerClient = class {
   defaultTimeoutMs;
   token;
   tls;
-  /** 每次请求都取一次：令牌文件轮换后无需重启进程 */
+  /** Read on every request: token file rotation requires no process restart */
   currentToken() {
     return typeof this.token === "function" ? this.token() : this.token;
   }
@@ -152,7 +152,7 @@ var SchedulerClient = class {
     if (lastErr instanceof SchedulerError) throw lastErr;
     throw new SchedulerError(0, "SCHEDULER_UNREACHABLE", String(lastErr?.message ?? lastErr));
   }
-  /** 原始字节请求（制品上传/下载）：同样走 HTTPS / mTLS，不经过 JSON 解析。 */
+  /** Raw byte request (artifact upload/download): also over HTTPS / mTLS, without JSON parsing. */
   async rawRequest(method, path10, body, timeoutMs = this.defaultTimeoutMs) {
     const url = new URL(`${this.baseUrl}${path10}`);
     const isHttps = url.protocol === "https:";
@@ -199,7 +199,7 @@ var SchedulerClient = class {
   heartbeat(input) {
     return this.request("POST", "/v1/instances/heartbeat", input);
   }
-  /** 领取。没有候选返回 null（204）。网络失败不自动重试，交给调用方的循环节奏。 */
+  /** Claim. Returns null (204) when there are no candidates. Network failures are not auto-retried; that is left to the caller's loop cadence. */
   claim(instanceId) {
     return this.request("POST", "/v1/claim", { instance_id: instanceId }, { retries: 0 });
   }
@@ -221,12 +221,12 @@ var SchedulerClient = class {
       `/v1/tasks/${taskId}`
     );
   }
-  /** 配置同步。版本未变时调度机回 304，这里归一化成 null。 */
+  /** Config sync. When the version is unchanged the scheduler returns 304, normalized to null here. */
   config(instanceId, version) {
     const qs = version === void 0 ? "" : `?version=${encodeURIComponent(version)}`;
     return this.request("GET", `/v1/instances/${instanceId}/config${qs}`);
   }
-  /** 注销。有在途任务且 force=false 时调度机回 409。 */
+  /** Deregister. With in-flight tasks and force=false, the scheduler returns 409. */
   deregister(instanceId, input = {}) {
     return this.request(
       "POST",
@@ -234,11 +234,11 @@ var SchedulerClient = class {
       input
     );
   }
-  // ---------------- 制品（§7.8）
+  // ---------------- Artifacts (§7.8)
   createArtifact(input) {
     return this.request("POST", "/v1/artifacts", input);
   }
-  /** 原始字节上传，不走 JSON */
+  /** Raw byte upload, not JSON */
   async uploadArtifactContent(artifactId, content) {
     const res = await this.rawRequest(
       "PUT",
@@ -258,11 +258,11 @@ var SchedulerClient = class {
     );
   }
   /**
-   * 下载制品原始字节。
+   * Download artifact raw bytes.
    *
-   * 调度机只授权两类读取：本实例自己的制品，或调度机在任务
-   * `requirements.upstream_artifacts` 里显式交接的上游制品。调用方仍要
-   * 自己按交接单里的 sha256 复核，不能信任传输层。
+   * The scheduler authorizes only two kinds of reads: this instance's own artifacts, or upstream artifacts the scheduler
+   * explicitly handed over in the task's `requirements.upstream_artifacts`. The caller must still
+   * re-verify against the sha256 in the handoff record; the transport layer cannot be trusted.
    */
   async downloadArtifactContent(artifactId) {
     const res = await this.rawRequest(
@@ -705,7 +705,7 @@ function consoleExecutorFor(role) {
 var CHAT_ROLES = ["builder", "scheduler"];
 var roleExecutors = {
   "task.build": taskBuild,
-  // 对话与终端同样是受调度、受审计的普通任务
+  // Chat and console are likewise ordinary tasks that are scheduled and audited
   ...Object.fromEntries(CHAT_ROLES.map((role) => [`task.chat.${role}`, chatExecutorFor(role)])),
   ...Object.fromEntries(CHAT_ROLES.map((role) => [`task.console.${role}`, consoleExecutorFor(role)]))
 };
@@ -905,7 +905,7 @@ var SecretClient = class {
   }
   opts;
   cache = /* @__PURE__ */ new Map();
-  /** 令牌只在请求头里出现；错误信息里也绝不回显凭据。 */
+  /** The token appears only in the request header; credentials are never echoed in error messages either. */
   authToken() {
     const token = typeof this.opts.token === "function" ? this.opts.token() : this.opts.token;
     if (!token) throw new SecretDenied("SECRET_TOKEN_MISSING", "\u5B9E\u4F8B\u6CA1\u6709\u53EF\u7528\u7684\u8EAB\u4EFD\u4EE4\u724C");
@@ -950,7 +950,7 @@ var SecretClient = class {
     this.cache.set(secretRef, { credential, expiresAt });
     return { credential, expiresAt };
   }
-  /** 吊销/轮换后立即丢弃本地缓存，下一次请求重新解析。 */
+  /** Drop the local cache immediately after revocation/rotation; the next request resolves again. */
   invalidate(secretRef) {
     if (secretRef) this.cache.delete(secretRef);
     else this.cache.clear();
@@ -1042,8 +1042,8 @@ var ApiAdapter = class {
     res.end(out.body);
   }
   /**
-   * 统一的出站入口。Agent 只能通过这里访问外部 API；认证头由这里注入，
-   * Agent 自带的 authorization / cookie / host 一律丢弃。
+   * Unified egress entry point. The Agent can only reach external APIs through here; auth headers are injected here,
+   * and any authorization / cookie / host supplied by the Agent are discarded.
    */
   async call(profileId, method, path10, init = {}) {
     const primary = this.opts.profiles.get(profileId);
@@ -1307,8 +1307,8 @@ var StdioAdapter = class {
   closed = false;
   lastProgress = -1;
   /**
-   * 裸机模式下 Agent Profile 仍按容器路径写 /opt/platform/...；
-   * 这里映射到实例目录，Profile 不需要为两种执行方式各写一份。
+   * In native mode, Agent Profiles still write /opt/platform/... as container paths;
+   * this maps them to the instance directory, so a Profile does not need a separate copy for each execution mode.
    */
   nativePath(value) {
     const root = process.env.PLATFORM_NATIVE_ROOT;
@@ -1922,7 +1922,7 @@ function apiHandles(profiles, adapter) {
   return [...profiles.api.values()].map((p) => ({
     api_profile_id: p.api_profile_id,
     kind: p.kind,
-    // Agent 只拿到本地代理句柄，不是 base_url，更不是 secret
+    // The Agent only gets the local proxy handle, not a base_url, and certainly not a secret
     handle: adapter ? `${adapter.url}/${encodeURIComponent(p.api_profile_id)}` : null,
     scopes: p.scopes
   }));
@@ -2001,7 +2001,7 @@ async function runAgentTask(task, ctx, opts) {
     PLATFORM_PHASE: phase,
     PLATFORM_DEADLINE: task.deadline_at ?? "",
     PLATFORM_API_PROFILES: JSON.stringify(apiHandles(opts.profiles, opts.apiAdapter)),
-    // Agent 的人格配置；不含任何密钥，供适配器拼进提示词。
+    // The Agent's persona config; contains no secrets, for the adapter to assemble into the prompt.
     PLATFORM_AGENT_PROFILE: JSON.stringify({
       name: profile.name,
       role_id: profile.role_id,
@@ -2251,8 +2251,8 @@ var Agent = class {
   apiAdapter;
   secretClient;
   /**
-   * 启动对账：上次进程被 kill 时没有机会 release，本实例名下的残留 TASK grant
-   * 会一直占着内存直到 TTL。重启后先按 instance_id 清掉，恢复真实余量。
+   * Startup reconciliation: if the previous process was killed without a chance to release, residual TASK grants
+   * under this instance name keep holding memory until the TTL. After a restart, clear them by instance_id first to restore the real headroom.
    */
   async reconcileHostGrants() {
     const socket = this.tuning.hostAdmissionSocket;
@@ -2266,7 +2266,7 @@ var Agent = class {
       this.log(`\u542F\u52A8\u5BF9\u8D26\u8DF3\u8FC7\uFF1A${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  /** 准入被拒或不可用：按 claim 间隔退避，避免原地刷 attempt */
+  /** Admission rejected or unavailable: back off by the claim interval, avoiding repeated attempts in place */
   backOffAfterAdmission() {
     this.admissionBackoffUntil = Date.now() + this.tuning.claimIntervalSeconds * 1e3;
   }
@@ -2274,7 +2274,7 @@ var Agent = class {
     const t = (/* @__PURE__ */ new Date()).toISOString().slice(11, 23);
     console.log(`${t} [${this.id}] ${msg}`);
   }
-  /** 工具/API 审计：只落摘要，不含密钥、请求体与完整响应。 */
+  /** Tool/API audit: records only a digest, with no secrets, request bodies or full responses. */
   audit(file, record) {
     try {
       const dir = path7.resolve(this.tuning.auditDir ?? "data/audit");
@@ -2320,8 +2320,8 @@ var Agent = class {
     void this.claimLoop();
   }
   /**
-   * 配置同步（§7.11）：定期拉版本，版本没变调度机回 304。
-   * 骨架只做“看到变化就记下来”；执行中任务继续用旧的本地配置。
+   * Configuration sync (§7.11): pull the version periodically; the scheduler returns 304 when it is unchanged.
+   * The skeleton only "records a change when it sees one"; running tasks keep using the old local config.
    */
   async configLoop() {
     while (!this.draining) {
@@ -2343,7 +2343,7 @@ var Agent = class {
       await sleep(this.tuning.configSyncSeconds * 1e3);
     }
   }
-  /** 注册失败就一直退避重试；调度机没起来也不退出进程 */
+  /** Keep backing off and retrying when registration fails; if the scheduler is not up, do not exit the process */
   async registerLoop() {
     let attempt = 0;
     while (!this.draining) {
@@ -2621,7 +2621,7 @@ var Agent = class {
     }
     void proof;
   }
-  /** 优雅停止：先不再领取，等在途任务完成；超时则放弃，交给调度机回收 */
+  /** Graceful stop: stop claiming first and wait for in-flight tasks; on timeout, abandon them for the scheduler to reclaim */
   async stop(waitMs = 15e3) {
     this.draining = true;
     if (this.hbTimer) clearInterval(this.hbTimer);
@@ -2707,8 +2707,8 @@ function loadConfig(configPath) {
   const cfg2 = {
     ...DEFAULTS,
     ...raw,
-    // 控制台的体感延迟主要来自“任务入队 → 实例来领”。默认 2 秒是省数据库的
-    // 保守值；小规模平台（几台构建机）可以调到 0.5 秒换取交互时延。
+    // Perceived console latency comes mainly from "task enqueued → instance claims it". The default 2 seconds is a DB-saving
+    // conservative value; small deployments (a few builders) can drop it to 0.5 seconds to trade for interactive latency.
     claim_interval_seconds: secondsEnv("CLAIM_INTERVAL_SECONDS") ?? raw.claim_interval_seconds ?? DEFAULTS.claim_interval_seconds,
     progress_seconds: secondsEnv("PROGRESS_SECONDS") ?? raw.progress_seconds ?? DEFAULTS.progress_seconds,
     scheduler_url: process.env.SCHEDULER_URL ?? raw.scheduler_url ?? DEFAULTS.scheduler_url,

@@ -21,11 +21,11 @@ import { Badge, Button, Callout, Card, Empty, Field, Modal, PageHead, Tag } from
 import { Icon } from "../components/Icon";
 
 /**
- * 主机页：一台主机 = 一台跑 Docker 的机器，调度机与构建机都是它上面的容器。
- * 本地主机就是运行管理页面的机器；远程主机通过 SSH 接入，私钥由 PCS 加密保存。
+ * Hosts page: one host = one machine running Docker; schedulers and builders are containers on it.
+ * The local host is the machine running the admin app; remote hosts are onboarded over SSH and the private key is stored encrypted by PCS.
  */
 
-/** 探测失败时给出能直接照做的原因，而不是把 ssh 原文丢给用户。 */
+/** On probe failure, give an actionable reason instead of dumping raw ssh output on the user. */
 function probeHint(error?: string): string {
   if (!error) return t("未知错误");
   if (/Permission denied \(publickey/i.test(error)) {
@@ -324,7 +324,7 @@ function HostRow({
             </Button>
           </>
         )}
-        {/* 已并入的主机只留「解除」；要换上级就解除后重新并入。 */}
+        {/* A folded host keeps only "Unfold"; to change parents, unfold and fold it again. */}
         {!parent && (
           <Button size="sm" onClick={() => onMerge(host)} title={t("把本机并入另一台主机的联邦树")}>
             <Icon name="layers" size={13} />
@@ -357,10 +357,10 @@ function HostRow({
 }
 
 /**
- * 删除主机：勾选容器逐台删除，或整台主机全部删除。
+ * Delete host: remove checked containers one by one, or delete the whole host.
  *
- * 单台删除只移除容器与数据卷；「全部删除」会等所有容器被宿主确认移除后
- * 再删除主机记录，主机随即从列表消失。中途失败会保留现场并显示原因。
+ * Single deletion removes only containers and data volumes; "Delete all" waits for the host to confirm every container is removed
+ * before deleting the host record, after which the host disappears from the list. A mid-way failure preserves the state and shows the reason.
  */
 function DeleteHostModal({
   host,
@@ -505,7 +505,7 @@ function DeleteHostModal({
   );
 }
 
-/** 主机设置：改名称、地址、端口、用户，或换一把私钥；保存后立刻重新探测。 */
+/** Host settings: change the name, address, port, user, or replace the private key; re-probe immediately after saving. */
 function HostSettingsModal({
   host,
   onClose,
@@ -526,7 +526,7 @@ function HostSettingsModal({
   const [error, setError] = useState("");
   const [probe, setProbe] = useState<HostProbe | null>(null);
   const [saved, setSaved] = useState(false);
-  // 切到裸机构建机后，控制面会顺手拉起一个构建机进程；结果单独提示。
+  // After switching to a bare-metal builder, the control plane also starts a builder process; the result is reported separately.
   const [roleNotice, setRoleNotice] = useState<{ tone: "info" | "warn"; text: string } | null>(null);
 
   useEffect(() => {
@@ -562,7 +562,7 @@ function HostSettingsModal({
               port,
               user: user.trim() || "root",
               role_mode: roleMode,
-              // 留空表示沿用现有凭据；填了私钥就切到私钥登录。
+              // Leaving it empty keeps the existing credential; filling in a private key switches to key auth.
               ...(key.trim() ? { private_key: key } : password ? { password } : {}),
             }
           : { name: name.trim() || undefined, role_mode: roleMode },
@@ -582,7 +582,7 @@ function HostSettingsModal({
             : null,
       );
       setSaved(true);
-      // 凭据只提交这一次；保存后立刻从内存里清掉。
+      // The credential is submitted only this once; clear it from memory right after saving.
       setPassword("");
       setKey("");
     } catch (e) {
@@ -707,8 +707,8 @@ function HostSettingsModal({
 }
 
 /**
- * 主机并入：把这台主机的根调度机挂到另一台主机的联邦树里。
- * 只改控制面的 parent_host_id；本机的调度链、容器和内部身份都不变。
+ * Host fold: attach this host's root scheduler into another host's federation tree.
+ * Only the control plane's parent_host_id changes; the local scheduling chain, containers and internal identity stay the same.
  */
 function MergeHostModal({
   host,
@@ -732,7 +732,7 @@ function MergeHostModal({
 
   if (!host) return null;
 
-  // 不能并入自己或自己的下级：服务端也会拦，这里先过滤掉明显非法的选项。
+  // Cannot fold into itself or its own descendants: the server blocks it too, but obviously invalid options are filtered out here.
   const descendants = new Set<string>();
   const collect = (id: string) => {
     for (const h of db.hosts) {
@@ -855,7 +855,7 @@ function AddHostModal({
               address: address.trim(),
               port,
               user: user.trim() || "root",
-              // 私钥优先；两者都填时以私钥为准，密码不发送。
+              // Private key wins; when both are filled, use the key and do not send the password.
               ...(key.trim()
                 ? { private_key: key }
                 : { password }),
@@ -868,10 +868,10 @@ function AddHostModal({
       const out = await addHost(input, onDone);
       setProbe(out.probe ?? null);
       setCreated(true);
-      // 凭据只提交一次；无论探测结果如何都立刻从内存里清掉。
+      // The credential is submitted once; clear it from memory immediately regardless of the probe result.
       setPassword("");
       setKey("");
-      // 探测通过就顺手把 runtime 启动起来，少一次点击；失败仍可在主机行重试。
+      // On a successful probe, start the runtime at the same time to save a click; if that fails it can still be retried from the host row.
       if (out.probe?.ok) {
         setBooting(true);
         try {

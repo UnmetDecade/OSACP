@@ -1,19 +1,19 @@
 /**
- * 生成 README 用的产品截图与动画。
+ * Generate product screenshots and animations for the README.
  *
  *   node scripts/capture-readme.mjs --lang en
  *   node scripts/capture-readme.mjs --lang zh
  *   node scripts/capture-readme.mjs --arch both
  *
- * 输出到仓库 docs/assets/：
- *   dashboard-<lang>.png   总览（工作室）
- *   studio-<lang>.gif      工作室连线/机器人动画
- *   hosts-<lang>.png       主机
- *   scheduler-<lang>.png   调度机
- *   tasks-<lang>.png       任务
- *   architecture-<lang>.png  架构图 HTML 全页截图
+ * Output goes to the repo's docs/assets/:
+ *   dashboard-<lang>.png   overview (studio)
+ *   studio-<lang>.gif      studio wiring/robot animation
+ *   hosts-<lang>.png       hosts
+ *   scheduler-<lang>.png   scheduler
+ *   tasks-<lang>.png       tasks
+ *   architecture-<lang>.png  full-page screenshot of the architecture HTML
  *
- * 截图前会把内网 IP 与个人主机名替换成示例值，避免截图泄露环境信息。
+ * Before capturing, internal IPs and personal hostnames are replaced with sample values so screenshots do not leak environment details.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -88,7 +88,7 @@ async function waitFor(fn, timeout, label) {
   throw new Error(`等待超时：${label}`);
 }
 
-/** 文本替换：内网 IP、个人主机名不进公开截图。 */
+/** Text replacement: internal IPs and personal hostnames stay out of public screenshots. */
 const SCRUB = `(() => {
   const ips = /\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g;
   const names = [["thinkpad", "workstation-a"], ["thinkcentre", "workstation-b"], ["chromebox", "workstation-c"], ["docker-host", "workstation-a"]];
@@ -146,7 +146,7 @@ async function makeStudioGif() {
     return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: r.width, height: r.height };
   })()`);
   if (!rect) throw new Error("找不到 .scene");
-  // 卡片是绝对定位的，会略微溢出 .scene；多截一圈，避免裁掉底部主机名。
+  // Cards are absolutely positioned and slightly overflow .scene; capture an extra margin so the hostname at the bottom is not clipped.
   const clip = {
     x: Math.max(0, Math.round(rect.x - 16)),
     y: Math.max(0, Math.round(rect.y)),

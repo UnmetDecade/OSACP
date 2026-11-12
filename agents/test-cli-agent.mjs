@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * cli-agent.mjs 的协议级冒烟测试（不依赖真实 Claude Code / Codex）。
+ * Protocol-level smoke test for cli-agent.mjs (does not depend on real Claude Code / Codex).
  *
- * 运行：node agents/test-cli-agent.mjs
+ * Run: node agents/test-cli-agent.mjs
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -157,7 +157,7 @@ async function buildTest() {
 
 async function missingCliTest() {
   const s = start("task.chat.worker");
-  // 用不存在的命令覆盖（重新起一个进程，参数不同）
+  // Override with a nonexistent command (start a new process with different arguments)
   s.child.kill("SIGKILL");
   const child = spawn(
     process.execPath,

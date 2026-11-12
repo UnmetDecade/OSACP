@@ -1,9 +1,9 @@
--- 005: 运行必需的资源画像与 task.build 定义。
+-- 005: Resource profiles and the task.build definition required at runtime.
 --
--- 002_seed.sql 里有演示主机和实例，只有 --seed 时才执行；但资源画像和
--- task.build 是平台能派发任务的硬前提（tasks.resource_profile_id 是外键，
--- task_definitions 决定 task_type 是否被认识）。每台主机的调度机各有独立库，
--- 不跑种子也应该能直接收任务，所以把这两块拆到这里，随迁移总是执行。
+-- 002_seed.sql contains demo hosts and instances and runs only with --seed; but resource profiles and
+-- task.build are hard prerequisites for dispatching tasks (tasks.resource_profile_id is a foreign key,
+-- and task_definitions decides whether a task_type is known). Each host has its own scheduler database,
+-- and should accept tasks without the seed, so these two blocks live here and always run with migrations.
 
 INSERT INTO resource_profiles (profile_id, cpu_millicores, memory_bytes, disk_bytes, timeout_seconds) VALUES
   ('rp_control',        2000, 1073741824,  5368709120, 7200),

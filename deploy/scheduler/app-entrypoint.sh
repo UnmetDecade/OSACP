@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 调度机容器入口（纯 OS 镜像版）。
+# Scheduler container entrypoint (pure OS image version).
 #
-# 镜像是官方 ubuntu，部署时只带这些文件：应用 bundle（/opt/platform/app）、
-# Agent Profile（/opt/platform/profiles.json）。Node、Agent CLI、openssh deb
-# 都在主机缓存里（只读挂到 /opt/platform/cache），容器里不烘焙运行时。
+# The image is official ubuntu, and deployment ships only these files: the application bundle (/opt/platform/app),
+# the Agent Profile (/opt/platform/profiles.json). Node, the Agent CLI and the openssh deb
+# all live in the host cache (mounted read-only at /opt/platform/cache); the runtime is not baked into the container.
 set -euo pipefail
 
 CACHE="${PLATFORM_CACHE_DIR:-/opt/platform/cache}"
@@ -17,9 +17,9 @@ if [[ -z "$NODE" ]]; then
   echo "主机缓存里没有 Node：$CACHE/node/bin/node；请在主机 ~/.platform/cache/node 放一份 Node 22" >&2
   exit 1
 fi
-# Agent CLI（claude / codex）按需放在缓存目录，调度机里的 cli-agent 从 PATH 找它们。
+# The Agent CLI (claude / codex) is placed in the cache directory as needed; cli-agent in the scheduler finds them via PATH.
 export PATH="$CACHE/node/bin:$CACHE/agents:${PATH}"
-# 让 docker exec / ssh 进来的 shell 也能直接用 node、claude，不用记缓存路径。
+# Let shells entered via docker exec / ssh use node and claude directly, without remembering cache paths.
 for b in node npm npx; do
   [[ -x "$CACHE/node/bin/$b" ]] && ln -sf "$CACHE/node/bin/$b" /usr/local/bin/$b
 done
@@ -34,22 +34,22 @@ SCHEDULER_AGENT_PROFILE_ID="${SCHEDULER_AGENT_PROFILE_ID:-agp_scheduler}"
 SCHEDULER_HOST_ID="${SCHEDULER_HOST_ID:-docker-host-01}"
 PORT="${PORT:-8443}"
 
-# 调度机 Agent 的构建机工具（MCP stdio）：工具通过本机调度 API 下发任务，
-# 端口按实际监听写进配置，不写死。
+# Builder tools for the scheduler Agent (MCP stdio): the tools dispatch tasks through the local scheduler API,
+# with the port written into the config based on the actual listener rather than hardcoded.
 cat > "$APP/mcp.json" <<JSON
 {"mcpServers":{"builders":{"command":"$NODE","args":["$APP/tools.mjs"],"env":{"SCHEDULER_URL":"http://127.0.0.1:${PORT}"}}}}
 JSON
-# 单个工具调用可能要跑几分钟（apt 安装 / 编译），默认给 10 分钟。
+# A single tool call may take several minutes (apt install / compilation); default to 10 minutes.
 export MCP_TIMEOUT="${MCP_TIMEOUT:-30000}"
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-600000}"
 
 mkdir -p /root/.ssh /run/sshd \
   /opt/platform/{artifacts,keys,logs,audit,tokens,workspace/scheduler}
 chmod 700 /root/.ssh
-# keys 通常以只读卷挂入，chmod 会返回 EROFS；权限由宿主机侧决定。
+# keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
-# 纯 ubuntu 镜像没有 ssh/sshd：从主机缓存的 deb 离线安装，只装一次。
+# The pure ubuntu image has no ssh/sshd: install offline from host-cached debs, only once.
 if ! command -v sshd >/dev/null || ! command -v ssh >/dev/null; then
   if compgen -G "$CACHE/openssh/*.deb" >/dev/null; then
     DEBIAN_FRONTEND=noninteractive dpkg -i "$CACHE"/openssh/*.deb
@@ -90,8 +90,8 @@ if [[ "${SEED:-0}" == "1" ]]; then
   "$NODE" migrate.mjs --seed
 fi
 
-# 调度机服务在后台运行；同时起一个 host-runtime 实例跑
-# task.chat.scheduler / task.console.scheduler，让「派令」能对话和排障。
+# The scheduler service runs in the background; a host-runtime instance is started alongside to run
+# task.chat.scheduler / task.console.scheduler, so the scheduler bot ("Relay") can chat and troubleshoot.
 "$NODE" main.mjs &
 SCHED_PID=$!
 
@@ -142,7 +142,7 @@ fs.writeFileSync("/opt/platform/runtime.config.json", JSON.stringify(cfg, null, 
 '
 export RUNTIME_CONFIG=/opt/platform/runtime.config.json
 export SCHEDULER_TOKEN="${AUTH_TOKEN:-}"
-# 同构建机：小规模平台用更短的领任务轮询，换取交互时延。
+# Same as the builder: small platforms use a shorter task-claim poll to trade for interaction latency.
 export CLAIM_INTERVAL_SECONDS="${CLAIM_INTERVAL_SECONDS:-0.5}"
 
 start_agent() {

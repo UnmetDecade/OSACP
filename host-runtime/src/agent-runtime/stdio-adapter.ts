@@ -16,7 +16,7 @@ export interface AdapterEvent {
 export interface AdapterResult {
   status: "SUCCEEDED" | "FAILED";
   summary?: string;
-  /** 对话类任务的可选文本回复；普通构建任务不需要设置 */
+  /** Optional text reply for chat-type tasks; ordinary build tasks do not need to set it */
   reply?: string;
   outputs?: Array<{ name: string; path: string }>;
   metrics?: Record<string, unknown>;
@@ -26,7 +26,7 @@ export interface AdapterResult {
 export interface AdapterHooks {
   onEvent: (event: AdapterEvent) => void;
   onLog: (line: string) => void;
-  /** 工具调用由 role-agent 的 Policy Guard 执行；错误会原样回给 Adapter */
+  /** Tool calls are executed by role-agent's Policy Guard; errors are returned to the Adapter as-is */
   onToolCall: (params: unknown) => Promise<unknown>;
 }
 
@@ -47,10 +47,10 @@ export class AdapterCrash extends Error {
 }
 
 /**
- * stdio JSON-RPC 2.0 Adapter（每行一个 JSON）。
+ * stdio JSON-RPC 2.0 Adapter (one JSON per line).
  *
- * 这是“同角色换 Agent”的关键边界：Agent 只看到任务、工作区和工具句柄，
- * 看不到调度机令牌、Secret Store 或宿主目录。
+ * This is the key boundary for "swapping Agents under the same role": the Agent sees only the task, the workspace and the tool handle,
+ * not the scheduler token, the Secret Store or host directories.
  */
 export class StdioAdapter {
   private child?: ChildProcessWithoutNullStreams;
@@ -70,8 +70,8 @@ export class StdioAdapter {
   ) {}
 
   /**
-   * 裸机模式下 Agent Profile 仍按容器路径写 /opt/platform/...；
-   * 这里映射到实例目录，Profile 不需要为两种执行方式各写一份。
+   * In native mode, Agent Profiles still write /opt/platform/... as container paths;
+   * this maps them to the instance directory, so a Profile does not need a separate copy for each execution mode.
    */
   private nativePath(value: string): string {
     const root = process.env.PLATFORM_NATIVE_ROOT;
@@ -211,7 +211,7 @@ export class StdioAdapter {
       this.resultWaiter = resolve;
     });
     const response = this.request("agent.execute", params, timeoutMs).catch((e) => {
-      // execute 的响应可能晚于 agent.result；此时以 result 通知为准
+      // The execute response may arrive after agent.result; in that case the result notification takes precedence
       if (this.resultNotify) return null;
       throw e;
     });
@@ -226,7 +226,7 @@ export class StdioAdapter {
     try {
       await this.request("agent.cancel", { reason }, 1500);
     } catch {
-      // Agent 没响应取消就强杀，不能留下孤儿进程
+      // If the Agent does not respond to cancel, kill it forcibly; no orphan processes may be left behind
     }
     this.kill();
   }

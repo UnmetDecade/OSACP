@@ -1,8 +1,8 @@
 /**
- * Agent / API Profile 的运行时视图（docs/agent-api-spec.md §2、§4）。
+ * Runtime view of Agent / API Profiles (docs/agent-api-spec.md §2, §4).
  *
- * 这里刻意不包含任何密钥字段：Profile 只有 `secret_ref`，值只能由
- * Secret Store 按实例身份换取，且只进入 API Adapter 的内存。
+ * Deliberately contains no secret fields: a Profile only has `secret_ref`, and the value can only be
+ * exchanged by the Secret Store based on instance identity, and only ever enters the API Adapter's memory.
  */
 
 export type AdapterKind = "stdio-jsonrpc" | "http-local";
@@ -16,7 +16,7 @@ export interface AgentProfile {
   artifact_image?: string;
   entrypoint: string[];
   args: string[];
-  /** 允许的 tool_id；空数组表示全部权限。 */
+  /** Allowed tool_ids; an empty array means all permissions. */
   allowed_tools: string[];
   task_types: string[];
   model_api_profile_id?: string | null;
@@ -28,7 +28,7 @@ export interface AgentProfile {
   };
   capabilities?: string[];
   enabled?: boolean;
-  /** 下面是 Agent 的人格与职责说明，由适配器拼进提示词。 */
+  /** Below are the Agent's persona and responsibilities, which the adapter assembles into the prompt. */
   description?: string;
   system_prompt?: string;
   persona?: string;
@@ -54,17 +54,17 @@ export interface ApiProfile {
 export interface ProfilesFile {
   agent_profiles?: AgentProfile[];
   api_profiles?: ApiProfile[];
-  /** instance_id -> 绑定；存在时实例只能使用这里列出的 Profile */
+  /** instance_id -> binding; when present, the instance may only use the Profiles listed here */
   bindings?: Record<string, { agent_profile_id: string; api_profile_ids?: string[] }>;
 }
 
 export interface ToolDescriptor {
   tool_id: string;
-  /** 允许的工作流阶段；空数组表示所有阶段 */
+  /** Allowed workflow phases; an empty array means all phases */
   phases: string[];
-  /** 需要的 action_scope；空数组表示不需要额外审批 */
+  /** Required action_scopes; an empty array means no extra approval is needed */
   action_scopes: string[];
-  /** true 表示调用会经本机 API Adapter 出站 */
+  /** true means the call egresses through the local API Adapter */
   egress: boolean;
 }
 

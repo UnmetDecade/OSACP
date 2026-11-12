@@ -30,34 +30,34 @@ export interface AdmissionConfig {
 export interface RuntimeHostConfig {
   pcs_url: string;
   enrollment_token?: string;
-  /** P6：校验 PCS 服务端证书的内部 CA */
+  /** P6: internal CA used to verify the PCS server certificate */
   pcs_ca_file?: string;
-  /** P6 mTLS：本机主机证书与私钥；两者必须同时配置 */
+  /** P6 mTLS: this host's certificate and key; both must be configured together */
   pcs_client_cert_file?: string;
   pcs_client_key_file?: string;
   identity_dir: string;
   state_dir: string;
   command_public_key_file?: string;
   jwt_public_key_file?: string;
-  /** 允许拉取的镜像仓库前缀；空数组 = 全部拒绝 */
+  /** Allowed image registry prefixes; an empty array = deny all */
   image_allowlist: string[];
-  /** 网络策略名 → Docker 网络；host 不在白名单里 */
+  /** Network policy name → Docker network; host is not in the allowlist */
   network_policies: Record<string, string>;
   docker_socket: string;
   /**
-   * 主机本地凭据文件（KEY=VALUE，权限 600）。部署命令只下发变量名，
-   * 值在这里读取后注入容器，因此模型密钥不进入控制面、命令与日志。
+   * Host-local credentials file (KEY=VALUE, mode 600). Deployment commands send only variable names;
+   * values are read here and injected into the container, so model keys never enter the control plane, commands, or logs.
    */
   agent_env_file: string;
   /**
-   * 主机本地运行环境缓存：Node、Agent CLI、deb 包。部署时以只读 bind mount
-   * 挂进容器（/opt/platform/cache），镜像里不再烘焙这些内容。
+   * Host-local runtime cache: Node, Agent CLI, deb packages. Mounted into the container as a read-only bind mount
+   * at deploy time (/opt/platform/cache), so images no longer bake these in.
    */
   cache_dir: string;
   /**
-   * 容器默认登录公钥的来源：主机自己的 authorized_keys，以及存放 *.pub 的目录。
-   * 容器里 sshd 只允许密钥登录，部署时把这些公钥写进 root 的 authorized_keys，
-   * 于是能登录主机的人就能 root 进容器，不需要密码。
+   * Sources of default login public keys for containers: the host's own authorized_keys, and the directory holding *.pub files.
+   * Inside the container sshd only allows key login; at deploy time these public keys are written into root's authorized_keys,
+   * so anyone who can log in to the host can root into the container without a password.
    */
   ssh_authorized_keys_file?: string;
   ssh_pubkey_dir?: string;

@@ -5,7 +5,7 @@ import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
 import { Icon } from "./Icon";
 
-// 文案在渲染时再翻译：模块级常量只求值一次，放在这里调用 t() 会停在启动时的语言。
+// Copy is translated at render time: module-level constants are evaluated once, so calling t() here would freeze the startup language.
 const NAV: { to: string; label: string; icon: string }[] = [
   { to: "/", label: "总览", icon: "grid" },
   { to: "/builders", label: "构建机", icon: "box" },

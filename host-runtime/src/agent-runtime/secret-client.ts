@@ -1,8 +1,8 @@
 /**
- * Secret Store 客户端（§4.2）。
+ * Secret Store client (§4.2).
  *
- * 只把短期凭据放进内存；不写日志、不上报、不传给 Adapter。
- * 凭据绑定实例身份：Secret Store 用这里的实例 JWT 的 sub 做授权。
+ * Only short-lived credentials are kept in memory; they are never logged, reported, or passed to the Adapter.
+ * Credentials are bound to instance identity: the Secret Store authorizes using the sub of the instance JWT here.
  */
 
 export class SecretDenied extends Error {
@@ -24,7 +24,7 @@ export interface SecretClientOptions {
   url: string;
   token: string | (() => string | undefined);
   timeoutMs?: number;
-  /** 本地缓存窗口；默认 0（每次出站都向 Store 复核，吊销立即生效） */
+  /** Local cache window; defaults to 0 (recheck with the Store on every egress, so revocation takes effect immediately) */
   cacheMs?: number;
 }
 
@@ -33,7 +33,7 @@ export class SecretClient {
 
   constructor(private readonly opts: SecretClientOptions) {}
 
-  /** 令牌只在请求头里出现；错误信息里也绝不回显凭据。 */
+  /** The token appears only in the request header; credentials are never echoed in error messages either. */
   private authToken(): string {
     const token = typeof this.opts.token === "function" ? this.opts.token() : this.opts.token;
     if (!token) throw new SecretDenied("SECRET_TOKEN_MISSING", "实例没有可用的身份令牌");
@@ -81,7 +81,7 @@ export class SecretClient {
     return { credential, expiresAt };
   }
 
-  /** 吊销/轮换后立即丢弃本地缓存，下一次请求重新解析。 */
+  /** Drop the local cache immediately after revocation/rotation; the next request resolves again. */
   invalidate(secretRef?: string): void {
     if (secretRef) this.cache.delete(secretRef);
     else this.cache.clear();

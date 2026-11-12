@@ -27,8 +27,8 @@ export interface ReconcilerDeps {
 }
 
 /**
- * 期望态（PCS 的命令 + 本机持久化的 desired state）与实际态（Docker）对账。
- * 所有容器操作串行执行；失败重试有退避，不会每 15s 重复拉同一个坏镜像。
+ * Reconcile the desired state (PCS commands + locally persisted desired state) against the actual state (Docker).
+ * All container operations run serially; failed retries are backed off, so the same bad image is not pulled again every 15s.
  */
 export class Reconciler {
   private chain: Promise<unknown> = Promise.resolve();
@@ -60,8 +60,8 @@ export class Reconciler {
           }
           const grantId = command.resource_grant?.grant_id;
           if (!grantId) return fail("INVALID_GRANT", "DEPLOY 缺少 resource_grant");
-          // 同一实例的新部署取代旧部署：丢掉本机旧记录，否则对账会继续
-          // 按旧镜像重建容器，和新部署反复抢同一个容器名。
+          // A new deployment for the same instance supersedes the old one: drop the old local record, otherwise reconciliation keeps
+          // rebuilding the container from the old image and fights the new deployment over the same container name.
           for (const other of state.listDeployments()) {
             if (other.instance_id === instanceId && other.deployment_id !== deploymentId) {
               state.removeDeployment(other.deployment_id);
@@ -137,13 +137,13 @@ export class Reconciler {
             if (existing.state === "running") {
               await this.deps.engine.stop(name, this.deps.cfg.container_stop_timeout_seconds);
             }
-            // 配置项只决定 Docker 创建的匿名卷；平台命名卷单独删。
+            // The config option only controls the anonymous volumes Docker creates; platform-named volumes are removed separately.
             await this.deps.engine.remove(name, this.deps.cfg.remove_volumes_on_remove);
           }
-          // REMOVE 是永久删除：即使容器已经不在，也要把它的数据卷清掉。
+          // REMOVE is a permanent deletion: even if the container is already gone, its data volumes must be cleared.
           if (dep) {
             for (const v of dep.spec.volumes ?? []) {
-              // shared-* 是整台主机共用的卷，别的容器可能还在用。
+              // shared-* volumes are shared across the whole host; other containers may still be using them.
               if (v.name.startsWith("shared-")) continue;
               await this.deps.engine.removeVolume(volumeName(instanceId, v.name));
             }
@@ -174,7 +174,7 @@ export class Reconciler {
     this.deps.state.save();
   }
 
-  /** 按执行方式分派：容器走 Docker，裸机角色在宿主机上拉起进程。 */
+  /** Dispatch by execution mode: containers go through Docker, bare-metal roles run as a process on the host. */
   private startDeployment(
     dep: LocalDeployment,
     action: "DEPLOY" | "START" | "RESTART",
@@ -185,7 +185,7 @@ export class Reconciler {
       : this.ensureRunning(dep, action, pcsReachable);
   }
 
-  /** 裸机实例的数据目录：与 runtime 状态目录同级，按实例隔离。 */
+  /** Data directory for a bare-metal instance: alongside the runtime state directory, isolated per instance. */
   private nativeRoot(instanceId: string): string {
     const safe = instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48);
     return path.join(path.dirname(this.deps.cfg.state_dir), "native", safe);
@@ -196,8 +196,8 @@ export class Reconciler {
   }
 
   /**
-   * 读 pid 并确认这个 pid 仍然是本实例的 agent 进程。
-   * 只看 pid 是否存活不够：主机重启后 pid 会被别的进程复用。
+   * Read the pid and confirm that this pid is still the agent process for this instance.
+   * Checking only whether the pid is alive is not enough: after a host reboot the pid may be reused by another process.
    */
   private nativeProcess(root: string): { pid: number; alive: boolean } | null {
     const file = this.nativePidFile(root);
@@ -220,7 +220,7 @@ export class Reconciler {
     return { pid, alive: true };
   }
 
-  /** 写部署下发的文件到本机目录；路径仍按 /opt/platform 的约定，映射到实例根下。 */
+  /** Write files delivered by the deployment to the local directory; paths still follow the /opt/platform convention and map under the instance root. */
   private writeNativeFiles(root: string, dep: LocalDeployment): void {
     for (const f of dep.spec.files ?? []) {
       const rel = f.path.startsWith("/opt/platform/")
@@ -282,7 +282,7 @@ export class Reconciler {
     };
   }
 
-  /** 宿主机上启动一个构建机进程；日志、pid、workspace 都放在实例目录。 */
+  /** Start a builder process on the host; logs, pid and workspace all live in the instance directory. */
   private async ensureNativeRunning(
     dep: LocalDeployment,
     action: "DEPLOY" | "START" | "RESTART",
@@ -301,7 +301,7 @@ export class Reconciler {
     }
     if (running?.alive) await this.stopNative(dep);
 
-    // 每次启动都重写部署文件：Profile、能力值、调度机地址都可能随部署变化。
+    // Rewrite the deployment files on every start: the Profile, capability values and scheduler URL may all change with the deployment.
     this.writeNativeFiles(root, dep);
     for (const dir of ["app", "agents", "codex", "workspace", "logs", "tokens", "audit"]) {
       fs.mkdirSync(path.join(root, dir), { recursive: true, mode: 0o700 });
@@ -342,8 +342,8 @@ export class Reconciler {
       ...agentEnv,
       ...env,
       RUNTIME_CONFIG: configPath,
-      // Agent Profile 里的入口路径按容器约定写的是 /opt/platform/...；
-      // 裸机模式由 adapter 映射到实例目录。
+      // Entrypoint paths in the Agent Profile use the container convention /opt/platform/...;
+      // in native mode the adapter maps them to the instance directory.
       PLATFORM_NATIVE_ROOT: root,
       CODEX_HOME: path.join(root, "codex"),
       INSTANCE_TOKEN_DIR: path.join(root, "tokens"),
@@ -380,7 +380,7 @@ export class Reconciler {
     child.unref();
     fs.writeFileSync(this.nativePidFile(root), String(child.pid), { mode: 0o600 });
 
-    // 进程起来后很快退出（缺 Node 依赖、配置错误）要当场报出来，不能等调度机超时。
+    // A process that exits shortly after starting (missing Node dependencies, bad config) must be reported on the spot, not left for the scheduler to time out.
     await new Promise((r) => setTimeout(r, 800));
     if (!this.nativeProcess(root)?.alive) {
       return fail("NATIVE_PROCESS_EXITED", "构建机进程启动后立即退出", {
@@ -391,7 +391,7 @@ export class Reconciler {
     return ok({ native_pid: child.pid, action: action === "RESTART" ? "restarted" : "started" });
   }
 
-  /** 只杀确认属于本实例的进程；pid 文件被复用时不误杀。 */
+  /** Kill only a process confirmed to belong to this instance; do not kill the wrong one when a pid file has been reused. */
   private async stopNative(dep: LocalDeployment): Promise<number | null> {
     const root = this.nativeRoot(dep.instance_id);
     const info = this.nativeProcess(root);
@@ -400,7 +400,7 @@ export class Reconciler {
       try {
         fs.unlinkSync(this.nativePidFile(root));
       } catch {
-        /* 没有 pid 文件 */
+        /* no pid file */
       }
       return null;
     }
@@ -410,7 +410,7 @@ export class Reconciler {
       try {
         process.kill(info.pid, "SIGTERM");
       } catch {
-        /* 已经退出 */
+        /* already exited */
       }
     }
     const deadline = Date.now() + 5000;
@@ -444,7 +444,7 @@ export class Reconciler {
     }
   }
 
-  /** 启动 / 重启 / 幂等启动一个容器。已存在的同名容器必须属于同一部署。 */
+  /** Start / restart / idempotently start a container. An existing container with the same name must belong to the same deployment. */
   private async ensureRunning(
     dep: LocalDeployment,
     action: "DEPLOY" | "START" | "RESTART",
@@ -453,8 +453,8 @@ export class Reconciler {
     const gate = this.gate(action, pcsReachable);
     if (!gate.allowed) return fail(gate.reason!, `本机当前不允许启动容器：${gate.reason}`);
 
-    // 容器引用的网络可能不在本机（新主机、网络被删过）。启动既有容器
-    // 也会因为 network not found 失败，所以先补齐网络再谈 start。
+    // The network a container references may not exist on this host (new host, network deleted).
+    // Starting an existing container also fails with "network not found", so fill in the network before any start.
     await this.ensureNetwork(dep.spec);
 
     const name = containerName(dep.instance_id);
@@ -463,8 +463,8 @@ export class Reconciler {
     if (existing) {
       const owner = existing.labels["platform.deployment_id"];
       if (owner !== dep.deployment_id) {
-        // 同一实例重新部署（换镜像 / 换规格）时，新部署接管容器名；
-        // 只有容器属于别的实例才算真冲突，否则先移除旧容器再按新规格重建。
+        // When an instance is redeployed (new image / new spec), the new deployment takes over the container name;
+        // only a container belonging to another instance is a real conflict, otherwise remove the old one and rebuild to the new spec.
         if (existing.labels["platform.instance_id"] !== dep.instance_id) {
           return fail("CONTAINER_NAME_CONFLICT", `${name} 已被其他部署占用`, {
             owner,
@@ -478,7 +478,7 @@ export class Reconciler {
       }
     }
     if (existing) {
-      // 重启/拉起前刷新 Profile 文件：Profile 是部署意图的一部分，不能继续用旧的。
+      // Refresh the Profile files before restart/start: the Profile is part of the deployment intent, the old one must not be kept.
       if (action === "RESTART" && existing.state === "running") {
         await this.writeFiles(dep.spec, name);
         await this.deps.engine.restart(name, this.deps.cfg.container_stop_timeout_seconds);
@@ -489,7 +489,7 @@ export class Reconciler {
         await this.deps.engine.start(name);
         return ok({ container_id: existing.id, action: "started" });
       }
-      // 对账每轮都会走到这里：容器已经在跑、文件也已就位，不再重复写。
+      // Reconciliation reaches here on every round: the container is already running and the files are in place, so do not rewrite them.
       if (action === "DEPLOY") await this.writeFiles(dep.spec, name);
       return ok({ container_id: existing.id, action: "already_running" });
     }
@@ -507,7 +507,7 @@ export class Reconciler {
     }
 
     await this.ensureImage(dep.spec);
-    // 缓存目录必须存在，否则 Docker 会拒绝 bind mount；内容由控制面按需下发。
+    // The cache directory must exist, otherwise Docker rejects the bind mount; its contents are delivered by the control plane on demand.
     if (this.deps.cfg.cache_dir) fs.mkdirSync(this.deps.cfg.cache_dir, { recursive: true });
     const config = buildContainerConfig(
       {
@@ -537,7 +537,7 @@ export class Reconciler {
     return ok({ container_id: info?.id ?? null, action: "created" });
   }
 
-  /** 部署带来的配置文件写进容器；失败即部署失败，不能带着旧 Profile 启动。 */
+  /** Write deployment config files into the container; a failure means the deployment fails, and it must not start with an old Profile. */
   private async writeFiles(spec: InstanceSpec, name: string): Promise<void> {
     const files = spec.files ?? [];
     if (!files.length) return;
@@ -546,8 +546,8 @@ export class Reconciler {
   }
 
   /**
-   * 只把命令点名的变量从主机凭据文件读出来。值不经过控制面，
-   * 缺文件或缺变量都失败关闭——宁可部署失败，也不让 Agent 拿着空密钥跑。
+   * Read only the variables named by the command out of the host credential file. Values never pass through the control plane;
+   * a missing file or missing variable fails closed—better a failed deployment than an Agent running with empty keys.
    */
   private readAgentEnv(spec: InstanceSpec): Record<string, string> {
     const names = spec.agent_env ?? [];
@@ -570,7 +570,7 @@ export class Reconciler {
     return Object.fromEntries(names.map((n) => [n, values.get(n)!]));
   }
 
-  /** 容器网络策略映射到本机 Docker 网络；bridge/none 是内置的，不用建。 */
+  /** Map the container network policy to a local Docker network; bridge/none are built in and need no creation. */
   private async ensureNetwork(spec: InstanceSpec): Promise<void> {
     const networkMode = this.deps.cfg.network_policies[spec.network_policy] ?? "bridge";
     if (networkMode !== "bridge" && networkMode !== "none") {
@@ -611,7 +611,7 @@ export class Reconciler {
     );
   }
 
-  /** 重启后恢复：容器继续跑；缺失时按期望态重建，但 PCS 失联或看门狗保护时不动。 */
+  /** Recovery after restart: running containers stay up; when missing, rebuild from the desired state, but do nothing when PCS is unreachable or the watchdog is protecting. */
   reconcile(pcsReachable: boolean): Promise<void> {
     return this.serialize(async () => {
       const { state, engine, log } = this.deps;
@@ -633,7 +633,7 @@ export class Reconciler {
             }
             await engine.remove(name, this.deps.cfg.remove_volumes_on_remove).catch(() => {});
           }
-          // 容器可能已被手工删掉；数据卷仍然属于这次 REMOVE。
+          // The container may already have been deleted by hand; the data volumes still belong to this REMOVE.
           for (const v of dep.spec.volumes ?? []) {
             if (v.name.startsWith("shared-")) continue;
             await engine.removeVolume(volumeName(dep.instance_id, v.name)).catch(() => {});
@@ -677,8 +677,8 @@ export class Reconciler {
   }
 
   /**
-   * 裸机实例的实际态。PCS 的上报通道按 deployment_id 匹配 `containers`，
-   * native 没有容器，就在这里伪装成一条 running 记录，避免部署永远停在 STARTING。
+   * Actual state of a bare-metal instance. The PCS report channel matches `containers` by deployment_id;
+   * native has no container, so fake a running record here to keep deployments from being stuck in STARTING forever.
    */
   nativeReports(): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
@@ -702,7 +702,7 @@ export class Reconciler {
     return out;
   }
 
-  /** 裸机实例的对账：进程在就什么都不做，缺失时按期望态拉起，删除时清目录。 */
+  /** Reconciliation for a bare-metal instance: do nothing while the process is up, start it from the desired state when missing, clean the directory on removal. */
   private async reconcileNative(dep: LocalDeployment, pcsReachable: boolean): Promise<void> {
     const { state, log } = this.deps;
     const root = this.nativeRoot(dep.instance_id);
@@ -754,7 +754,7 @@ export class Reconciler {
         memory_bytes: dep?.spec.resource_profile.memory_limit_bytes ?? 0,
       });
     }
-    // 裸机实例不在 Docker 列表里，单独把在跑的进程算进本机准入占用。
+    // Bare-metal instances are not in the Docker list; count the running process into local admission usage separately.
     for (const dep of this.deps.state.listDeployments()) {
       if (dep.spec.execution !== "native" || dep.desired_state !== "RUNNING") continue;
       if (!this.nativeProcess(this.nativeRoot(dep.instance_id))?.alive) continue;

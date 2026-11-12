@@ -1,12 +1,12 @@
 /**
- * P6 传输层冒烟：用 Host Runtime 的 PcsClient 走 HTTPS + mTLS。
+ * P6 transport-layer smoke test: use Host Runtime's PcsClient over HTTPS + mTLS.
  *
- * 用法：
+ * Usage:
  *   PCS_URL=https://127.0.0.1:7911 \
  *   PCS_CA_FILE=pki/ca.crt PCS_CLIENT_CERT_FILE=pki/client.crt PCS_CLIENT_KEY_FILE=pki/client.key \
  *   P6_ENROLLMENT_TOKEN=... tsx p6-tls-smoke.ts
  *
- * 令牌只从环境变量读取；不打印令牌与证书内容。
+ * The token is read only from the environment; tokens and certificate contents are never printed.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -71,7 +71,7 @@ assert.ok(Date.parse(renewed.expires_at) > Date.now());
 const command = await client.nextCommand(1);
 assert.equal(command, null);
 
-// 只写入 0600 身份文件，供断线重连测试复用；不打印令牌。
+// Write only a 0600 identity file for reuse by reconnect tests; never print the token.
 const stateFile = process.env.P6_STATE_FILE;
 if (stateFile) {
   fs.writeFileSync(

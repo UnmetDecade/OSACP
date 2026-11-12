@@ -2,21 +2,21 @@ import { q, q1 } from "../db.js";
 import { ApiError } from "../errors.js";
 import { config } from "../config.js";
 
-/** 连续错过若干次上报的子结点不再计入 ΣW：主机脱离或结点下线后能力要立刻回落。 */
+/** A child that misses several reports in a row is no longer counted in ΣW: capability must drop immediately when a host leaves or a node goes offline. */
 const STALE_CHILD_SECONDS = Math.max(
   90,
   Math.ceil(config.federationIntervalMs / 1000) * 3,
 );
 
 /**
- * 结点调度机之间的能力上报（架构规则 2/3）。
+ * Capability reporting between node schedulers (architecture rules 2/3).
  *
- * 每台主机的调度机既可能是根，也可能是子结点：
- *   - 子结点把自己「本地构建机 + 已上报子结点」的 ΣW 推到上一级；
- *   - 父结点只保存直接子结点的一行，取总数时把它们的 subtree_score 相加，
- *     因此每次上报都已经是“整棵子树”的值，父结点不需要递归查询。
+ * A scheduler on each host may be either a root or a child:
+ *   - a child pushes the ΣW of "local builders + reported children" to its parent;
+ *   - the parent stores only one row per direct child and sums their subtree_score for the total,
+ *     so every report is already a whole-subtree value and the parent need not query recursively.
  *
- * 调度机只相信带了 FEDERATION_TOKEN 的上报；没有配置 token 时该接口整体关闭。
+ * The scheduler trusts only reports carrying FEDERATION_TOKEN; when no token is configured the endpoint is disabled entirely.
  */
 export interface ReportedInstance {
   instance_id: string;
@@ -35,13 +35,13 @@ export interface NodeReportInput {
   subtree_score?: number;
   builder_count?: number;
   child_count?: number;
-  /** 本调度机的可达地址；父结点中继任务时用它。 */
+  /** This scheduler's reachable address; the parent uses it when relaying tasks. */
   url?: string | null;
-  /** 本地在线构建机的最大 W，父结点据此判断难度 D 的任务能否下推。 */
+  /** Max W among local online builders; the parent uses it to decide whether a difficulty-D task can be pushed down. */
   max_builder_score?: number;
-  /** 本地没有活跃租约的构建机数量，父结点据此在多个子结点间挑更闲的。 */
+  /** Number of local builders with no active lease; the parent uses it to pick the idler among multiple children. */
   idle_builder_count?: number;
-  /** 子树内实例名册（本地 + 已上报子结点），用于把 target_instance_id 路由到正确的子结点。 */
+  /** Instance roster within the subtree (local + reported children), used to route target_instance_id to the correct child. */
   instances?: ReportedInstance[];
 }
 
@@ -57,7 +57,7 @@ function count(value: unknown): number {
   return Math.min(1_000_000, Math.round(n));
 }
 
-/** 只接受 http(s) 地址；父结点会把它拼进中继请求，不能是任意协议。 */
+/** Only http(s) addresses are accepted; the parent embeds it into relay requests, so arbitrary schemes are not allowed. */
 function sanitizeUrl(value: unknown): string | null {
   const raw = typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
   if (!raw) return null;
@@ -152,25 +152,25 @@ export async function listNodes() {
 
 export interface CapabilitySnapshot {
   node_id: string;
-  /** 本机在册构建机的 ΣW */
+  /** ΣW of this machine's registered builders */
   local_score: number;
   builder_count: number;
-  /** 本机在线构建机的最大 W；难度 D 的任务只有 max >= D 才接得住 */
+  /** Max W among this machine's online builders; a difficulty-D task is only feasible when max >= D */
   max_builder_score: number;
-  /** 本机没有活跃租约的构建机数量 */
+  /** Number of this machine's builders with no active lease */
   idle_builder_count: number;
-  /** 本机 + 子树的在线构建机数量：父结点按它判断子树里有没有可派的机器 */
+  /** Online builder count for this machine + subtree: the parent uses it to decide whether the subtree has a dispatchable machine */
   subtree_builder_count: number;
-  /** 本机 + 子树的最大 W：父结点按难度 D 选结点 */
+  /** Max W for this machine + subtree: the parent uses difficulty D to choose a node */
   subtree_max_builder_score: number;
-  /** 本机 + 子树的空闲构建机数量：父结点在多个子结点间挑更闲的 */
+  /** Idle builder count for this machine + subtree: the parent picks the idler among multiple children */
   subtree_idle_builder_count: number;
-  /** 直接子结点上报的子树 ΣW */
+  /** Subtree ΣW reported by direct children */
   child_score: number;
   child_count: number;
-  /** 本机 + 全部子结点 */
+  /** This machine + all children */
   subtree_score: number;
-  /** 本机与子树的实例名册，随上报交给父结点做目标实例路由 */
+  /** Instance roster for this machine and subtree, sent with the report so the parent can route target instances */
   instances: ReportedInstance[];
   children: Array<{
     node_id: string;
@@ -189,8 +189,8 @@ export interface CapabilitySnapshot {
 }
 
 /**
- * 当前调度机的能力快照。local 只统计未离线的构建机；
- * offline/failed 的实例不再贡献 W，避免根调度机按一台已经消失的机器派活。
+ * Capability snapshot of the current scheduler. local counts only non-offline builders;
+ * offline/failed instances no longer contribute W, so the root never dispatches based on a machine that is gone.
  */
 export async function capabilitySnapshot(nodeId: string): Promise<CapabilitySnapshot> {
   const local = await q1<{ score: number; n: number; max_score: number; idle: number }>(
@@ -224,8 +224,8 @@ export async function capabilitySnapshot(nodeId: string): Promise<CapabilitySnap
     [nodeId, STALE_CHILD_SECONDS],
   );
   const childScore = children.reduce((sum: number, c: any) => sum + Number(c.subtree_score ?? 0), 0);
-  // 容量类指标也要随层级汇总，否则中间结点只报自己的本地构建机，
-  // 上层的根会以为整棵子树没有能接住难度 D 的机器。
+  // Capacity metrics must aggregate up the hierarchy too, or an intermediate node reports only its own local builders,
+  // and the root above will think the whole subtree has no machine that can handle difficulty D.
   const childBuilders = children.reduce((sum: number, c: any) => sum + Number(c.builder_count ?? 0), 0);
   const childIdle = children.reduce(
     (sum: number, c: any) => sum + Number(c.idle_builder_count ?? 0),
@@ -235,8 +235,8 @@ export async function capabilitySnapshot(nodeId: string): Promise<CapabilitySnap
     (max: number, c: any) => Math.max(max, Number(c.max_builder_score ?? 0)),
     0,
   );
-  // 实例名册随层级向上汇总：根结点不直接接触孙结点的构建机，也能把
-  // target_instance_id 路由到包含它的那个直接子结点。
+  // The instance roster aggregates upward too: the root never touches grandchild builders directly, yet can still
+  // route target_instance_id to the direct child that contains it.
   const instances = [...localInstances];
   const seen = new Set(instances.map((i) => i.instance_id));
   for (const child of children as CapabilitySnapshot["children"]) {

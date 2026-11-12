@@ -1,7 +1,7 @@
--- 实例名只在主机内唯一（两台主机都可以有 builder-a），Agent / API 绑定也必须按主机作用域。
+-- Instance names are unique only within a host (two hosts can both have builder-a), so Agent / API bindings must also be host-scoped.
 --
--- 旧行没有 host_id：按「离绑定时间最近的那次部署」回填主机。找不到任何部署的绑定
--- 无法确定归属，直接删除（这种绑定本来也没有实例会读取）。
+-- Legacy rows have no host_id: backfill the host from "the deployment closest to the binding time". For bindings with no matching deployment
+-- ownership cannot be determined, so they are deleted outright (no instance would read such bindings anyway).
 ALTER TABLE role_agent_bindings ADD COLUMN IF NOT EXISTS host_id TEXT;
 ALTER TABLE role_api_bindings ADD COLUMN IF NOT EXISTS host_id TEXT;
 
@@ -28,7 +28,7 @@ UPDATE role_api_bindings b
 DELETE FROM role_agent_bindings WHERE host_id IS NULL;
 DELETE FROM role_api_bindings WHERE host_id IS NULL;
 
--- 主键从 instance_id 换成 (host_id, instance_id)；重复执行时跳过。
+-- Change the primary key from instance_id to (host_id, instance_id); skip if already applied.
 DO $$
 BEGIN
   IF NOT EXISTS (

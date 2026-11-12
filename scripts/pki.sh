@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# 内部 CA 与测试证书生成（P6）。
+# Internal CA and test certificate generation (P6).
 #
-# 用法：
-#   ./scripts/pki.sh OUTDIR [额外 DNS 名...]
+# Usage:
+#   ./scripts/pki.sh OUTDIR [extra DNS names...]
 #
-# 生成：
-#   ca.key / ca.crt                 内部 CA（私钥 0600，生产应放离线/受控环境）
-#   pcs.key / pcs.crt               PCS 服务端证书（serverAuth）
-#   scheduler.key / scheduler.crt   调度机服务端证书（serverAuth）
-#   secret-store.key / .crt         Secret Store 服务端证书（serverAuth）
-#   client.key / client.crt         主机/实例客户端证书（clientAuth，测试共用）
+# Generates:
+#   ca.key / ca.crt                 Internal CA (private key 0600; in production should be kept offline/controlled)
+#   pcs.key / pcs.crt               PCS server certificate (serverAuth)
+#   scheduler.key / scheduler.crt   Scheduler server certificate (serverAuth)
+#   secret-store.key / .crt         Secret Store server certificate (serverAuth)
+#   client.key / client.crt         Host/instance client certificate (clientAuth, shared for testing)
 #
-# SAN 默认包含 localhost / 127.0.0.1 与传入的额外域名。
-# 这是参考实现的测试脚本；生产证书应由企业 CA 或受控内部 CA 签发。
+# SAN by default includes localhost / 127.0.0.1 and any extra domain names passed in.
+# This is a test script for the reference implementation; production certificates should be issued by an enterprise CA or a controlled internal CA.
 set -euo pipefail
 
 OUT="${1:?用法: pki.sh OUTDIR [额外 DNS 名...]}"

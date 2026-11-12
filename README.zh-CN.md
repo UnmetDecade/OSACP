@@ -52,7 +52,7 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 - **调度机** 是状态权威。它排队、准入、发租约、fencing、派发、记账。根与结点调度机组成递归树；跨调度机的任务只下推，不复制。
 - **构建机** 是唯一的工作角色。它领取任务，运行 Agent 适配器或确定性 Shell，持续上报进度并上传产物。
 
-完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](docs/开源分布式AI-Agent计算与调度平台架构图.html)与 [docs/architecture.md](docs/architecture.md)。
+完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](docs/开源分布式AI-Agent计算与调度平台架构图.html)与 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
 
 ## 界面
 
@@ -105,7 +105,7 @@ PCS_IMAGE_ALLOWLIST=docker.io/library/ \
 npm start
 ```
 
-在管理应用里添加本地主机或 SSH 主机，启动 runtime，再部署调度机与构建机。完整步骤见 [docs/deployment.md](docs/deployment.md) 与 [deploy/README.md](deploy/README.md)。
+在管理应用里添加本地主机或 SSH 主机，启动 runtime，再部署调度机与构建机。完整步骤见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md) 与 [deploy/README.zh-CN.md](deploy/README.zh-CN.md)。
 
 ### 3. 管理应用
 
@@ -139,15 +139,15 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 
 | 路径 | 职责 |
 |---|---|
-| [`scheduler/`](scheduler/) | 任务状态机、队列、租约、fencing、事件、联邦中继 |
-| [`pcs-issuer/`](pcs-issuer/) | PCS 控制面：主机、部署计划、签名命令、档案、审计 |
-| [`host-runtime/`](host-runtime/) | 主机守护进程：注册、验签、创建容器、上报资源 |
-| [`admin-app/`](admin-app/) | React 19 + Vite 控制台：总览、主机、构建机、调度机、档案、任务、终端、对话、日志 |
-| [`secret-store/`](secret-store/) | Secret Store 参考实现，按实例解析短期凭据 |
-| [`agents/`](agents/) | Claude Code / Codex / 自定义 CLI 的 Agent 适配器 |
-| [`deploy/`](deploy/) | 单机 Compose、容器入口、部署载荷构建 |
+| [`scheduler/`](scheduler/README.zh-CN.md) | 任务状态机、队列、租约、fencing、事件、联邦中继 |
+| [`pcs-issuer/`](pcs-issuer/README.zh-CN.md) | PCS 控制面：主机、部署计划、签名命令、档案、审计 |
+| [`host-runtime/`](host-runtime/README.zh-CN.md) | 主机守护进程：注册、验签、创建容器、上报资源 |
+| [`admin-app/`](admin-app/README.zh-CN.md) | React 19 + Vite 控制台：总览、主机、构建机、调度机、档案、任务、终端、对话、日志 |
+| [`secret-store/`](secret-store/README.zh-CN.md) | Secret Store 参考实现，按实例解析短期凭据 |
+| [`agents/`](agents/README.zh-CN.md) | Claude Code / Codex / 自定义 CLI 的 Agent 适配器 |
+| [`deploy/`](deploy/README.zh-CN.md) | 单机 Compose、容器入口、部署载荷构建 |
 | [`docs/`](docs/) | 架构、构建机、调度机、管理应用、联邦、部署文档 |
-| [`scripts/`](scripts/) | 验收、压测、备份、PKI 与载荷脚本 |
+| [`scripts/`](scripts/README.zh-CN.md) | 验收、压测、备份、PKI 与载荷脚本 |
 
 ## 安全模型
 
@@ -161,7 +161,7 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 - 模型凭据只留在运行时容器，并经过 `PLATFORM_AGENT_PASS_ENV` 与 Profile `--pass-env` 两层放行。
 - PCS（7901）、调度机 API（8443）与 SSH 端口必须放在防火墙或 VPN 后面，不要直接暴露公网。
 
-漏洞报告方式见 [SECURITY.md](SECURITY.md)。
+漏洞报告方式见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
 
 ## 开发与测试
 
@@ -173,16 +173,16 @@ cd secret-store && npm install && npm run typecheck && npm test
 cd admin-app   && npm install && npm run build
 ```
 
-验收与压测脚本见 [scripts/README.md](scripts/README.md)。这些脚本会建库、重置数据，不要在承载真实业务的控制面上直接运行。
+验收与压测脚本见 [scripts/README.zh-CN.md](scripts/README.zh-CN.md)。这些脚本会建库、重置数据，不要在承载真实业务的控制面上直接运行。
 
 ## 文档
 
-- [总体架构](docs/architecture.md)
-- [控制面与主机联邦](docs/federation.md)
-- [构建机](docs/builders.md)
-- [调度机](docs/scheduler.md)
-- [管理应用](docs/admin-app.md)
-- [部署](docs/deployment.md)
+- [总体架构](docs/architecture.zh-CN.md)
+- [控制面与主机联邦](docs/federation.zh-CN.md)
+- [构建机](docs/builders.zh-CN.md)
+- [调度机](docs/scheduler.zh-CN.md)
+- [管理应用](docs/admin-app.zh-CN.md)
+- [部署](docs/deployment.zh-CN.md)
 - [English README](README.md)
 
 ## 许可证

@@ -88,7 +88,7 @@ const TONES: Record<string, string> = {
   CANCELLED: "muted",
 };
 
-// 值仍是中文原文：渲染时再交给 t()，切到英文会跟着变。
+// The value is still the Chinese original: pass it to t() at render time so it follows language switches.
 const LABELS: Record<string, string> = {
   ONLINE: "在线",
   OFFLINE: "离线",

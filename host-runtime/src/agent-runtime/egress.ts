@@ -1,7 +1,7 @@
 import dns from "node:dns/promises";
 import net from "node:net";
 
-/** 云元数据与控制面地址：无论白名单怎么写都拒绝（§3.7）。 */
+/** Cloud metadata and control-plane addresses: rejected no matter how the allowlist is written (§3.7). */
 const METADATA = new Set([
   "169.254.169.254",
   "169.254.170.2",
@@ -22,9 +22,9 @@ export class EgressDenied extends Error {
 }
 
 export interface EgressPolicyOptions {
-  /** 策略名 -> 允许的 host（精确或 *.suffix） */
+  /** Policy name -> allowed hosts (exact or *.suffix) */
   policies: Record<string, string[]>;
-  /** 仅本地开发：允许 127.0.0.1 / ::1 */
+  /** Local development only: allow 127.0.0.1 / ::1 */
   allowLoopback?: boolean;
 }
 
@@ -41,7 +41,7 @@ export function hostAllowed(host: string, allow: string[]): boolean {
   });
 }
 
-/** IP 是否属于禁止出站的地址（元数据、回环、私网、链路本地）。 */
+/** Whether an IP is a blocked egress address (metadata, loopback, private, link-local). */
 export function isBlockedIp(ip: string, allowLoopback = false): boolean {
   const addr = normalizeHost(ip);
   if (METADATA.has(addr)) return true;
@@ -53,7 +53,7 @@ export function isBlockedIp(ip: string, allowLoopback = false): boolean {
     if (a === 10) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT / 部分云内网
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT / some cloud internal networks
     if (a === 198 && (b === 18 || b === 19)) return true;
     if (a >= 224) return true;
     void c;
@@ -70,11 +70,11 @@ export function isBlockedIp(ip: string, allowLoopback = false): boolean {
 }
 
 /**
- * 校验目标 URL 是否允许访问。
+ * Check whether the target URL is allowed.
  *
- * - egress 策略必须显式存在（默认拒绝）；
- * - host 必须在策略白名单内；
- * - DNS 解析出的每个地址都必须在白名单语义下可放行（元数据/私网一律否）。
+ * - The egress policy must exist explicitly (deny by default);
+ * - the host must be in the policy allowlist;
+ * - every address resolved by DNS must be permitted under the allowlist semantics (metadata/private networks always denied).
  */
 export async function assertEgressAllowed(
   url: URL,

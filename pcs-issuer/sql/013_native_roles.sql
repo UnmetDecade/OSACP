@@ -1,8 +1,8 @@
--- 013：主机可以直接充当角色（裸机），不必把角色装进容器。
+-- 013: a host can act as a role directly (bare metal) without packaging the role in a container.
 --
--- execution = container：Docker 容器（默认，保持所有旧记录语义）。
--- execution = native：主机运行时直接在宿主机上拉起角色进程。
---                   目前只用于 role_mode=builder 的构建机。
+-- execution = container: Docker container (default, preserving the semantics of all legacy records).
+-- execution = native: the host runtime launches the role process directly on the host machine.
+--                   Currently used only for builders with role_mode=builder.
 
 ALTER TABLE pcs_deployments
   ADD COLUMN IF NOT EXISTS execution TEXT NOT NULL DEFAULT 'container';

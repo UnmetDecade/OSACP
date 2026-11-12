@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 调度机容器入口：授权 SSH → 等库 → 迁移 → 可选种子 → 前台跑调度机。
+# Scheduler container entrypoint: authorize SSH → wait for DB → migrate → optional seed → run the scheduler in the foreground.
 set -euo pipefail
 
 : "${DATABASE_URL:?缺少 DATABASE_URL}"
@@ -10,7 +10,7 @@ SCHEDULER_HOST_ID="${SCHEDULER_HOST_ID:-docker-host-01}"
 
 mkdir -p /root/.ssh /var/run/sshd /opt/platform/{artifacts,keys,logs,audit,workspace/scheduler}
 chmod 700 /root/.ssh
-# keys 通常以只读卷挂入，chmod 会返回 EROFS；权限由宿主机侧决定。
+# keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
 if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
@@ -41,8 +41,8 @@ if [[ "${SEED:-0}" == "1" ]]; then
   npm run seed
 fi
 
-# 调度机服务在后台运行；同时起一个 host-runtime 实例跑
-# task.chat.scheduler / task.console.scheduler，让「派令」能对话和排障。
+# The scheduler service runs in the background; a host-runtime instance is started alongside to run
+# task.chat.scheduler / task.console.scheduler, so the scheduler bot ("Relay") can chat and troubleshoot.
 npm start &
 SCHED_PID=$!
 
@@ -93,7 +93,7 @@ fs.writeFileSync("/opt/platform/runtime.config.json", JSON.stringify(cfg, null, 
 '
 export RUNTIME_CONFIG=/opt/platform/runtime.config.json
 export SCHEDULER_TOKEN="${AUTH_TOKEN:-}"
-# 同构建机：小规模平台用更短的领任务轮询，换取交互时延。
+# Same as the builder: small platforms use a shorter task-claim poll to trade for interaction latency.
 export CLAIM_INTERVAL_SECONDS="${CLAIM_INTERVAL_SECONDS:-0.5}"
 
 start_agent() {

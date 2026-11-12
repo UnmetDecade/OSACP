@@ -1,11 +1,11 @@
 import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from "react";
 
 /**
- * 极简中英文切换。
+ * Minimal Chinese/English toggle.
  *
- * 中文原文就是词典 key：t("构建机") 在英文模式下查表返回 "Builders"，查不到时回退中文。
- * 这样源码里的文案仍然是可读的中文，新增文案忘翻译也不会变成空白。
- * 切换语言时用 Fragment key 重挂整棵子树，组件里渲染期调用的 t() 全部按新语言重算。
+ * The Chinese original is the dictionary key: t("构建机") looks up "Builders" in English mode and falls back to Chinese when missing.
+ * This keeps copy in the source readable in Chinese, and untranslated additions never become blank.
+ * Switching language remounts the whole subtree via a Fragment key, so every render-time t() in components recomputes in the new language.
  */
 export type Lang = "zh" | "en";
 
@@ -561,7 +561,7 @@ const EN: Record<string, string> = {
   "附件总大小超限（上限约 {max}），请删掉一些或压缩后再试": "Attachments exceed the total limit (~{max}); remove some or compress them and try again",
 };
 
-/** 把中文原文翻成当前语言；支持 {name} 占位。 */
+/** Translate the Chinese original into the current language; supports {name} placeholders. */
 export function t(zh: string, vars?: Record<string, string | number>): string {
   let out = current === "en" ? EN[zh] ?? zh : zh;
   if (vars) {
@@ -583,7 +583,7 @@ const LangContext = createContext<{ lang: Lang; setLang: (lang: Lang) => void }>
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(storedLang);
-  // 在渲染期同步模块变量：紧随其后的子树渲染就能读到新语言。
+  // Sync the module variable during render so the subtree rendered right after sees the new language.
   current = lang;
 
   useEffect(() => {
@@ -591,7 +591,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.setItem(STORAGE_KEY, lang);
     } catch {
-      // 隐私模式下写不了 localStorage；本次会话仍然生效。
+      // localStorage cannot be written in private mode; the change still applies to this session.
     }
   }, [lang]);
 

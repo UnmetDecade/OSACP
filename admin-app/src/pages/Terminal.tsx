@@ -22,19 +22,19 @@ const STATUS_LABEL: Record<Status, string> = {
 };
 
 /**
- * 终端是管理员直接用的 root shell：WebSocket 直连 PCS，PCS 在宿主机上
- * `docker exec -it` 进实例容器（远程主机走 ssh -tt）。没有命令审核、没有
- * 任务队列，输入按键逐字节到达容器。
+ * The terminal is a root shell used directly by admins: WebSocket straight to PCS, which runs
+ * `docker exec -it` into the instance container on the host (remote hosts use ssh -tt). No command review and no
+ * task queue; keystrokes reach the container byte by byte.
  *
- * 会话由 terminal/sessions.ts 持有；离开本页只是把终端藏起来，Shell 和
- * 滚动历史都还在，回来接上就是原来的会话。
+ * Sessions are held by terminal/sessions.ts; leaving this page only hides the terminal, and the shell and
+ * scrollback remain, so returning reattaches to the same session.
  */
 export function TerminalPage() {
   const [params, setParams] = useSearchParams();
   const { host } = useHostScope();
-  // 和构建机 / 调度机页一样，按主机子树看：并入的主机也要能进终端。
+  // Like the builder / scheduler pages, scope to the host subtree: folded hosts must be reachable in the terminal too.
   const scopedHostIds = hostTreeIds(host?.id);
-  // 调度机和构建机都是容器，都能直接进 root shell；调度机排在前面，它是主机入口。
+  // Schedulers and builders are both containers and both allow a direct root shell; schedulers come first as the host entry point.
   const instances = db.instances
     .filter(
       (i) =>
@@ -46,7 +46,7 @@ export function TerminalPage() {
         (a.role === b.role ? 0 : a.role === "scheduler" ? -1 : 1) ||
         a.name.localeCompare(b.name),
     );
-  // 实例名只在主机内唯一：用带主机前缀的 key 选中，避免并入主机的同名实例串台。
+  // Instance names are unique only within a host: select by a host-prefixed key so same-named instances from folded hosts do not collide.
   const keyOf = (i: { key?: string; host_id: string; id: string }) =>
     i.key || `${i.host_id}:${i.id}`;
   const initial = (() => {
@@ -67,7 +67,7 @@ export function TerminalPage() {
   const instance = instances.find((b) => keyOf(b) === selected);
 
   useEffect(() => {
-    // 首屏实例列表还没同步回来：不要用空列表覆盖 URL 里带来的实例。
+    // The instance list has not synced back on first paint: do not overwrite the instance from the URL with an empty list.
     if (!instances.length) return;
     if (!selected || !instances.some((b) => keyOf(b) === selected)) {
       setSelected(keyOf(instances[0]));
@@ -164,7 +164,7 @@ export function TerminalPage() {
             {(["scheduler", "builder"] as const).map((role) => {
               const group = instances.filter((i) => i.role === role);
               if (!group.length) return null;
-              // 每台主机一组、按主机名折叠；本机默认展开，并入主机默认收起。
+              // One group per host, collapsed by host name; the local host is expanded by default and folded hosts are collapsed.
               const groups = groupByHost(group, host?.id);
               const renderItem = (b: Instance) => (
                 <button key={keyOf(b)} className={`roster-item${keyOf(b) === selected ? " active" : ""}`} onClick={() => choose(keyOf(b))}>

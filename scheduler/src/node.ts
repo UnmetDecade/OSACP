@@ -1,9 +1,9 @@
 import { config } from "./config.js";
 
 /**
- * 调度机在联邦树里的节点 id。
- * PCS 部署时会注入 SCHEDULER_NODE_ID（建议用 host_id）；本地开发没注入时用 host_id:root，
- * 仍然保证同一台主机上只有一个根调度机。
+ * The scheduler's node id in the federation tree.
+ * PCS injects SCHEDULER_NODE_ID at deployment (recommended: host_id); local development without it uses host_id:root,
+ * still guaranteeing only one root scheduler per host.
  */
 export function selfNodeId(): string {
   return config.nodeId || `${config.hostId || "scheduler"}:root`;

@@ -1,5 +1,5 @@
--- Agent / API Profile 与绑定（docs/agent-api-spec.md §9）。
--- 这里只保存引用，绝不保存任何密钥明文；密钥值属于 Secret Store。
+-- Agent / API profiles and bindings (docs/agent-api-spec.md §9).
+-- Only references are stored here; no plaintext secrets are ever persisted. Secret values belong to the Secret Store.
 
 CREATE TABLE IF NOT EXISTS agent_profiles (
   agent_profile_id     TEXT PRIMARY KEY,
@@ -14,9 +14,9 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
   tool_api_profile_ids TEXT[] NOT NULL DEFAULT '{}',
   limits               JSONB NOT NULL DEFAULT '{}',
   capabilities         TEXT[] NOT NULL DEFAULT '{}',
-  -- [增补] 该 Agent 允许的 tool_id；空数组表示不限制（默认全部权限）
+  -- [added] tool_ids allowed for this agent; an empty array means unrestricted (all permissions by default)
   allowed_tools        TEXT[] NOT NULL DEFAULT '{}',
-  -- [增补] 该 Agent 版本可以承接的任务类型；角色仍由调度机限定
+  -- [added] task types this agent version can take on; the role is still constrained by the scheduler
   task_types           TEXT[] NOT NULL DEFAULT '{}',
   enabled              BOOLEAN NOT NULL DEFAULT true,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS api_profiles (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- [增补] role_id 用于校验跨角色绑定；instance 的角色由注册方提供，PCS 不接受自相矛盾的绑定。
+-- [added] role_id is used to validate cross-role bindings; an instance's role comes from the registrar, and the PCS rejects self-contradictory bindings.
 CREATE TABLE IF NOT EXISTS role_agent_bindings (
   instance_id      TEXT PRIMARY KEY,
   role_id          TEXT NOT NULL,

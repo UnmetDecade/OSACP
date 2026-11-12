@@ -10,7 +10,7 @@ export interface WatchdogSample {
   disk_total_bytes: number;
   disk_free_bytes: number;
   pcs_reachable: boolean;
-  /** 距上一次成功联系 PCS 的秒数 */
+  /** Seconds since the last successful contact with PCS */
   pcs_silence_seconds: number;
 }
 
@@ -66,9 +66,9 @@ function sampleLevel(sample: WatchdogSample, cfg: WatchdogConfig): { level: 0 | 
 }
 
 /**
- * 每台 host 独立的状态机：NORMAL → WARNING → THROTTLED → PROTECTING → RECOVERING → NORMAL。
- * 升级要持续到阈值时间；降级必须先稳定 recover_seconds，再经过 recovering_seconds 观察。
- * PCS 失联超过 pcs_lost_seconds 直接 PROTECTING（控制面卡死时本机仍能自保）。
+ * Per-host state machine: NORMAL → WARNING → THROTTLED → PROTECTING → RECOVERING → NORMAL.
+ * Escalation must persist for the threshold duration; de-escalation must first hold steady for recover_seconds, then pass recovering_seconds of observation.
+ * Losing PCS for more than pcs_lost_seconds goes straight to PROTECTING (the host can still protect itself when the control plane is stuck).
  */
 export function nextWatchdogState(
   prev: WatchdogStateFile | null,
@@ -93,7 +93,7 @@ export function nextWatchdogState(
 
   const level = LEVEL[current];
 
-  // 升级：RECOVERING 视作 0，但任何告警都要重新走升级判定
+  // Escalation: treat RECOVERING as 0, but any warning must go through the escalation check again
   if (target > level && target !== 0) {
     const pending =
       prev?.pending && prev.pending.level === target
@@ -122,8 +122,8 @@ export function nextWatchdogState(
     };
   }
 
-  // PCS 失联导致的 PROTECTING 不是本机资源问题：一旦重新联系上且指标正常，
-  // 直接回到 NORMAL，不必再等 5 分钟的恢复窗口。
+  // PROTECTING caused by PCS loss is not a local resource problem: once contact is restored and metrics are normal,
+  // return straight to NORMAL without waiting for the 5-minute recovery window.
   const wasPcsLost = (prev?.reason ?? "").includes("PCS_LOST");
   if (current === "PROTECTING" && wasPcsLost && target === 0) {
     return {
@@ -137,11 +137,11 @@ export function nextWatchdogState(
     };
   }
 
-  // 降到 NORMAL 之前先进入 RECOVERING，观察一段时间
+  // Enter RECOVERING before dropping to NORMAL, and observe for a while
   if (current === "RECOVERING") {
     if (target >= 1) {
-      // 已被上面的升级分支处理（target > 0 == level 0）
-      // 这里只处理 target === 0
+      // Already handled by the escalation branch above (target > 0 == level 0)
+      // Only target === 0 is handled here
     }
     if (target === 0) {
       if (nowMs - Date.parse(since) >= cfg.recovering_seconds * 1000) {

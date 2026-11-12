@@ -12,7 +12,7 @@ import type {
 } from "./service.js";
 import { issueTerminalTicket } from "./terminal.js";
 
-// 调度机代理会转发创建任务的请求；任务附件走 base64，1MiB 会很快撞上限。
+// The scheduler proxy forwards task-creation requests; task attachments go as base64, so 1MiB would hit the limit quickly.
 const MAX_BODY = 32 * 1024 * 1024;
 
 function send(res: http.ServerResponse, status: number, body: unknown): void {
@@ -66,7 +66,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       const admin = (scope: string) => service.authenticateAdmin(bearer(req), scope);
       const host = async () => service.authenticateHost(bearer(req));
 
-      // 管理应用是浏览器 / 桌面 WebView：只对显式配置的来源发送 CORS 头。
+      // The admin app is a browser / desktop WebView: only send CORS headers to explicitly configured origins.
       const origin = req.headers.origin;
       if (origin && cfg.adminOrigins.includes(origin)) {
         res.setHeader("access-control-allow-origin", origin);
@@ -84,13 +84,13 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, { ok: true, service: "platform-control", version: "0.2.0" });
       }
 
-      // ---- 注册（凭一次性令牌，无 Bearer）
+      // ---- Enrollment (with a one-time token, no Bearer)
       if (method === "POST" && path === "/api/v1/platform/hosts/enroll") {
         const body = await readJson(req);
         return send(res, 200, await service.enroll(body as unknown as EnrollInput));
       }
 
-      // ---- 任务附件下载：构建机用一次性令牌取内容，不需要管理员 Bearer。
+      // ---- Task attachment download: builders use a one-time token to fetch content, no admin Bearer needed.
       const attachmentGet = /^\/api\/v1\/platform\/attachments\/([^/]+)$/.exec(path);
       if (method === "GET" && attachmentGet) {
         const out = await service.getTaskAttachment(
@@ -106,7 +106,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return;
       }
 
-      // ---- 管理面
+      // ---- Management plane
       if (method === "POST" && path === "/api/v1/platform/hosts") {
         admin("host:admin");
         const body = await readJson(req);
@@ -146,7 +146,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         );
       }
 
-      // ---- 调度机代理：把任务请求转给拥有目标实例的那台调度机（根或结点）
+      // ---- Scheduler proxy: forward task requests to the scheduler (root or node) that owns the target instance
       const schedProxy = /^\/api\/v1\/platform\/schedulers\/([^/]+)\/proxy(\/.*)$/.exec(path);
       if (schedProxy && (method === "GET" || method === "POST")) {
         admin(method === "GET" ? "deployment:read" : "deployment:write");
@@ -164,7 +164,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         );
       }
 
-      // ---- 主机接入（v4.1）：SSH 主机与本地主机
+      // ---- Host onboarding (v4.1): SSH hosts and local hosts
       if (method === "POST" && path === "/api/v1/platform/hosts/ssh") {
         admin("host:admin");
         const body = await readJson(req);
@@ -202,7 +202,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, out.online ? 200 : 202, out);
       }
 
-      // 主机并入 / 解除并入：只改联邦树，不重启运行中的调度机。
+      // Host merge / unmerge: only changes the federation tree; running schedulers are not restarted.
       const hostMerge = /^\/api\/v1\/platform\/hosts\/([^/]+)\/merge$/.exec(path);
       if (method === "POST" && hostMerge) {
         const claims = admin("host:admin");
@@ -239,7 +239,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, out);
       }
 
-      // 修改主机接入信息：名称、地址、端口、用户、私钥（留空不改）。
+      // Update host access info: name, address, port, user, private key (leave blank to keep unchanged).
       if (method === "PATCH" && hostDetail) {
         const claims = admin("host:admin");
         const body = await readJson(req);
@@ -259,7 +259,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, out);
       }
 
-      // 彻底删除主机记录：容器必须先移除，否则返回 HOST_HAS_DEPLOYMENTS。
+      // Delete the host record outright: containers must be removed first, otherwise HOST_HAS_DEPLOYMENTS is returned.
       if (method === "DELETE" && hostDetail) {
         const claims = admin("host:admin");
         return send(
@@ -282,8 +282,8 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, out);
       }
 
-      // 交互式 root 终端：只换一次性票据（30 秒），真正的字节流走 WebSocket
-      // upgrade（见 terminal.ts）。票据不进 URL、不落日志。
+      // Interactive root terminal: only exchanges a one-time ticket (30 seconds); the actual byte stream goes over a
+      // WebSocket upgrade (see terminal.ts). The ticket never goes into the URL or the logs.
       if (method === "POST" && path === "/api/v1/platform/terminal-ticket") {
         const claims = admin("deployment:read");
         const body = await readJson(req);
@@ -333,7 +333,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 202, out);
       }
 
-      // ---- 部署计划（§4.6）：预览生成 plan_digest，apply 重新计算
+      // ---- Deployment plans (§4.6): preview generates plan_digest; apply recomputes it
       if (method === "POST" && path === "/api/v1/platform/deployment-plans") {
         const claims = admin("deployment:write");
         const body = await readJson(req);
@@ -362,7 +362,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         );
       }
 
-      // ---- 审批令牌（§5）：MFA 断言 + 管理员 scope，令牌不回显给日志
+      // ---- Approval tokens (§5): MFA assertion + admin scope; tokens are never echoed to the logs
       if (method === "POST" && path === "/api/v1/platform/approval-tokens") {
         const claims = admin("approval:issue");
         const body = await readJson(req);
@@ -373,7 +373,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         );
       }
 
-      // ---- Agent / API Profile（P4）；表中只有引用，没有密钥值
+      // ---- Agent / API Profile (P4); the tables hold only references, no secret values
       if (method === "POST" && path === "/api/v1/platform/agent-profiles") {
         const claims = admin("profile:write");
         const body = await readJson(req);
@@ -484,7 +484,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, { bindings: await service.listBindings() });
       }
 
-      // 实例名只在主机内唯一：绑定接口必须带 host_id，否则同名实例会共享绑定。
+      // Instance names are unique only within a host: the binding endpoints must carry host_id, otherwise same-named instances would share bindings.
       const requireHostId = (raw: unknown): string => {
         const hostId = String(raw ?? "").trim();
         if (!hostId) {
@@ -563,7 +563,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         });
       }
 
-      // ---- Host Runtime 通道
+      // ---- Host Runtime channel
       if (method === "POST" && path === "/api/v1/platform/runtime/heartbeat") {
         const h = await host();
         const body = await readJson(req);
@@ -632,7 +632,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
   };
   if (cfg.tlsCaFile) options.ca = fs.readFileSync(cfg.tlsCaFile);
   if (cfg.requireClientCert) {
-    // 只接受由内部 CA 签发且未过期的客户端证书；Bearer 令牌仍单独校验。
+    // Only accept client certificates issued by the internal CA that have not expired; Bearer tokens are still checked separately.
     options.requestCert = true;
     options.rejectUnauthorized = true;
   }

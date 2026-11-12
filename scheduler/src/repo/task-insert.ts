@@ -5,10 +5,10 @@ import { newId } from "../ids.js";
 import { normalizeDifficulty } from "../capability.js";
 
 /**
- * 任务写入的最小单元。
+ * The smallest unit of task writing.
  *
- * 单独成文件是为了打破循环依赖：任务仓储要用工作流推进，工作流推进又要建任务。
- * 这里只依赖 db / errors / events / ids，工作流和任务仓储都可以引用它。
+ * Split into its own file to break a cycle: task repos need workflow advance, and workflow advance needs to create tasks.
+ * This depends only on db / errors / events / ids, so both workflows and task repos can import it.
  */
 export interface CreateTaskInput {
   task_type: string;
@@ -19,19 +19,19 @@ export interface CreateTaskInput {
   requirements?: {
     capabilities?: string[];
     host_constraints?: Record<string, unknown>;
-    /** 工作流交接：上游已校验制品的引用（只读授权凭据） */
+    /** Workflow handoff: references to upstream verified artifacts (read-authorization credentials) */
     upstream_artifacts?: unknown[];
     [k: string]: unknown;
   };
   resource_profile_id?: string;
-  /** 任务难度 0–1000；0 表示不限制，只有 W >= D 的构建机可领取 */
+  /** Task difficulty 0–1000; 0 means unrestricted, and only builders with W >= D may claim */
   difficulty?: number;
   workflow_run_id?: string;
   parent_task_id?: string;
   max_attempts?: number;
   deadline_at?: string;
   trace_id?: string;
-  /** 上游调度机中继过来时带上的标记；普通提交没有这个字段。 */
+  /** Marker set when relayed from an upstream scheduler; ordinary submissions do not have this field. */
   relay?: {
     parent_task_id: string;
     parent_node_id?: string;
@@ -39,7 +39,7 @@ export interface CreateTaskInput {
   };
 }
 
-/** 在调用方事务内创建任务：工作流推进要用同一个事务把“上一阶段成功 + 下一阶段入队”一起提交 */
+/** Create a task in the caller's transaction: workflow advance needs to commit "previous phase succeeded + next phase enqueued" together */
 export async function insertTask(c: Client, input: CreateTaskInput) {
   if (!input.task_type) throw new ApiError(400, "BAD_REQUEST", "task_type 必填");
 
@@ -58,7 +58,7 @@ export async function insertTask(c: Client, input: CreateTaskInput) {
   const relayParent = input.relay?.parent_task_id?.trim() || null;
   const relayDepth = relayParent ? Math.max(0, Math.min(64, Number(input.relay?.depth) || 0)) : 0;
 
-  // 上游重试投递时可能重复到达：同一个上游任务只落一条本地任务。
+  // Upstream retry delivery may arrive twice: one upstream task creates only one local task row.
   if (relayParent) {
     const existing = await c.query(`SELECT * FROM tasks WHERE relay_parent_task_id = $1`, [
       relayParent,
@@ -94,7 +94,7 @@ export async function insertTask(c: Client, input: CreateTaskInput) {
     ],
   );
 
-  // 并发重复投递：另一个事务先插入了同一条上游任务，直接返回它。
+  // Concurrent duplicate delivery: another transaction already inserted the same upstream task; return it directly.
   if (!res.rows[0]) {
     const existing = await c.query(`SELECT * FROM tasks WHERE relay_parent_task_id = $1`, [
       relayParent,

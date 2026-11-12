@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 构建机容器入口（纯 OS 镜像版）。
+# Builder container entrypoint (pure OS image version).
 #
-# 镜像是官方 ubuntu，部署时只带这些文件：实例运行时（/opt/platform/app）、
-# Agent 适配器（/opt/platform/agents）、sshd 配置。Node、Agent CLI、openssh deb
-# 都在主机缓存里（只读挂到 /opt/platform/cache），容器里不烘焙运行时和工具链。
+# The image is official ubuntu, and deployment ships only these files: the instance runtime (/opt/platform/app),
+# the Agent adapters (/opt/platform/agents), and the sshd config. Node, the Agent CLI and the openssh deb
+# all live in the host cache (mounted read-only at /opt/platform/cache); the runtime and toolchain are not baked into the container.
 set -euo pipefail
 
 CACHE="${PLATFORM_CACHE_DIR:-/opt/platform/cache}"
@@ -17,9 +17,9 @@ if [[ -z "$NODE" ]]; then
   echo "主机缓存里没有 Node：$CACHE/node/bin/node；请在主机 ~/.platform/cache/node 放一份 Node 22" >&2
   exit 1
 fi
-# Agent CLI（claude / codex）按需放在缓存目录，实例运行时从 PATH 找它们。
+# The Agent CLI (claude / codex) is placed in the cache directory as needed; the instance runtime finds them via PATH.
 export PATH="$CACHE/node/bin:$CACHE/agents:${PATH}"
-# 让 docker exec / ssh 进来的 shell 也能直接用 node、claude，不用记缓存路径。
+# Let shells entered via docker exec / ssh use node and claude directly, without remembering cache paths.
 for b in node npm npx; do
   [[ -x "$CACHE/node/bin/$b" ]] && ln -sf "$CACHE/node/bin/$b" /usr/local/bin/$b
 done
@@ -38,10 +38,10 @@ WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/platform/workspace}"
 mkdir -p /root/.ssh /run/sshd "$WORKSPACE_DIR" \
   /opt/platform/{artifacts,logs,tokens,keys,audit,codex}
 chmod 700 /root/.ssh
-# keys 通常以只读卷挂入，chmod 会返回 EROFS；权限由宿主机侧决定。
+# keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
-# 纯 ubuntu 镜像没有 ssh/sshd：从主机缓存的 deb 离线安装（缓存需与镜像同版本）。
+# The pure ubuntu image has no ssh/sshd: install offline from host-cached debs (the cache must match the image version).
 if ! command -v sshd >/dev/null || ! command -v ssh >/dev/null; then
   if compgen -G "$CACHE/openssh/*.deb" >/dev/null; then
     DEBIAN_FRONTEND=noninteractive dpkg -i "$CACHE"/openssh/*.deb
@@ -54,7 +54,7 @@ fi
 if [[ -f "$APP/sshd_config" ]]; then
   cp "$APP/sshd_config" /etc/ssh/sshd_config.d/00-platform.conf
 fi
-# 授权公钥：优先用挂载的 keys 目录，其次用 SSH_PUBKEY_FILE / SSH_AUTHORIZED_KEY。
+# Authorized public keys: prefer the mounted keys directory, then SSH_PUBKEY_FILE / SSH_AUTHORIZED_KEY.
 if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
   cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
 elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
@@ -65,17 +65,17 @@ chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
 ssh-keygen -A >/dev/null
 /usr/sbin/sshd -e
 
-# ---- 已装软件包持久化 ----
-# 构建机是一次性容器，但装过的环境不该每次重新部署就消失：
-#   * state 卷按实例隔离（platform-<实例>-state），只记录本实例的包清单；
-#   * /var/cache/apt/archives 挂同一主机的共享卷（shared-apt-cache），
-#     只复用下载过的 deb，不会把别的构建机的包装进当前环境。
+# ---- Installed package persistence ----
+# The builder is a one-off container, but installed environments should not disappear on every redeploy:
+#   * the state volume is isolated per instance (platform-<instance>-state) and records only this instance's package list;
+#   * /var/cache/apt/archives is mounted on a host-shared volume (shared-apt-cache),
+#     reusing only downloaded debs, never pulling another builder's packages into the current environment.
 STATE_DIR="${STATE_DIR:-/opt/platform/state}"
 mkdir -p "$STATE_DIR"
 APT_SNAPSHOT="$STATE_DIR/dpkg-packages.txt"
 
-# 官方镜像默认装完就删 deb（docker-clean）；把下载目录放到共享卷并保留 deb，
-# 同主机的其他构建机可直接复用，不会重复下载（卷只放包文件，不进环境）。
+# The official image deletes debs after install by default (docker-clean); put the download directory on the shared volume and keep the debs,
+# so other builders on the same host can reuse them directly without re-downloading (the volume holds only package files, not the environment).
 APT_SHARE="${APT_SHARE_DIR:-/opt/platform/apt-cache}"
 mkdir -p "$APT_SHARE/archives/partial"
 if [[ -d /etc/apt/apt.conf.d ]]; then
@@ -100,7 +100,7 @@ apt_restore() {
   names="$(printf '%s\n' "$missing" | sed 's/=.*//' | tr '\n' ' ')"
   export DEBIAN_FRONTEND=noninteractive
   echo "[builder] 恢复已装软件包：$(printf '%s\n' "$names" | wc -w) 个" >&2
-  # 先按原版本从共享缓存装；缓存不全再联网补，最后才退化成按包名装最新版。
+  # Install from the shared cache at the original versions first; if the cache is incomplete, fetch from the network, and only fall back to installing the latest version by package name.
   if ! apt-get install -y -o Dpkg::Options::=--force-confold --no-download $missing >/dev/null 2>&1; then
     if getent hosts archive.ubuntu.com >/dev/null 2>&1; then
       apt-get update -qq >/dev/null 2>&1 || true
@@ -113,7 +113,7 @@ apt_restore() {
 }
 
 apt_watch() {
-  # 安装通常几秒到几分钟；30 秒一次的清单快照足以覆盖，停机时再补一次。
+  # Installs usually take seconds to minutes; a package-list snapshot every 30 seconds gives enough coverage, with one more on shutdown.
   trap 'apt_snapshot; exit 0' TERM INT
   while true; do
     sleep 30
@@ -125,7 +125,7 @@ apt_restore || true
 apt_snapshot || true
 apt_watch &
 
-# 每个容器只跑一个实例；配置从环境变量生成，不把宿主机配置带进来。
+# Each container runs only one instance; the config is generated from environment variables, without bringing in host config.
 "$NODE" -e '
 const fs = require("node:fs");
 let capabilityDetail;
@@ -144,7 +144,7 @@ const cfg = {
   workspace_dir: process.env.WORKSPACE_DIR || "/opt/platform/workspace",
   keep_workspace: process.env.KEEP_WORKSPACE === "1",
   audit_dir: "/opt/platform/audit",
-  // PCS 导出的运行时视图（agent_profiles + bindings）；没有它就只有确定性执行器。
+  // PCS-exported runtime view (agent_profiles + bindings); without it, only the deterministic executor is available.
   ...(process.env.PROFILES_FILE ? { profiles_file: process.env.PROFILES_FILE } : {}),
   instances: [{
     instance_id: process.env.INSTANCE_ID,
@@ -163,10 +163,10 @@ fs.writeFileSync("/opt/platform/runtime.config.json", JSON.stringify(cfg, null, 
 '
 export RUNTIME_CONFIG=/opt/platform/runtime.config.json
 export BUILDER_OS
-# Codex 配置随部署载荷下发到 /opt/platform/codex；密钥仍只在运行时注入。
+# The Codex config is delivered with the deployment payload to /opt/platform/codex; the key is still injected only at runtime.
 export CODEX_HOME="${CODEX_HOME:-/opt/platform/codex}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-https://api.deepseek.com/anthropic}"
-# 领任务的轮询间隔：小平台用 0.5 秒，机器多时调回 1–2 秒省数据库。
+# Task-claim polling interval: small platforms use 0.5s; with many machines, set it back to 1–2s to save the database.
 export CLAIM_INTERVAL_SECONDS="${CLAIM_INTERVAL_SECONDS:-0.5}"
 
 cd "$APP"

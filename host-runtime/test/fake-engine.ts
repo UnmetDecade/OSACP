@@ -5,7 +5,7 @@ interface FakeContainer extends ContainerInfo {
   config?: Record<string, any>;
 }
 
-/** 只实现固定容器端点，行为足够验证 reconciler 的期望态收敛。 */
+/** Implements only the fixed container endpoints; enough behavior to verify the reconciler's convergence to the desired state. */
 export class FakeEngine implements EngineAdapter {
   containers = new Map<string, FakeContainer>();
   images = new Set<string>();

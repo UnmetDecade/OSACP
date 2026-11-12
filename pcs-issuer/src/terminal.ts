@@ -7,14 +7,14 @@ import type { PcsService } from "./service.js";
 import { spawnSshPty, type SshTarget } from "./ssh.js";
 
 /**
- * 交互式 root 终端。
+ * Interactive root terminal.
  *
- * 终端是给管理员用的，不经过调度队列：队列负责可审计的自动化任务，
- * 交互式 shell 需要逐字节实时响应。实现等价于管理员 SSH 到宿主机再
- * `docker exec -it` 进容器，权限完全、没有命令审核。
+ * The terminal is for administrators and bypasses the scheduling queue: the queue handles auditable automated tasks,
+ * while an interactive shell needs byte-by-byte real-time response. It is equivalent to an administrator SSHing to
+ * the host and then `docker exec -it` into the container, with full privileges and no command review.
  *
- * 鉴权：管理员用 Bearer 令牌换一次性票据（30 秒、用完即焚），票据放在
- * WebSocket 子协议里，不写 URL、不写日志。
+ * Auth: the administrator exchanges a Bearer token for a one-time ticket (30 seconds, burn after use); the ticket
+ * goes in the WebSocket subprotocol, never in the URL or the logs.
  */
 
 const TICKET_TTL_MS = 30_000;
@@ -26,7 +26,7 @@ type Ticket = {
   operator: string;
   transport: "local" | "ssh";
   container: string;
-  /** 裸机实例没有容器：直接进主机 shell。 */
+  /** Bare-metal instances have no container: go straight into the host shell. */
   native?: boolean;
   ssh?: SshTarget;
   cols: number;
@@ -70,7 +70,7 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   return Math.min(Math.max(Math.round(n), min), max);
 }
 
-/** 处理 PCS HTTP server 上的 WebSocket upgrade；路径不对直接拒绝。 */
+/** Handle WebSocket upgrades on the PCS HTTP server; reject outright if the path is wrong. */
 export function handleTerminalUpgrade(
   req: IncomingMessage,
   socket: Duplex,
@@ -118,7 +118,7 @@ export function handleTerminalUpgrade(
 }
 
 function startSession(socket: Duplex, ticket: Ticket, head: Buffer): void {
-  // 容器实例进容器；裸机实例直接落到主机 shell（权限等同 SSH 登录用户）。
+  // Container instances go into the container; bare-metal instances land directly in the host shell (privileges equal to the SSH login user).
   const inner = `stty cols ${ticket.cols} rows ${ticket.rows} 2>/dev/null; exec bash -l`;
   const execCmd = ticket.native
     ? `exec bash -l`
@@ -132,13 +132,13 @@ function startSession(socket: Duplex, ticket: Ticket, head: Buffer): void {
   let child: ChildProcess;
   let cleanup = () => {};
   if (ticket.transport === "ssh" && ticket.ssh) {
-    // ssh -tt 自己会申请远端 PTY，不需要本地终端。
+    // ssh -tt allocates a remote PTY itself, so no local terminal is needed.
     const spawned = spawnSshPty(ticket.ssh, execCmd, env);
     child = spawned.child;
     cleanup = spawned.cleanup;
   } else {
-    // docker CLI 的 -t 要求本地 stdin 是终端；用 script 分配一个伪终端，
-    // 否则会直接报 “the input device is not a TTY”。
+    // The docker CLI's -t requires local stdin to be a terminal; use script to allocate a pseudo-terminal,
+    // otherwise it fails with "the input device is not a TTY".
     child = spawn("script", ["-q", "-c", execCmd, "/dev/null"], {
       stdio: ["pipe", "pipe", "pipe"],
       env,
@@ -161,7 +161,7 @@ function startSession(socket: Duplex, ticket: Ticket, head: Buffer): void {
     try {
       socket.end(encodeFrame(0x8, Buffer.alloc(0)));
     } catch {
-      /* socket 可能已断 */
+      /* the socket may already be gone */
     }
     try {
       child.kill("SIGKILL");
@@ -185,7 +185,7 @@ function startSession(socket: Duplex, ticket: Ticket, head: Buffer): void {
   socket.on("error", close);
   sendJson({ type: "ready", container: ticket.container, instance_id: ticket.instanceId });
 
-  // 客户端帧：二进制 = 键盘输入；文本 = 控制消息（目前只接受 resize，忽略）。
+  // Client frames: binary = keyboard input; text = control messages (currently only resize, which is ignored).
   const reader = createFrameReader((opcode, payload) => {
     if (opcode === 0x8) {
       close();
@@ -197,7 +197,7 @@ function startSession(socket: Duplex, ticket: Ticket, head: Buffer): void {
     }
     if (opcode === 0x2 || opcode === 0x1) {
       if (opcode === 0x1 && payload.length < 2048 && looksLikeJson(payload)) {
-        // resize 等控制消息：docker exec 无法动态改 PTY 大小，先忽略。
+        // Control messages such as resize: docker exec cannot resize the PTY dynamically, so ignore them for now.
         return;
       }
       try {
@@ -221,7 +221,7 @@ function shellQuote(value: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* 最小 WebSocket 帧实现（服务端只需要文本/二进制/关闭/心跳）          */
+/* Minimal WebSocket frame implementation (server only needs text/binary/close/ping) */
 /* ------------------------------------------------------------------ */
 
 function encodeFrame(opcode: number, payload: Buffer): Buffer {

@@ -6,10 +6,10 @@ import { assertTransition, type TaskStatus } from "../statemachine.js";
 import { advanceWorkflow } from "./workflow.js";
 
 /**
- * 不退避、不消耗重试的错误码（§8）。
+ * Error codes that do not back off or consume a retry (§8).
  *
- * 制品与审批相关的错误都是确定性的：上游没交接、摘要对不上、审批对象变了。
- * 重试只会重复同样的失败，必须立刻停在 FAILED 等人工处理。
+ * Artifact- and approval-related errors are all deterministic: upstream did not hand off, digest mismatch, approval subject changed.
+ * Retrying would only repeat the same failure; stop immediately in FAILED and wait for manual handling.
  */
 const NON_RETRYABLE = new Set([
   "PAYLOAD_INVALID",
@@ -24,7 +24,7 @@ const NON_RETRYABLE = new Set([
   "APPROVAL_SUBJECT_CHANGED",
   "REVIEW_REJECTED_SECRET",
   "REVIEW_REJECTED_INCOMPLETE",
-  // P4：越权/配置不匹配不是重试能解决的问题
+  // P4: permission violations/config mismatches are not solved by retrying
   "AGENT_PROFILE_NOT_ALLOWED",
   "API_PROFILE_NOT_ALLOWED",
   "TOOL_NOT_ALLOWED",
@@ -39,11 +39,11 @@ const NON_RETRYABLE = new Set([
   "ARTIFACT_PATH_DENIED",
 ]);
 
-/** 退避表来自 scheduler_config.retry_backoff_seconds，默认 5m → 15m → 45m */
+/** Backoff table comes from scheduler_config.retry_backoff_seconds, default 5m → 15m → 45m */
 const DEFAULT_BACKOFF = [300, 900, 2700];
 
 export function backoffSeconds(table: number[], attemptCount: number): number {
-  // 配置被清空或列缺失时退回默认表，回收循环不能因此抛错卡住
+  // Fall back to the default table when config is cleared or the column is missing; the reap loop must not throw and stall
   const arr = Array.isArray(table) && table.length > 0 ? table : DEFAULT_BACKOFF;
   const idx = Math.min(Math.max(attemptCount - 1, 0), arr.length - 1);
   return arr[idx] ?? 300;
@@ -53,7 +53,7 @@ export interface LeaseProof {
   lease_token: string;
   fencing_token: number;
   instance_id?: string;
-  /** 由 HTTP 层从已验签的实例 JWT 填入；存在时必须与租约持有者一致 */
+  /** Filled in by the HTTP layer from a verified instance JWT; when present it must match the lease holder */
   auth_instance_id?: string;
 }
 
@@ -78,8 +78,8 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
     await c.query(`SELECT * FROM leases WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
   ).rows[0];
 
-  // 旧 attempt 的写入：任务上已有更高 fencing，直接判 FENCING_STALE，
-  // 而不是含糊的“租约过期”——这条是重复执行场景的诊断依据。
+  // Write from an old attempt: the task already has a higher fencing, so return FENCING_STALE directly,
+  // rather than a vague "lease expired" — this is the diagnostic basis for duplicate-execution cases.
   const maxF = (
     await c.query(
       `SELECT COALESCE(MAX(fencing_token), 0) AS f FROM leases WHERE task_id = $1`,
@@ -95,13 +95,13 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
     });
   }
 
-  // 没有租约 = 已被回收
+  // No lease = already reaped
   if (!lease || lease.released_at) throw new ApiError(409, "LEASE_EXPIRED", "租约已释放或已回收");
 
   if (lease.lease_token !== proof.lease_token) {
     throw new ApiError(409, "LEASE_MISMATCH", "lease_token 与当前 attempt 不匹配");
   }
-  // fencing：旧 attempt 的写入在这里被挡住（§5）
+  // fencing: writes from old attempts are blocked here (§5)
   if (Number(lease.fencing_token) !== Number(proof.fencing_token)) {
     throw new ApiError(409, "FENCING_STALE", "fencing_token 已过期，写入被拒绝", {
       task_id: attempt.task_id,
@@ -119,7 +119,7 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
   if (proof.instance_id && proof.instance_id !== lease.instance_id) {
     throw new ApiError(409, "INSTANCE_MISMATCH", "该 attempt 不属于此实例");
   }
-  // 实例令牌只能操作自己的 attempt，body 里的 instance_id 不能作为身份来源
+  // An instance token can only act on its own attempts; instance_id in the body is not an identity source
   if (proof.auth_instance_id && proof.auth_instance_id !== lease.instance_id) {
     throw new ApiError(403, "ROLE_NOT_ALLOWED", "实例令牌不能操作其他实例的 attempt", {
       token_sub: proof.auth_instance_id,
@@ -130,7 +130,7 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
   return { attempt, task, lease, now };
 }
 
-/** 启动确认。accepted=false 表示本机准入拒绝，不消耗重试（§4.3）。 */
+/** Start acknowledgement. accepted=false means local admission rejected it; no retry is consumed (§4.3). */
 export async function startAck(
   attemptId: string,
   proof: LeaseProof & { accepted?: boolean },
@@ -138,7 +138,7 @@ export async function startAck(
   return tx(async (c) => {
     const { attempt, task, lease } = await lockContext(c, attemptId, proof);
 
-    // 幂等：重复 start-ack 直接成功
+    // Idempotent: repeated start-ack succeeds directly
     if (attempt.status === "STARTED") {
       return { attempt_id: attemptId, status: "STARTED", idempotent: true };
     }
@@ -153,7 +153,7 @@ export async function startAck(
         [attemptId, JSON.stringify({ code: "ADMISSION_DENIED_BY_HOST" })],
       );
       await closeActiveLease(c, task.task_id, "ADMISSION_REJECTED", "RELEASED");
-      // 不消耗重试：把 claim 时加上的 attempt_count 退回
+      // Do not consume a retry: roll back the attempt_count added at claim
       const updated = await c.query(
         `UPDATE tasks
             SET status = 'QUEUED', attempt_count = GREATEST(0, attempt_count - 1),
@@ -182,7 +182,7 @@ export async function startAck(
         WHERE task_id = $1`,
       [task.task_id],
     );
-    // 两阶段预留：HELD → ACTIVE
+    // Two-phase reservation: HELD → ACTIVE
     await c.query(
       `UPDATE resource_reservations SET state = 'ACTIVE', activated_at = app_now()
         WHERE attempt_id = $1 AND state = 'HELD'`,
@@ -201,7 +201,7 @@ export async function startAck(
   });
 }
 
-/** 续租：只有持有该 attempt 的实例可以续 */
+/** Renew lease: only the instance holding the attempt may renew */
 export async function renew(attemptId: string, proof: LeaseProof) {
   return tx(async (c) => {
     const { attempt } = await lockContext(c, attemptId, proof);
@@ -220,7 +220,7 @@ export async function renew(attemptId: string, proof: LeaseProof) {
   });
 }
 
-/** 进度上报：只校验 fencing，不改变状态 */
+/** Progress report: only fencing is checked; state does not change */
 export async function progress(
   attemptId: string,
   proof: LeaseProof & { percent?: number; note?: string },
@@ -247,10 +247,10 @@ export interface ResultInput extends LeaseProof {
 }
 
 /**
- * 结果上报。
- *  - 同一 attempt 重复上报 → 返回首次结果（幂等）
- *  - 旧 attempt 上报 → FENCING_STALE（重复执行的最后一道闸）
- *  - FAILED 且可重试 → 退避回队；重试耗尽 → FAILED + 死信
+ * Result submission.
+ *  - repeated report from the same attempt → return the first result (idempotent)
+ *  - report from an old attempt → FENCING_STALE (the last gate against duplicate execution)
+ *  - FAILED and retryable → back off and requeue; retries exhausted → FAILED + dead-letter
  */
 export async function submitResult(attemptId: string, input: ResultInput) {
   return tx(async (c) => {
@@ -259,8 +259,8 @@ export async function submitResult(attemptId: string, input: ResultInput) {
     ).rows[0];
     if (!attemptRow) throw new ApiError(404, "NOT_FOUND", `attempt 不存在: ${attemptId}`);
 
-    // 幂等：同一 attempt 重复上报，返回首次结果。
-    // 注意 TIMEOUT 不算“已有结果”——那说明结果从未送达，迟到的回写必须继续走 fencing 校验。
+    // Idempotent: a repeated report from the same attempt returns the first result.
+    // Note that TIMEOUT does not count as "has a result" — it means the result never arrived, so a late write must still go through fencing checks.
     if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(attemptRow.status)) {
       return {
         idempotent: true,
@@ -276,8 +276,8 @@ export async function submitResult(attemptId: string, input: ResultInput) {
     if (!["RUNNING", "ASSIGNED"].includes(task.status)) {
       throw new ApiError(409, "STATE_CONFLICT", `任务状态 ${task.status} 不接受结果`);
     }
-    // 状态机允许 ASSIGNED → SUCCEEDED/FAILED，是为了父调度机镜像子任务结果；
-    // 执行方必须先 start-ack 才有资格报结果，不能靠这条迁移跳过启动确认。
+    // The state machine allows ASSIGNED → SUCCEEDED/FAILED so the parent scheduler can mirror child task results;
+    // the executor must first start-ack to be eligible to report a result; this transition must not skip start acknowledgement.
     if (task.status === "ASSIGNED") {
       throw new ApiError(409, "STATE_CONFLICT", "任务还没 start-ack，不接受结果");
     }
@@ -305,7 +305,7 @@ export async function submitResult(attemptId: string, input: ResultInput) {
         actor: lease.instance_id,
         payload: { attempt_id: attemptId, summary: input.summary ?? null },
       });
-      // 工作流推进与结果写入同一个事务：不会出现“任务成功、下一阶段没入队”
+      // Workflow advance and result write share one transaction, so there is no "task succeeded but next phase was not enqueued" gap
       await advanceWorkflow(c, task, "SUCCEEDED");
       return { task: updated.rows[0], attempt_status: "SUCCEEDED" };
     }

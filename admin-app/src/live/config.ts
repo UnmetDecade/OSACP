@@ -1,17 +1,17 @@
 /**
- * 实时连接配置。
+ * Live connection configuration.
  *
- * 应用不再有演示模式：目标固定为页面同源的调度机与控制面代理。
- * 令牌只从 sessionStorage 读取（可通过调试或截图脚本注入），不写 localStorage、不写 URL、不在界面回显。
+ * The app no longer has a demo mode: targets are always the same-origin scheduler and control plane proxies.
+ * The token is read only from sessionStorage (injectable via devtools or capture scripts); never written to localStorage or the URL, and never echoed in the UI.
  */
 export type LiveConnection = {
-  /** 调度机地址，固定为同源代理。 */
+  /** Scheduler address, fixed to the same-origin proxy. */
   schedulerUrl: string;
-  /** 控制面地址，固定为同源代理。 */
+  /** Control plane address, fixed to the same-origin proxy. */
   pcsUrl: string;
-  /** 访问令牌，可选；为空时不发送 Authorization。 */
+  /** Access token, optional; no Authorization header is sent when empty. */
   adminToken: string;
-  /** 审计里显示的操作者名，默认 local@dev。 */
+  /** Operator name shown in audit logs; defaults to local@dev. */
   operator: string;
 };
 
@@ -23,7 +23,7 @@ function normalizeBase(value: string): string {
 
 export function defaultConnection(): LiveConnection {
   return {
-    // /api/* 前缀：/scheduler 是页面路由，不能再同时当 API 代理前缀。
+    // /api/* prefix: /scheduler is a page route and can no longer double as the API proxy prefix.
     schedulerUrl: "/api/scheduler",
     pcsUrl: "/api/pcs",
     adminToken: "",
@@ -31,7 +31,7 @@ export function defaultConnection(): LiveConnection {
   };
 }
 
-/** 旧版本把同源代理写成 /scheduler，和页面路由撞车；读到就顺手升级。 */
+/** Older versions used /scheduler for the same-origin proxy, colliding with the page route; upgrade it on read. */
 function migrateBase(value: string): string {
   if (value === "/scheduler") return "/api/scheduler";
   if (value === "/pcs") return "/api/pcs";
@@ -55,7 +55,7 @@ function readStored(): LiveConnection | null {
   }
 }
 
-/** 始终返回可用连接：优先带令牌的 sessionStorage 配置，否则用同源默认值。 */
+/** Always return a usable connection: prefer a sessionStorage config with a token, otherwise use the same-origin default. */
 export function getLiveConnection(): LiveConnection {
   return readStored() ?? defaultConnection();
 }

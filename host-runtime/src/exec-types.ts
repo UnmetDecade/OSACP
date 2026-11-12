@@ -1,6 +1,6 @@
 import type { Assignment } from "./client.js";
 
-/** 执行器的中止与失败语义。单独成文件，避免 executor 与角色实现互相 import 成环。 */
+/** Executor abort and failure semantics. Kept in its own file to avoid an import cycle between executor and role implementations. */
 
 export class TaskAborted extends Error {
   constructor(readonly reason: "cancelled" | "lease_lost" | "shutdown") {
@@ -36,13 +36,13 @@ export interface ExecContext {
   signal: AbortSignal;
   log: (msg: string) => void;
   progress: (percent: number, note?: string) => void;
-  /** 当前角色实例 id，写进产物报告便于追溯 */
+  /** Current role instance id, written into artifact reports for traceability */
   instanceId: string;
-  /** 本次 attempt 的独立工作目录（已创建），任务结束后由 Agent 清理 */
+  /** Per-attempt working directory (already created), cleaned up by the agent after the task ends */
   workspaceDir: string;
-  /** 上传制品并让调度机重算摘要；返回的 sha256 是服务端确认过的值 */
+  /** Upload an artifact and have the scheduler recompute its digest; the returned sha256 is the value confirmed by the server */
   uploadArtifact: (content: Buffer | string, mediaType?: string) => Promise<UploadedArtifact>;
-  /** 下载调度机交接给本任务的上游制品 */
+  /** Download an upstream artifact handed to this task by the scheduler */
   downloadArtifact: (artifactId: string) => Promise<DownloadedArtifact>;
 }
 

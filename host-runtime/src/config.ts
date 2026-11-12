@@ -6,17 +6,17 @@ export interface InstanceConfig {
   role_id: string;
   host_id: string;
   agent_profile_id: string;
-  /** Agent Profile 实际加载版本；不填时以 Profile 文件里的 version 注册 */
+  /** Actual loaded Agent Profile version; if empty, register with the version in the Profile file */
   agent_profile_version?: string;
-  /** 本实例绑定的 API Profile；任务信封里的 API 必须是它的子集 */
+  /** API Profiles bound to this instance; the APIs in the task envelope must be a subset of these */
   api_profile_ids?: string[];
-  /** API Adapter 监听端口；默认 8090，容器内每实例独立。0 表示随机 */
+  /** API Adapter listen port; defaults to 8090, independent per instance inside the container. 0 means random */
   api_adapter_port?: number;
   task_types: string[];
   capabilities: { healthy: string[]; unhealthy?: string[] };
   /**
-   * 工作能力值 W（0–1000）与六项明细。由 PCS 创建构建机时算好并注入容器环境，
-   * 注册时原样上报给调度机；没有就是 0，调度机按“不限制难度”处理。
+   * Work capability score W (0–1000) and its six-item detail. Computed by PCS when the builder is created and injected into the container environment,
+   * then reported verbatim to the scheduler at registration; absent means 0, which the scheduler treats as "no difficulty limit".
    */
   capability_score?: number;
   capability_detail?: {
@@ -27,44 +27,44 @@ export interface InstanceConfig {
     model?: number;
     api?: number;
   };
-  /** 该实例同时跑几个任务；默认 1，与调度机 instance_limit 对齐 */
+  /** How many tasks this instance runs concurrently; defaults to 1, aligned with the scheduler's instance_limit */
   slots?: number;
-  /** 本机二次准入为每个槽位预留的内存；默认 1GiB */
+  /** Memory reserved per slot by local second-stage admission; defaults to 1GiB */
   slot_memory_bytes?: number;
   enabled?: boolean;
 }
 
 export interface RuntimeConfig {
   scheduler_url: string;
-  /** P6：校验调度机服务端证书的内部 CA */
+  /** P6: internal CA used to verify the scheduler's server certificate */
   scheduler_ca_file?: string;
-  /** P6 mTLS：实例客户端证书与私钥；两者必须同时配置 */
+  /** P6 mTLS: instance client certificate and key; both must be configured together */
   scheduler_client_cert_file?: string;
   scheduler_client_key_file?: string;
   heartbeat_seconds: number;
   claim_interval_seconds: number;
   lease_renew_seconds: number;
   progress_seconds: number;
-  /** 配置同步周期；调度机版本未变时回 304，不产生额外开销 */
+  /** Config sync interval; the scheduler returns 304 when the version is unchanged, so there is no extra overhead */
   config_sync_seconds: number;
   request_timeout_ms: number;
-  /** 实例 JWT 所在目录：<dir>/<instance_id>.jwt。PCS 挂载的令牌文件。 */
+  /** Directory holding instance JWTs: <dir>/<instance_id>.jwt. Token files mounted by PCS. */
   token_dir?: string;
-  /** Host Runtime 的本机准入 unix socket；设置后 start-ack 前必须复检（§8.4） */
+  /** Host Runtime's local admission unix socket; when set, recheck before start-ack (§8.4) */
   host_admission_socket?: string;
-  /** 角色执行器的工作目录根；每个 attempt 一个子目录，默认 data/workspace */
+  /** Workspace root for role executors; one subdirectory per attempt, defaults to data/workspace */
   workspace_dir?: string;
-  /** 调试用：保留 attempt 工作目录（默认任务结束即删除） */
+  /** Debug use: keep attempt workspaces (by default they are deleted when the task ends) */
   keep_workspace?: boolean;
-  /** PCS 导出的 Agent/API Profile 文件；不配置则只用确定性角色执行器 */
+  /** Agent/API Profile file exported by PCS; if not configured, only the deterministic role executors are used */
   profiles_file?: string;
-  /** Secret Store 地址；只有 API Adapter 会访问 */
+  /** Secret Store URL; only the API Adapter accesses it */
   secret_store_url?: string;
-  /** egress 策略名 -> 允许的 host（精确或 *.suffix）；未列出的策略默认拒绝 */
+  /** Egress policy name -> allowed hosts (exact or *.suffix); policies not listed are denied by default */
   egress_policies?: Record<string, string[]>;
-  /** 仅本地开发：允许 API Adapter 访问回环地址 */
+  /** Local development only: allow the API Adapter to reach loopback addresses */
   allow_loopback_egress?: boolean;
-  /** 工具/API 审计 JSONL 目录；不含请求体与密钥 */
+  /** Tool/API audit JSONL directory; contains no request bodies or secrets */
   audit_dir?: string;
   instances: InstanceConfig[];
 }
@@ -83,9 +83,9 @@ const DEFAULTS = {
 };
 
 /**
- * 容器入口会把 CAPABILITY_SCORE / CAPABILITY_DETAIL 注入环境。
- * 这里兜底一次：只有环境里确实带值时，才覆盖配置里已经写明的明细。
- * 数值全部非法时返回 undefined，让注册请求保持旧格式。
+ * The container entrypoint injects CAPABILITY_SCORE / CAPABILITY_DETAIL into the environment.
+ * This is a one-time fallback: only override the detail already specified in config when the environment actually carries a value.
+ * If all values are invalid, return undefined so the registration request keeps the old format.
  */
 function applyCapabilityEnv(instances: InstanceConfig[]): InstanceConfig[] {
   const rawScore = process.env.CAPABILITY_SCORE;
@@ -98,7 +98,7 @@ function applyCapabilityEnv(instances: InstanceConfig[]): InstanceConfig[] {
       const parsed = JSON.parse(rawDetail);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) detail = parsed;
     } catch {
-      // 明细坏了不影响注册：用分值即可。
+      // A bad detail does not block registration: the score alone is enough.
     }
   }
   return instances.map((i) => ({
@@ -110,7 +110,7 @@ function applyCapabilityEnv(instances: InstanceConfig[]): InstanceConfig[] {
   }));
 }
 
-/** 正整数秒的环境变量覆盖；非法值当作未设置，不因为写错单位而把轮询关掉。 */
+/** Positive-integer-seconds env override; invalid values are treated as unset so a unit typo does not turn polling off. */
 function secondsEnv(name: string): number | undefined {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return undefined;
@@ -128,8 +128,8 @@ export function loadConfig(configPath?: string): RuntimeConfig {
   const cfg = {
     ...DEFAULTS,
     ...raw,
-    // 控制台的体感延迟主要来自“任务入队 → 实例来领”。默认 2 秒是省数据库的
-    // 保守值；小规模平台（几台构建机）可以调到 0.5 秒换取交互时延。
+    // Perceived console latency comes mainly from "task enqueued → instance claims it". The default 2 seconds is a DB-saving
+    // conservative value; small deployments (a few builders) can drop it to 0.5 seconds to trade for interactive latency.
     claim_interval_seconds:
       secondsEnv("CLAIM_INTERVAL_SECONDS") ??
       raw.claim_interval_seconds ??
@@ -155,7 +155,7 @@ export function loadConfig(configPath?: string): RuntimeConfig {
   return cfg;
 }
 
-/** --instance builder-ubuntu22-a 只挑一个；不给就全起 */
+/** --instance builder-ubuntu22-a picks just one; without it, all are started */
 export function selectInstances(cfg: RuntimeConfig, argv: string[]): InstanceConfig[] {
   const idx = argv.indexOf("--instance");
   const wanted = idx >= 0 ? argv[idx + 1] : undefined;

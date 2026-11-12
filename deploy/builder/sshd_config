@@ -1,4 +1,4 @@
-# v4 构建机 SSH：完全权限，root + 公钥。
+# v4 builder SSH: full permissions, root + public key.
 Port 2222
 PermitRootLogin yes
 PubkeyAuthentication yes

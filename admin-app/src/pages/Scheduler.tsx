@@ -11,20 +11,20 @@ import { Icon } from "../components/Icon";
 import type { Instance } from "../types";
 
 /**
- * 调度机列表：本机这一棵子树（本机根 + 同机结点 + 并入主机的根）。
- * 和构建机列表一样只放列表，点进去才看队列、Agent 和配置。
+ * Scheduler list: this host's subtree (local root + same-host nodes + roots of folded hosts).
+ * Like the builder list, it is list-only; queue, Agent and config appear after clicking through.
  */
 export function SchedulerPage() {
   const { host } = useHostScope();
   const [query, setQuery] = useState("");
   const [state, setState] = useState("ALL");
 
-  // 直接打开页面时首屏还没有主机；db.hosts 是原地替换的，用 id 签名做依赖才能重算。
+  // On a direct page load there is no host on first paint; db.hosts is replaced in place, so depend on an id signature to recompute.
   const hostKey = db.hosts.map((h) => h.id).join(",");
   const hostById = useMemo(() => new Map(db.hosts.map((h) => [h.id, h])), [hostKey]);
   const treeRoot = host ? hostById.get(host.id) : undefined;
 
-  // 并入主机在外部看是本机根下的结点，所以调度台把它们一起列出来。
+  // Folded hosts appear externally as nodes under the local root, so the scheduler page lists them too.
   const scopedHostIds = useMemo(() => hostTreeIds(treeRoot?.id), [treeRoot, hostById]);
 
   const schedulers = db.instances.filter(
@@ -35,7 +35,7 @@ export function SchedulerPage() {
     const q = query.trim().toLowerCase();
     return !q || s.name.toLowerCase().includes(q) || (s.id ?? "").toLowerCase().includes(q);
   });
-  // 本机根永远第一；结点与并入主机的根（对外也是结点）排在后面。
+  // The local root is always first; nodes and folded host roots (also nodes externally) come after.
   const externalRank = (s: Instance) => {
     const internalRoot = (s.scheduler_role ?? "root") === "root";
     if (internalRoot && s.host_id === treeRoot?.id) return 0;
@@ -65,7 +65,7 @@ export function SchedulerPage() {
     : 0;
 
   function buildersOf(s: Instance): Instance[] {
-    // 按实例名归属：调度机重启会换 deployment_id，构建机手里可能还是旧的。
+    // Attribute by instance name: a scheduler restart changes the deployment_id, and builders may still hold the old one.
     const fallback = rootByHost.get(s.host_id)?.id;
     return db.instances.filter(
       (b) =>
@@ -84,14 +84,14 @@ export function SchedulerPage() {
     );
   }
 
-  // 每台主机一组、按主机名折叠；本机默认展开，并入主机默认收起。
+  // One group per host, collapsed by host name; the local host is expanded by default and folded hosts are collapsed.
   const groups = groupByHost(ordered, treeRoot.id);
   const filtering = query.trim() !== "" || state !== "ALL";
 
   const renderRow = (s: Instance) => {
     const internalRole = s.scheduler_role ?? "root";
     const h = hostById.get(s.host_id);
-    // 并入主机的根，在本机视角里就是父主机根下的一个结点。
+    // A folded host's root is, from this host's perspective, a node under the parent host's root.
     const merged = internalRole === "root" && s.host_id !== treeRoot.id;
     const externalNode = internalRole === "node" || merged;
     const parent = s.parent_scheduler_id
@@ -187,7 +187,7 @@ export function SchedulerPage() {
                 </HostFold>
               ))
             ) : (
-              // 只有一台主机（没有并入主机）时不用折叠，列表直接铺开。
+              // With only one host (no folded hosts), no collapsing is needed; the list is laid out flat.
               groups[0]?.items.map(renderRow)
             )}
           </div>

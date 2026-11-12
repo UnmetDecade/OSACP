@@ -23,7 +23,7 @@ if (instances.length === 0) {
   process.exit(1);
 }
 
-// 实例 JWT 从挂载目录读取（<dir>/<instance_id>.jwt）；旧的共享令牌作为兜底。
+// Instance JWT is read from the mount directory (<dir>/<instance_id>.jwt); the legacy shared token is used as a fallback.
 const tokenDir = process.env.INSTANCE_TOKEN_DIR ?? cfg.token_dir;
 
 function tokenFor(instanceId: string): string | (() => string | undefined) | undefined {
@@ -34,7 +34,7 @@ function tokenFor(instanceId: string): string | (() => string | undefined) | und
         const jwt = fs.readFileSync(file, "utf8").trim();
         if (jwt) return jwt;
       } catch {
-        // 没有 JWT 文件时退回共享令牌（本地开发 / Compose 默认）
+        // Fall back to the shared token when there is no JWT file (local development / Compose default)
       }
       return process.env.SCHEDULER_TOKEN || undefined;
     };
@@ -49,8 +49,8 @@ if (cfg.profiles_file) {
 }
 
 /**
- * 只有 PCS 绑定过的实例才进入 Agent 模式；没有 Profile 的实例继续用确定性执行器。
- * 绑定了但加载失败 → 启动失败（失败关闭），不允许“悄悄降级”。
+ * Only instances bound by PCS enter Agent mode; instances without a Profile keep using the deterministic executor.
+ * Bound but failed to load → startup failure (fail closed); silent degradation is not allowed.
  */
 function profilesFor(i: InstanceConfig): RuntimeProfiles | undefined {
   if (!profilesFile) return undefined;

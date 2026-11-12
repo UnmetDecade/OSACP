@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * PCS 管理面 CLI（开发/运维用）。所有写操作都带管理员 JWT，PCS 只验签与查 scope。
+ * PCS management-plane CLI (for development/operations). Every write operation carries an admin JWT;
+ * the PCS only verifies the signature and checks scopes.
  *
- * 用法：
+ * Usage:
  *   npm run pcs -- admin-token --operator alice [--hours 8]
  *   npm run pcs -- host-add --name ubuntu22 [--labels pool:dev,zone:a]
  *   npm run pcs -- host-list

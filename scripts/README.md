@@ -1,33 +1,35 @@
-# 验收与运维脚本
+# Acceptance and Operations Scripts
 
-这些脚本只用于**测试环境**：会建库、重置演示数据、启动或停止本机进程，
-部分动作依赖 Docker 容器 `pg-sched`。不要在承载真实业务的控制面上直接运行，
-运行前先读脚本头部说明。
+> English · [简体中文](README.zh-CN.md)
 
-## 验收脚本
+These scripts are for **test environments only**: they create databases, reset demo data, and start or stop local processes,
+and some actions depend on the Docker container `pg-sched`. Do not run them directly against a control plane that carries
+real business workloads, and read the header notes in each script before running it.
 
-| 脚本 | 阶段 | 覆盖 |
+## Acceptance Scripts
+
+| Script | Phase | Coverage |
 |---|---|---|
-| `e2e-p2.sh` | P2 | 注册、领取、租约、fencing、回收、重试与队列统计（两个构建机实例） |
-| `e2e-p4.sh` | P4 | Agent Profile、API Profile、Secret 引用、Tool Policy Guard、出站拒绝 |
+| `e2e-p2.sh` | P2 | Registration, claim, leases, fencing, reclaim, retry, and queue stats (two builder instances) |
+| `e2e-p4.sh` | P4 | Agent Profile, API Profile, Secret references, Tool Policy Guard, egress denial |
 
-v3 时代的四角色闭环、审批、TLS/备份/压力验收脚本已随角色删除一起退役，不再适用。
+The four-role loop, approval, and TLS/backup/load acceptance scripts from the v3 era were retired along with the deleted roles and no longer apply.
 
-## 支撑脚本
+## Supporting Scripts
 
-| 脚本 | 用途 |
+| Script | Purpose |
 |---|---|
-| `build-app-payload.mjs` | 打调度机与构建机的部署载荷到 `deploy/{scheduler,builder}/app/`（esbuild bundle + SQL + 入口脚本）；镜像保持官方 ubuntu |
-| `pki.sh OUTDIR [额外 DNS/IP...]` | 生成内部 CA、PCS/调度机/Secret Store 服务端证书与共享客户端证书；输出 0600 私钥，可重复执行 |
-| `backup-restore.sh backup OUTDIR` | `pg_dump -Fc` 两个库，打包制品，写行数清单与 SHA256SUMS；目录 0700 |
-| `backup-restore.sh restore BACKUP_DIR [后缀]` | 恢复到独立后缀库（默认 `_restore`），比对关键表行数，不覆盖原库 |
-| `backup-restore.sh verify BACKUP_DIR` | 校验备份文件摘要，并对比当前库与备份清单 |
-| `load-test.mjs` | 向调度机提交 N 个 `task.build`，统计 p50/p95/max、吞吐，采样 `/proc/meminfo`、`VmRSS` 与 `oom_kill` |
-| `p4-mock-upstream.mjs` | P4 验收用的本地 API 上游，带鉴权与配额行为 |
-| `seed-cli-agents.mjs` | 把 Claude Code / Codex 的 CLI Agent Profile 注册到 PCS；`--dry-run` 只打印，`--bind <instance>:<provider>` 创建后绑定。镜像必须 digest 固定且在 PCS 白名单内 |
-| `../agents/test-cli-agent.mjs` | CLI Agent 适配器的协议级测试（stub CLI，不需要真实模型或凭据） |
+| `build-app-payload.mjs` | Build the deployment payloads for the scheduler and builder into `deploy/{scheduler,builder}/app/` (esbuild bundle + SQL + entry script); the image stays official ubuntu |
+| `pki.sh OUTDIR [extra DNS/IP...]` | Generate an internal CA, PCS/scheduler/Secret Store server certificates, and a shared client certificate; outputs 0600 private keys and can be re-run |
+| `backup-restore.sh backup OUTDIR` | `pg_dump -Fc` both databases, package artifacts, and write a row-count manifest and SHA256SUMS; directory 0700 |
+| `backup-restore.sh restore BACKUP_DIR [suffix]` | Restore into a separately suffixed database (default `_restore`), compare key table row counts, without overwriting the source |
+| `backup-restore.sh verify BACKUP_DIR` | Verify backup file digests and compare the current database against the backup manifest |
+| `load-test.mjs` | Submit N `task.build` tasks to the scheduler, report p50/p95/max and throughput, and sample `/proc/meminfo`, `VmRSS`, and `oom_kill` |
+| `p4-mock-upstream.mjs` | Local API upstream for P4 acceptance, with authentication and quota behavior |
+| `seed-cli-agents.mjs` | Register the Claude Code / Codex CLI Agent Profiles with PCS; `--dry-run` only prints, and `--bind <instance>:<provider>` binds after creation. The image must be pinned by digest and be in the PCS allowlist |
+| `../agents/test-cli-agent.mjs` | Protocol-level tests for the CLI Agent adapter (stub CLI, no real model or credentials needed) |
 
-### load-test 环境变量
+### load-test Environment Variables
 
 ```bash
 SCHEDULER_URL=http://127.0.0.1:7801 \
@@ -38,22 +40,21 @@ MONITOR_PIDS=12345,12346 \
 node scripts/load-test.mjs
 ```
 
-只读取任务状态与 `/proc` 计数，不接触密钥或审计正文。任务未全部完成或
-`oom_kill` 增量大于 0 时以非零码退出。
+Only task status and `/proc` counters are read; it does not touch secrets or audit bodies. It exits with a non-zero code
+if tasks do not all complete or if the `oom_kill` delta is greater than 0.
 
-## 备份脚本的默认值
+## Backup Script Defaults
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| `PG_MODE` | `docker` | `docker` 走容器 `pg-sched`；`local` 走本机 `psql`/`pg_dump` |
-| `PG_CONTAINER` | `pg-sched` | Docker 容器名 |
-| `SCHED_DB` / `PCS_DB` | `scheduler` / `platform_control` | 源库 |
-| `ARTIFACT_DIR` | `$HOME/scheduler/data/artifacts` | 可选打包的制品目录 |
-| `PG_USER` / `PGPASSWORD` | `postgres` / `sched_dev_pw` | 仅测试环境默认值 |
+| `PG_MODE` | `docker` | `docker` uses the `pg-sched` container; `local` uses the local `psql`/`pg_dump` |
+| `PG_CONTAINER` | `pg-sched` | Docker container name |
+| `SCHED_DB` / `PCS_DB` | `scheduler` / `platform_control` | Source databases |
+| `ARTIFACT_DIR` | `$HOME/scheduler/data/artifacts` | Optional artifact directory to package |
+| `PG_USER` / `PGPASSWORD` | `postgres` / `sched_dev_pw` | Test-environment defaults only |
 
-备份包含审计与业务数据，但**不含** JWT、命令私钥或 Secret Store 的密钥值；
-恢复前先确认目标库后缀，脚本不会覆盖源库。
-
+Backups include audit and business data but **do not include** JWTs, command private keys, or Secret Store secret values;
+confirm the target database suffix before restoring—the script never overwrites the source database.
 
 ## CLI Agent Profile
 
@@ -66,14 +67,14 @@ AGENT_PASS_ENV=ANTHROPIC_API_KEY \
 node scripts/seed-cli-agents.mjs --bind builder-ubuntu22-a:claude
 ```
 
-- 令牌只从环境变量读取，不写进脚本、URL 或输出。
-- `AGENT_PASS_ENV` 只列变量名；不设置时按 provider 取默认值：Claude Code 放行
-  `ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL`，Codex 放行 `DEEPSEEK_API_KEY,CODEX_HOME`。
-- 容器环境到 Agent 适配器还有一层放行：`PLATFORM_AGENT_PASS_ENV`（见 `deploy/README.md`）。
-- 外部 CLI 默认不继承宿主环境，避免无关凭据被 Agent 读取。
-- 目标主机必须已安装对应 CLI；缺失时任务失败为 `AGENT_NOT_READY`，不会静默改用确定性执行器。
-- Profile 的 `version` 默认取本机 `<cli> --version`（如 `2.1.322` / `0.167.1`），这样 UI 上的
-  「Claude Code · builder · v2.1.322」和镜像里的 CLI 对得上；种子上游机器没装 CLI 时用
-  `AGENT_CLAUDE_VERSION` / `AGENT_CODEX_VERSION` 显式指定。
-- 注册只改 PCS 控制面；Host Runtime 需要滚动重启实例才会加载新 Agent。
-- 执行路径与 `.claude`/`.codex` 用户目录无关：Adapter 把 `HOME` 指向一次性任务工作区。
+- Tokens are read from environment variables only, and are never written into scripts, URLs, or output.
+- `AGENT_PASS_ENV` lists variable names only; when it is unset, provider defaults apply: Claude Code passes through
+  `ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL`, and Codex passes through `DEEPSEEK_API_KEY,CODEX_HOME`.
+- There is another pass-through layer from the container environment to the Agent adapter: `PLATFORM_AGENT_PASS_ENV` (see `deploy/README.md`).
+- External CLIs do not inherit the host environment by default, preventing unrelated credentials from being read by the Agent.
+- The target host must already have the corresponding CLI installed; if it is missing, the task fails with `AGENT_NOT_READY` and does not silently fall back to the deterministic executor.
+- The Profile's `version` defaults to the local `<cli> --version` (e.g. `2.1.322` / `0.167.1`), so that the UI's
+  "Claude Code · builder · v2.1.322" matches the CLI in the image; when the seeding upstream machine has no CLI installed,
+  specify it explicitly with `AGENT_CLAUDE_VERSION` / `AGENT_CODEX_VERSION`.
+- Registration only changes the PCS control plane; Host Runtime requires a rolling restart of instances to load the new Agent.
+- The execution path is independent of the `.claude`/`.codex` user directories: the Adapter points `HOME` at the one-off task workspace.

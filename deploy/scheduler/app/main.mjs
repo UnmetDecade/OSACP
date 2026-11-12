@@ -5349,19 +5349,19 @@ var require_lib2 = __commonJS({
 // scheduler/src/config.ts
 var config = {
   port: Number(process.env.PORT ?? 7801),
-  // 默认只听回环：对外只经控制面反向代理 + mTLS 暴露，不直接把端口挂到网卡上
+  // Listen on loopback by default: expose externally only through the control-plane reverse proxy + mTLS, never bind the port directly to a NIC
   host: process.env.HOST ?? "127.0.0.1",
   databaseUrl: process.env.DATABASE_URL ?? "postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler",
   tickMs: Number(process.env.TICK_MS ?? 1e3),
-  // 生产环境的循环开关；测试里直接调用 sweep 函数，不跑循环
+  // Loop switches for production; tests call the sweep functions directly and run no loops
   loops: process.env.DISABLE_LOOPS !== "1",
-  // P6：直连 TLS / mTLS。证书与私钥必须同时配置。
+  // P6: direct TLS / mTLS. Certificate and private key must be configured together.
   tlsCertFile: (process.env.SCHEDULER_TLS_CERT_FILE ?? "").trim(),
   tlsKeyFile: (process.env.SCHEDULER_TLS_KEY_FILE ?? "").trim(),
   tlsCaFile: (process.env.SCHEDULER_TLS_CA_FILE ?? "").trim(),
   mtls: process.env.SCHEDULER_MTLS === "1",
-  // 联邦树：本节点的 id、宿主 id、上级调度机地址与共享令牌。
-  // 没有 PARENT_URL 时本节点就是根；根和结点都按直接子结点的上报做任务下推。
+  // Federation tree: this node id, host id, parent scheduler URL and shared token.
+  // Without PARENT_URL this node is the root; both root and nodes push tasks based on direct-child reports.
   nodeId: (process.env.SCHEDULER_NODE_ID ?? "").trim(),
   hostId: (process.env.SCHEDULER_HOST_ID ?? "").trim(),
   parentUrl: (process.env.SCHEDULER_PARENT_URL ?? "").trim().replace(/\/+$/, ""),
@@ -5370,10 +5370,10 @@ var config = {
     5e3,
     Number(process.env.SCHEDULER_FEDERATION_INTERVAL_MS ?? 3e4) || 3e4
   ),
-  // 本调度机对同联邦其它调度机的可达地址。PCS 部署时按「主机地址 + 宿主端口」注入；
-  // 子结点把它随能力上报一起交给父结点，父结点中继任务时才知道往哪发。
+  // This scheduler's reachable address for other schedulers in the federation. PCS injects it as "host address + host port" at deployment;
+  // a child sends it to its parent with the capability report, so the parent knows where to send relayed tasks.
   advertiseUrl: (process.env.SCHEDULER_ADVERTISE_URL ?? "").trim().replace(/\/+$/, ""),
-  // 父结点镜像子结点任务状态的周期。0 表示关闭中继同步（只保留转发）。
+  // Period at which the parent mirrors child task state. 0 disables relay sync (forwarding only).
   relaySyncMs: Math.max(
     250,
     Number(process.env.SCHEDULER_RELAY_SYNC_MS ?? 2e3) || 2e3
@@ -5706,7 +5706,7 @@ async function claim(input) {
         FROM tasks t
         JOIN task_definitions td ON td.task_type = t.task_type
        WHERE t.status = 'QUEUED'
-         -- \u5DF2\u4E0B\u63A8\u7ED9\u5B50\u7ED3\u70B9\u7684\u4EFB\u52A1\u7559\u5728\u672C\u673A QUEUED \u7B49\u7ED3\u679C\uFF0C\u4F46\u4E0D\u80FD\u518D\u88AB\u672C\u673A\u9886\u53D6\u3002
+         -- Tasks already pushed down to child nodes stay QUEUED locally for results, but must not be claimed locally.
          AND NOT EXISTS (
            SELECT 1 FROM task_relays r
             WHERE r.parent_task_id = t.task_id AND r.state = 'ACTIVE'
@@ -5925,7 +5925,7 @@ async function assign(c, cfg, inst, host, task, traceId) {
     deadline_at: t.deadline_at,
     difficulty: Number(t.difficulty ?? 0),
     requirements: t.requirements ?? {},
-    // P4：只下发引用，不下发实现、API 地址或密钥；实例按本地加载的 Profile 校验
+    // P4: send only references, never implementations, API addresses or secrets; the instance validates against its locally loaded Profile
     agent: {
       profile_id: inst.agent_profile_id,
       version: inst.agent_profile_version ?? null
@@ -6965,7 +6965,7 @@ var NON_RETRYABLE = /* @__PURE__ */ new Set([
   "APPROVAL_SUBJECT_CHANGED",
   "REVIEW_REJECTED_SECRET",
   "REVIEW_REJECTED_INCOMPLETE",
-  // P4：越权/配置不匹配不是重试能解决的问题
+  // P4: permission violations/config mismatches are not solved by retrying
   "AGENT_PROFILE_NOT_ALLOWED",
   "API_PROFILE_NOT_ALLOWED",
   "TOOL_NOT_ALLOWED",
@@ -7682,8 +7682,8 @@ async function register(input) {
          payload_schemas = EXCLUDED.payload_schemas,
          capability_score = COALESCE($13, role_instances.capability_score),
          capability_detail = COALESCE($14::jsonb, role_instances.capability_detail),
-         -- \u6CE8\u518C\u4EE3\u8868\u201C\u65B0\u8FDB\u7A0B\u8D77\u6765\u4E86\u201D\uFF1A\u4E0A\u4E00\u8FDB\u7A0B\u7684 drain / \u5FC3\u8DF3\u8D85\u65F6\u72B6\u6001\u5168\u90E8\u4F5C\u5E9F\u3002
-         -- \u5426\u5219\u4E0A\u4E00\u4E2A\u8FDB\u7A0B\u9000\u51FA\u65F6\u53D1\u7684 DRAINING \u5FC3\u8DF3\u4F1A\u628A\u8FD9\u4E2A\u5B9E\u4F8B\u6C38\u4E45\u5361\u4F4F\u3002
+         -- Registration means "a new process has started": the previous process's drain / heartbeat-timeout state is discarded.
+         -- Otherwise the DRAINING heartbeat sent when the previous process exits would leave this instance stuck forever.
          state = CASE WHEN role_instances.state IN ('OFFLINE','FAILED','DRAINING','SUSPECT')
                       THEN 'STARTING' ELSE role_instances.state END,
          drain_deadline_at = NULL,
@@ -7715,7 +7715,7 @@ async function heartbeat(input) {
     `UPDATE role_instances
         SET last_heartbeat_at = app_now(),
             updated_at = app_now(),
-            -- \u5FC3\u8DF3\u4E0D\u80FD\u628A\u7BA1\u7406\u5458\u4E0B\u53D1\u7684 DRAINING \u8986\u76D6\u56DE ONLINE\uFF1B\u6062\u590D\u53EA\u80FD\u8D70 resume
+            -- Heartbeats must not overwrite an admin-issued DRAINING back to ONLINE; recovery only goes through resume.
             state = CASE
                       WHEN $2::text IS NULL THEN state
                       WHEN state = 'DRAINING' AND $2::text = 'ONLINE' THEN 'DRAINING'
@@ -8539,10 +8539,10 @@ async function reportUpstream() {
         host_id: config.hostId || snap.node_id,
         local_score: snap.local_score,
         subtree_score: snap.subtree_score,
-        // 容量指标报整棵子树的值：中间结点自己可能没有构建机，但子树里有。
+        // Capacity metrics report whole-subtree values: an intermediate node may have no builders itself, but its subtree does.
         builder_count: snap.subtree_builder_count,
         child_count: snap.child_count,
-        // 父结点中继任务需要：可达地址、最大 W、空闲数、子树实例名册。
+        // The parent needs for relaying: reachable address, max W, idle count, subtree instance roster.
         url: config.advertiseUrl || null,
         max_builder_score: snap.subtree_max_builder_score,
         idle_builder_count: snap.subtree_idle_builder_count,

@@ -1,5 +1,5 @@
 /**
- * 规范里的错误码。HTTP 状态与 code 一起返回，调用方按 code 判断，不解析文案。
+ * Error codes from the spec. HTTP status is returned along with code; callers branch on code and never parse the message.
  */
 export class ApiError extends Error {
   constructor(

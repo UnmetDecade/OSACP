@@ -10,11 +10,11 @@ export interface ReportInput {
   sample: HostSample;
   hostState: HostState | "UNKNOWN";
   engineHealthy: boolean;
-  /** 裸机实例没有容器，由 Reconciler 生成同样形状的 running 记录。 */
+  /** Native instances have no container; the Reconciler generates a running record of the same shape. */
   deployments?: Array<Record<string, unknown>>;
 }
 
-/** 对应 host-runtime-spec §6.4。容器只上报标签里带 platform.* 的那些。 */
+/** Corresponds to host-runtime-spec §6.4. Only containers whose labels carry platform.* are reported. */
 export async function buildReport(input: ReportInput): Promise<Record<string, unknown>> {
   let containers: Awaited<ReturnType<EngineAdapter["listManaged"]>> = [];
   if (input.engineHealthy) {

@@ -50,7 +50,7 @@ export interface ToolGuardOptions {
   apiProfiles: Map<string, ApiProfile>;
   phase: string;
   approvedActionScope: string[];
-  /** 每次 attempt 随机生成，只交给该 attempt 的 Adapter */
+  /** Generated randomly per attempt, given only to that attempt's Adapter */
   toolToken: string;
   audit: ToolAudit;
   apiCall?: ApiCallFn;
@@ -65,10 +65,10 @@ interface ToolCallInput {
 }
 
 /**
- * Tool Policy Guard（§3.6）。顺序固定，任何一步失败就拒绝。
+ * Tool Policy Guard (§3.6). The order is fixed; any failing step rejects.
  *
- * 模型输出只是“请求”，不是授权凭据；这里不看模型说了什么，
- * 只看实例身份、PCS Profile、任务阶段与参数本身。
+ * Model output is only a "request", not an authorization credential; this does not look at what the model said,
+ * only at instance identity, the PCS Profile, the task phase and the arguments themselves.
  */
 export class ToolGuard {
   private turns = 0;
@@ -99,7 +99,7 @@ export class ToolGuard {
     };
 
     try {
-      // 1. 身份：调用必须来自当前 attempt，且持有本 attempt 的令牌
+      // 1. Identity: the call must come from the current attempt and hold this attempt's token
       input = parseCall(raw);
       if (!sameToken(input.tool_token, this.opts.toolToken)) {
         throw deny("TOOL_IDENTITY_MISMATCH", "tool_token 与当前 attempt 不匹配", 1);
@@ -109,8 +109,8 @@ export class ToolGuard {
         throw deny("TOOL_TURN_LIMIT", `工具调用超过 max_turns=${this.opts.maxTurns}`, 1);
       }
 
-      // 2. Profile 权限；留空表示全部权限。只有平台已注册的 tool_id 才会收窄范围，
-      //    面板里手填的其他词（描述性权限）不会误伤所有工具。
+      // 2. Profile permissions; empty means all permissions. Only platform-registered tool_ids narrow the scope,
+      //    so other words typed into the panel (descriptive permissions) do not accidentally block every tool.
       const allowed = this.opts.profile.allowed_tools.filter((id) => TOOL_CATALOG[id]);
       if (allowed.length > 0 && !allowed.includes(input.tool_id)) {
         throw deny("TOOL_NOT_ALLOWED", `Agent Profile 未允许工具 ${input.tool_id}`, 2);
@@ -120,7 +120,7 @@ export class ToolGuard {
         throw deny("TOOL_UNKNOWN", `工具未在平台目录注册：${input.tool_id}`, 2);
       }
 
-      // 3. 阶段
+      // 3. Phase
       if (descriptor.phases.length && !descriptor.phases.includes(this.opts.phase)) {
         throw deny(
           "TOOL_PHASE_DENIED",
@@ -129,10 +129,10 @@ export class ToolGuard {
         );
       }
 
-      // 4. 输入 Schema + 工作区路径
+      // 4. Input schema + workspace path
       validateArgs(input.tool_id, input.args, this.opts.workspace);
 
-      // 5. 资源 / 网络 / 副作用
+      // 5. Resources / network / side effects
       for (const scope of descriptor.action_scopes) {
         if (!this.opts.approvedActionScope.includes(scope)) {
           throw deny("TOOL_SCOPE_DENIED", `缺少审批 action_scope：${scope}`, 5);
@@ -145,7 +145,7 @@ export class ToolGuard {
         }
       }
 
-      // 6. 幂等：同键不同参数拒绝；同键同参数返回第一次结果
+      // 6. Idempotency: same key with different args is rejected; same key with same args returns the first result
       const argsHash = sha256(stable(input.args));
       if (input.idempotency_key) {
         const prev = this.seen.get(input.idempotency_key);
@@ -164,13 +164,13 @@ export class ToolGuard {
         }
       }
 
-      // 执行（执行本身仍可能失败，但授权已经通过）
+      // Execute (execution itself may still fail, but authorization has passed)
       const result = await this.execute(input);
       if (input.idempotency_key) {
         this.seen.set(input.idempotency_key, { hash: argsHash, result });
       }
 
-      // 7. 审计：只记摘要，不记参数正文/密钥/工具返回全文
+      // 7. Audit: record only digests, not the full argument bodies / secrets / tool returns
       this.record({
         tool_id: input.tool_id,
         decision: "ALLOW",
@@ -181,8 +181,8 @@ export class ToolGuard {
       return result;
     } catch (e) {
       if (e instanceof ToolDenied) throw e;
-      // 执行层错误若自带稳定的错误码（如 EGRESS_IP_BLOCKED / ENOENT），保留它，
-      // 否则审计与 Agent 只能看到笼统的 TOOL_EXECUTION_FAILED，无法定位拒绝原因。
+      // If an execution-layer error carries a stable error code (e.g. EGRESS_IP_BLOCKED / ENOENT), keep it;
+      // otherwise audit and the Agent would only see a generic TOOL_EXECUTION_FAILED and could not locate the rejection cause.
       const rawCode = (e as { code?: unknown } | null)?.code;
       const code =
         typeof rawCode === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(rawCode)
@@ -241,7 +241,7 @@ export class ToolGuard {
         ...r,
       });
     } catch {
-      // 审计落盘失败不能反过来阻塞业务，但调用方仍有本地日志
+      // A failure to persist the audit must not block the business logic in turn, but the caller still has the local log
     }
   }
 }

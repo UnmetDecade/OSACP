@@ -26,7 +26,7 @@ export interface EngineAdapter {
   pull(image: string): Promise<void>;
   inspectImage(image: string): Promise<{ id: string; repo_digests: string[] } | null>;
   ensureNetwork(name: string): Promise<void>;
-  /** 把配置文件写进容器文件系统（停止状态也可写），path=/ 表示容器根。 */
+  /** Write config files into the container filesystem (works while stopped); path=/ means the container root. */
   putArchive(nameOrId: string, targetDir: string, tar: Buffer): Promise<void>;
 }
 
@@ -46,7 +46,7 @@ interface RawResponse {
   body: Buffer;
 }
 
-/** 只封装固定的容器生命周期端点；没有 exec / 任意 shell / 任意路径接口。 */
+/** Wraps only fixed container lifecycle endpoints; no exec / arbitrary shell / arbitrary path interfaces. */
 export class DockerEngine implements EngineAdapter {
   constructor(
     private readonly socketPath: string,
@@ -210,7 +210,7 @@ export class DockerEngine implements EngineAdapter {
     const r = await this.request("POST", path, undefined, 10 * 60_000);
     const text = r.body.toString("utf8");
     if (r.status !== 200) throw new DockerError(r.status, "DOCKER_PULL_FAILED", text.slice(0, 500));
-    // Docker 在 200 的流里返回错误行
+    // Docker returns error lines inside a 200 stream
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -218,12 +218,12 @@ export class DockerEngine implements EngineAdapter {
         if (parsed.error) throw new DockerError(500, "DOCKER_PULL_FAILED", String(parsed.error));
       } catch (e) {
         if (e instanceof DockerError) throw e;
-        // 非 JSON 行忽略（进度输出）
+        // Ignore non-JSON lines (progress output)
       }
     }
   }
 
-  /** 网络策略映射到的 Docker 网络不存在时自动创建，免得上游漏建导致容器起不来。 */
+  /** Auto-create the Docker network mapped from the network policy if missing, so a missed upstream creation does not stop the container from starting. */
   async ensureNetwork(name: string): Promise<void> {
     const r = await this.request("GET", `/networks/${encodeURIComponent(name)}`);
     if (r.status === 200) return;

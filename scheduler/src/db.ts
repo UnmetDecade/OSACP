@@ -27,7 +27,7 @@ export async function q1<T extends pg.QueryResultRow = any>(
   return rows[0] ?? null;
 }
 
-/** 所有写路径走这里；抛错自动回滚 */
+/** All write paths go through here; a thrown error rolls back automatically */
 export async function tx<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
@@ -43,7 +43,7 @@ export async function tx<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   }
 }
 
-/** 数据库时间，唯一可信的时间来源 */
+/** Database time, the only trustworthy time source */
 export async function now(c: Client | typeof pool = pool): Promise<Date> {
   const res = await c.query<{ t: Date }>("SELECT app_now() AS t");
   return res.rows[0].t;

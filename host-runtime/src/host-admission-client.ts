@@ -31,7 +31,7 @@ export interface HostGrantInfo {
   expires_at: number;
 }
 
-/** 只走本机 unix socket；没有网络监听，也不接受任意资源数值。 */
+/** Local unix socket only; no network listener, and arbitrary resource values are not accepted. */
 function call<T>(socketPath: string, method: string, path: string, body?: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
@@ -81,7 +81,7 @@ export function checkHostAdmission(
   return call<HostAdmissionResult>(socketPath, "POST", "/admission/check", input);
 }
 
-/** 列出本机全部 ACTIVE task grant；崩溃重启后按 instance_id 过滤并释放。 */
+/** List all ACTIVE task grants on this host; after a crash restart, filter by instance_id and release them. */
 export function listHostGrants(
   socketPath: string,
 ): Promise<{ items: HostGrantInfo[] } & Record<string, unknown>> {

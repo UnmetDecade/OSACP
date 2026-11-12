@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 
-/** 宿主实时指标。Linux 读 /proc，其它平台退回 os API。 */
+/** Real-time host metrics. Linux reads /proc; other platforms fall back to the os API. */
 export function memAvailableBytes(): number {
   try {
     const text = fs.readFileSync("/proc/meminfo", "utf8");
     const line = text.split("\n").find((l) => l.startsWith("MemAvailable:"));
     if (line) return Number(line.replace(/\D+/g, "")) * 1024;
   } catch {
-    // 非 Linux，走 fallback
+    // Not Linux; use the fallback
   }
   return os.freemem();
 }
@@ -63,7 +63,7 @@ function readMeminfo(): Record<string, number> {
       if (m) out[m[1]] = Number(m[2]) * 1024;
     }
   } catch {
-    // 非 Linux
+    // Not Linux
   }
   return out;
 }
@@ -103,7 +103,7 @@ function diskSample(fsName: string, target: string): DiskSample {
   }
 }
 
-/** 采集一次；cpu_usage 需要上一次 /proc/stat 采样点，首次为 0。 */
+/** Take one sample; cpu_usage needs the previous /proc/stat sample point and is 0 on the first call. */
 export function sampleHost(prevCpu?: CpuTimes | null): { sample: HostSample; cpu: CpuTimes | null } {
   const [load1 = 0, load5 = 0, load15 = 0] = os.loadavg();
   const mem = readMeminfo();

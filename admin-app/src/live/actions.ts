@@ -7,7 +7,7 @@ const MIB = 1024 ** 2;
 
 export async function testConnection(connection: LiveConnection): Promise<void> {
   await scheduler(connection, "/healthz");
-  // 控制面是可选项：只创建构建机时需要；连不上不阻止进入实时模式。
+  // The control plane is optional: needed only to create builders; failure to connect does not block entering live mode.
   if (connection.pcsUrl) {
     try {
       await pcs(connection, "/api/v1/platform/hosts");
@@ -18,8 +18,8 @@ export async function testConnection(connection: LiveConnection): Promise<void> 
 }
 
 /**
- * 主机接入：私钥只随这一次请求发送，控制面加密落库后只回 fingerprint。
- * 这里不做任何本地持久化，组件卸载即丢。
+ * Host onboarding: the private key is sent with this request only; the control plane stores it encrypted and returns only a fingerprint.
+ * Nothing is persisted locally here; it is lost when the component unmounts.
  */
 export async function addSshHost(
   connection: LiveConnection,
@@ -28,9 +28,9 @@ export async function addSshHost(
     address: string;
     port?: number;
     user?: string;
-    /** 私钥认证；与 password 二选一。 */
+    /** Private key auth; mutually exclusive with password. */
     private_key?: string;
-    /** 密码认证；与 private_key 二选一。 */
+    /** Password auth; mutually exclusive with private_key. */
     password?: string;
   },
 ): Promise<{ host_id: string; key_fingerprint: string; probe: unknown }> {
@@ -38,7 +38,7 @@ export async function addSshHost(
   return pcs(connection, "/api/v1/platform/hosts/ssh", { method: "POST", body: input });
 }
 
-/** 修改已接入主机的信息；私钥留空表示沿用现有密钥。 */
+/** Edit an onboarded host; leaving the private key empty keeps the existing key. */
 export async function updateHost(
   connection: LiveConnection,
   hostId: string,
@@ -74,7 +74,7 @@ export async function addLocalHost(
   return pcs(connection, "/api/v1/platform/hosts/local", { method: "POST", body: { name } });
 }
 
-/** 引导 host-runtime：写入并启动常驻守护进程，等主机入网。 */
+/** Bootstrap host-runtime: install and start the resident daemon, then wait for the host to join. */
 export async function bootstrapHost(
   connection: LiveConnection,
   hostId: string,
@@ -98,7 +98,7 @@ export async function probeHost(
   return out?.probe;
 }
 
-/** 主机并入：只改联邦树，不重启任何调度机。 */
+/** Fold hosts: only the federation tree changes; no scheduler is restarted. */
 export async function mergeHost(
   connection: LiveConnection,
   hostId: string,
@@ -111,7 +111,7 @@ export async function mergeHost(
   });
 }
 
-/** 解除并入：该主机重新成为联邦树的根。 */
+/** Unfold: the host becomes a root of the federation tree again. */
 export async function unmergeHost(connection: LiveConnection, hostId: string): Promise<void> {
   if (!connection.pcsUrl) throw new Error(t("未配置控制面地址，无法解除并入"));
   await pcs(connection, `/api/v1/platform/hosts/${encodeURIComponent(hostId)}/unmerge`, {
@@ -119,12 +119,12 @@ export async function unmergeHost(connection: LiveConnection, hostId: string): P
   });
 }
 
-/** 通过控制面创建构建机：先出部署计划，再用计划摘要应用。 */
+/** Create a builder through the control plane: generate a deployment plan first, then apply it with the plan digest. */
 export async function createBuilder(
   connection: LiveConnection,
   input: {
     host_id: string;
-    /** 实例名；留空由控制面按主机自动顺延。 */
+    /** Instance name; if empty, the control plane continues automatically per host. */
     name?: string;
     os: BuilderOs;
     count: number;
@@ -136,7 +136,7 @@ export async function createBuilder(
     api_profile_ids: string[];
     image: string;
     ports?: Array<{ container: number; host: number }>;
-    /** 注册到哪台调度机（deployment_id）。 */
+    /** Which scheduler to register with (deployment_id). */
     scheduler_id?: string;
     capability_detail?: CapabilityDetail;
   },
@@ -147,7 +147,7 @@ export async function createBuilder(
     body: {
       host_id: input.host_id,
       role_id: "builder",
-      // 名称是显示名（可以中文）；实例 id 由控制面按名称派生，界面不传。
+      // The name is a display name (Chinese allowed); the instance id is derived from it by the control plane and is not sent from the UI.
       ...(input.name ? { display_name: input.name } : {}),
       count: Math.max(1, Math.min(4, input.count)),
       agent_profile_id: input.agent_profile_id,
@@ -156,7 +156,7 @@ export async function createBuilder(
       builder_os: input.os,
       ports: input.ports ?? [],
       ...(input.scheduler_id ? { scheduler_id: input.scheduler_id } : {}),
-      // 环境跨部署保留：state 卷按实例隔离，apt deb 缓存全主机共享。
+      // The environment persists across deployments: the state volume is isolated per instance, while the apt deb cache is shared per host.
       volumes: [
         { name: "state", mount: "/opt/platform/state" },
         { name: "shared-apt-cache", mount: "/opt/platform/apt-cache" },
@@ -168,7 +168,7 @@ export async function createBuilder(
       },
       network_policy: "default",
       labels: { os: input.os, disk_gb: String(input.disk_gb), ...(input.tier ? { tier: input.tier } : {}) },
-      // W 由控制面按六项明细加权后冻结；调度机领取任务时按它过滤难度。
+      // W is frozen by the control plane after weighting the six details; the scheduler filters tasks by difficulty when claiming them.
       ...(input.capability_detail ? { capability_detail: input.capability_detail } : {}),
     },
   });
@@ -180,17 +180,17 @@ export async function createBuilder(
 }
 
 /**
- * 部署调度机：每台主机最多一个根调度机；结点调度机挂在同主机的父调度机下。
+ * Deploy a scheduler: each host has at most one root scheduler; node schedulers hang under a parent scheduler on the same host.
  *
- * 实例名只在主机内唯一：同一台主机上的根、结点各用各的名字。
- * 镜像、DATABASE_URL 和父调度机地址由控制面注入，不经过浏览器；
- * 这里只下发角色、父子关系和 Agent / API Profile 绑定。
+ * Instance names are unique only within a host: root and nodes on the same host each use their own name.
+ * Image, DATABASE_URL and parent scheduler address are injected by the control plane without passing through the browser;
+ * only the role, parent-child relationship and Agent / API Profile bindings are sent here.
  */
 export async function createScheduler(
   connection: LiveConnection,
   input: {
     host_id: string;
-    /** 显示名（可以中文）；实例 id 由控制面按名称派生。 */
+    /** Display name (Chinese allowed); the instance id is derived from it by the control plane. */
     name: string;
     role: "root" | "node";
     parent_scheduler_id?: string;
@@ -223,7 +223,7 @@ export async function createScheduler(
       env: {
         HOST: "0.0.0.0",
         PORT: "8443",
-        // SCHEDULER_INSTANCE_ID 由控制面按派生出的实例 id 注入，这里不传。
+        // SCHEDULER_INSTANCE_ID is injected by the control plane from the derived instance id and is not sent here.
         SCHEDULER_HOST_ID: input.host_id,
       },
       resource_profile: {
@@ -250,7 +250,7 @@ export async function instanceAction(
 ): Promise<void> {
   const out = await pcs(connection, "/api/v1/platform/deployments");
   const deployments = (out?.deployments ?? []) as any[];
-  // 实例名只在主机内唯一；带上主机才不会操作到另一台主机的同名实例。
+  // Instance names are unique only within a host; including the host prevents acting on a same-named instance on another host.
   const dep = deployments
     .filter(
       (d) =>
@@ -269,10 +269,10 @@ export async function instanceAction(
 }
 
 /**
- * 删除一个实例并等宿主真正移除它。
+ * Delete an instance and wait for the host to actually remove it.
  *
- * REMOVE 是异步命令：只入队会让调用方以为删完了，而立即吊销主机会让宿主
- * 再也拉不到命令，容器反而留下。这里盯住同一个 deployment_id 直到宿主确认。
+ * REMOVE is an asynchronous command: enqueueing it alone makes the caller think deletion finished, while revoking the host
+ * immediately means the host never fetches the command and the container is left behind. Watch the same deployment_id until the host acknowledges.
  */
 export async function removeInstanceAndWait(
   connection: LiveConnection,
@@ -290,7 +290,7 @@ export async function removeInstanceAndWait(
       )
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
   const first = pick(((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[]);
-  if (!first) return; // 已经没有部署记录，视为已删除。
+  if (!first) return; // No deployment record remains; treat it as deleted.
   await pcs(
     connection,
     `/api/v1/platform/deployments/${encodeURIComponent(first.deployment_id)}/remove`,
@@ -310,7 +310,7 @@ export async function removeInstanceAndWait(
   throw new Error(t("实例 {id} 在 {sec} 秒内没有移除完成", { id: instanceId, sec: Math.round(timeoutMs / 1000) }));
 }
 
-/** 控制面里这台主机上所有还没移除的实例名（以部署记录为准，避免漏删）。 */
+/** Names of all instances not yet removed on this host in the control plane (based on deployment records, to avoid missing any). */
 export async function activeHostInstances(
   connection: LiveConnection,
   hostId: string,
@@ -325,7 +325,7 @@ export async function activeHostInstances(
   ];
 }
 
-/** 彻底删除主机记录；控制面要求容器已全部移除。 */
+/** Permanently delete the host record; the control plane requires all containers to be removed first. */
 export async function deleteHost(connection: LiveConnection, hostId: string): Promise<void> {
   await pcs(connection, `/api/v1/platform/hosts/${encodeURIComponent(hostId)}`, {
     method: "DELETE",
@@ -339,10 +339,10 @@ export async function revokeHost(connection: LiveConnection, hostId: string): Pr
 }
 
 /**
- * 上传一个任务附件到控制面。
+ * Upload a task attachment to the control plane.
  *
- * 附件内容不经过调度机：任务里只放一次性地址，大文件不会撑大任务 JSON，
- * 构建机执行时再按地址取回。
+ * Attachment contents never pass through the scheduler: the task carries only a one-time URL, so large files do not bloat the task JSON,
+ * and the builder fetches them by URL when it runs.
  */
 export async function uploadTaskAttachment(
   connection: LiveConnection,
@@ -367,15 +367,15 @@ export async function uploadTaskAttachment(
 
 export interface SubmitBuildInput {
   title: string;
-  /** 自然语言任务描述，由构建机绑定的 Agent 执行；不再是 shell 命令。 */
+  /** Natural-language task description executed by the Agent bound to the builder; no longer a shell command. */
   instruction: string;
   target_instance_id?: string;
   priority: number;
-  /** 任务难度 D；0 = 不限制。 */
+  /** Task difficulty D; 0 = unlimited. */
   difficulty?: number;
-  /** 构建机所属调度机的部署 id；空 = 默认调度机。 */
+  /** Deployment id of the scheduler the builder belongs to; empty = default scheduler. */
   schedulerDeploymentId?: string | null;
-  /** 已上传的附件引用；构建机落盘后把路径交给 Agent。 */
+  /** References to uploaded attachments; the builder writes them to disk and passes the paths to the Agent. */
   attachments?: TaskAttachmentRef[];
 }
 
@@ -399,7 +399,7 @@ export async function submitBuild(
         ...(input.target_instance_id ? { target_instance_id: input.target_instance_id } : {}),
         build: {
           title: input.title,
-          // Agent 直接读 requirements；不写 command，确定性 Shell 执行器就不会误跑自然语言。
+          // The Agent reads requirements directly; with no command set, the deterministic shell executor will not mistakenly run natural language.
           instruction: input.instruction,
           ...(input.attachments?.length ? { attachments: input.attachments } : {}),
         },
@@ -450,9 +450,9 @@ function attemptOutputs(detail: any): Record<string, unknown> {
 }
 
 /**
- * 轮询任务状态的间隔：先密后退。
- * 控制台的一条命令通常 1 秒左右跑完，固定 800ms 一档等于平白多等半秒多；
- * 而长任务（构建、模型对话）几十秒内状态很少变，密轮询只是白打调度机。
+ * Task-status polling interval: dense at first, then backing off.
+ * A console command usually finishes in about 1 second, so a fixed 800ms step wastes more than half a second;
+ * long tasks (builds, model chats) rarely change state within tens of seconds, so dense polling just hammers the scheduler for nothing.
  */
 function pollDelay(elapsedMs: number): number {
   if (elapsedMs < 5_000) return 150;
@@ -476,7 +476,7 @@ async function waitTaskResult(
     const state = String(last?.status ?? last?.state ?? "");
     if (TERMINAL.has(state)) {
       const attempts = Array.isArray(last?.attempts) ? last.attempts.length : 0;
-      // 中继任务的执行发生在子调度机：父任务没有 attempt，输出在 relay.child_result 里。
+      // Relay tasks execute on the child scheduler: the parent task has no attempt, and output lives in relay.child_result.
       const own = attemptOutputs(last);
       const relayed = last?.relay?.child_result?.outputs;
       const outputs =
@@ -511,11 +511,11 @@ export async function sendChatTask(
     role: Role;
     message: string;
     history: Array<{ role: "user" | "assistant"; text: string }>;
-    /** 停止按钮：中断轮询并取消任务。 */
+    /** Stop button: abort polling and cancel the task. */
     signal?: AbortSignal;
-    /** 任务创建后立刻回调，供「停止」在回复返回前拿到 task_id。 */
+    /** Call back immediately after task creation so "Stop" can get the task_id before the reply returns. */
     onTaskCreated?: (taskId: string) => void;
-    /** 目标实例所属调度机的部署 id；空 = 默认调度机。 */
+    /** Deployment id of the scheduler that owns the target instance; empty = default scheduler. */
     schedulerDeploymentId?: string | null;
   },
 ): Promise<ChatTurnResult> {
@@ -637,11 +637,11 @@ export interface AgentProfileInput {
   version: string;
   adapter: "stdio-jsonrpc" | "http-local";
   model_api_profile_id?: string | null;
-  /** Agent 自带镜像；留空表示跑在实例镜像里。 */
+  /** Agent brings its own image; empty means run in the instance image. */
   artifact_image?: string;
-  /** stdio 为启动命令；http-local 为 http://127.0.0.1:<port>。 */
+  /** stdio means a launch command; http-local means http://127.0.0.1:<port>. */
   entrypoint?: string[];
-  /** 入口参数，例如 --provider claude。 */
+  /** Entry arguments, e.g. --provider claude. */
   args?: string[];
   capabilities: string[];
   description?: string;
@@ -681,7 +681,7 @@ export async function createAgentProfile(
   });
 }
 
-/** 修改 Agent Profile；角色不可改（PCS 拒绝）。 */
+/** Edit an Agent Profile; the role is immutable (PCS rejects changes). */
 export async function updateAgentProfile(
   connection: LiveConnection,
   profileId: string,
@@ -734,7 +734,7 @@ export async function updateApiProfile(
   });
 }
 
-/** 写入 API 密钥：只发给控制面转存 Secret Store，浏览器与 PCS 都不保留明文。 */
+/** Write an API key: it goes only to the control plane for Secret Store storage; neither the browser nor PCS keeps plaintext. */
 export async function setApiProfileSecret(
   connection: LiveConnection,
   profileId: string,

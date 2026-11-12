@@ -65,22 +65,22 @@ export type HostRow = {
   tools: unknown[];
   enrolled_at: string | null;
   last_seen_at: string | null;
-  /** 并入的主机；为空表示自己是联邦树的根（每台主机内部仍各有根调度机）。 */
+  /** The host it is merged into; empty means it is the root of the federation tree (each host still has its own root scheduler internally). */
   parent_host_id?: string | null;
-  /** containers = 容器宿主；builder / scheduler = 主机本身就是该角色（非容器）。 */
+  /** containers = container host; builder / scheduler = the host itself is that role (not a container). */
   role_mode?: "containers" | "builder" | "scheduler";
   created_at: string;
   updated_at: string;
 };
 
-/** 主机接入方式。私钥密文不在此类型里，避免被顺手返回给调用方。 */
+/** Host access mode. Private-key ciphertext is deliberately not in this type, to avoid it being returned to callers by accident. */
 export type HostCredentialRow = {
   host_id: string;
   transport: "local" | "ssh";
   address: string | null;
   ssh_port: number;
   ssh_user: string | null;
-  /** key = 私钥认证，password = 密码认证；具体凭据永不回显。 */
+  /** key = private-key auth, password = password auth; the actual credential is never echoed. */
   auth_type?: "key" | "password" | null;
   key_fingerprint: string | null;
   last_probe: Record<string, unknown> | null;
@@ -93,7 +93,7 @@ export type DeploymentRow = {
   host_id: string;
   role_id: string;
   display_name: string | null;
-  /** container = Docker 容器；native = 宿主机上的角色进程。 */
+  /** container = Docker container; native = a role process on the host machine. */
   execution?: "container" | "native";
   image: string;
   desired_state: string;
@@ -108,16 +108,16 @@ export type DeploymentRow = {
   command: string[] | null;
   status: string;
   observed: Record<string, unknown>;
-  /** 构建机工作能力值 W（0–1000）；调度机/非构建机为 0。 */
+  /** Builder capability score W (0–1000); 0 for schedulers / non-builders. */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
-  /** 调度机身份：每台主机最多一个 root，node 挂在同主机的某台调度机下。 */
+  /** Scheduler identity: at most one root per host; a node hangs under one of the same host's schedulers. */
   scheduler_role?: "root" | "node" | null;
-  /** 结点调度机的父调度机（deployment_id）；根调度机为空。 */
+  /** The parent scheduler of a node scheduler (deployment_id); empty for a root scheduler. */
   parent_deployment_id?: string | null;
-  /** 这台调度机的 API 地址；构建机与子结点用它注册/上报。 */
+  /** This scheduler's API address; builders and child nodes use it to register/report. */
   scheduler_url?: string | null;
-  /** 构建机注册到哪台调度机（deployment_id）；旧数据为空时回落到主机配置。 */
+  /** Which scheduler the builder registered with (deployment_id); for legacy rows that are empty, fall back to the host config. */
   scheduler_deployment_id?: string | null;
   created_by: string;
   created_at: string;
@@ -143,14 +143,14 @@ export type CommandRow = {
 
 const newId = (prefix: string) => `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 
-/** 任务附件的上限要覆盖打包后的代码目录；请求体上限见 http.ts。 */
+/** The task attachment limit must cover a packaged code directory; see http.ts for the request body limit. */
 const MAX_TASK_ATTACHMENT_BYTES = 24 * 1024 * 1024;
 const TASK_ATTACHMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const hashToken = (raw: string) => createHash("sha256").update(raw).digest("hex");
 const iso = (ms: number) => new Date(ms).toISOString();
 const nowMs = () => Date.now();
 
-/** 规范化 JSON：键排序、去掉 undefined，作为计划摘要的输入。 */
+/** Canonical JSON: sorted keys, undefined removed, used as input to the plan digest. */
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -162,7 +162,7 @@ function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-/** 只接受主机名或 IP；拒绝以 - 开头（防 ssh 参数注入）、协议、路径与空白。 */
+/** Accept only a hostname or IP; reject values starting with - (to prevent ssh argument injection), protocols, paths, and whitespace. */
 function isSafeHost(value: string): boolean {
   if (!value || value.length > 253 || value.startsWith("-")) return false;
   if (/\s/.test(value) || value.includes("/")) return false;
@@ -188,7 +188,7 @@ export type AgentProfileRow = {
   capabilities: string[];
   allowed_tools: string[];
   task_types: string[];
-  /** 面板识别用的一句话说明，不进入提示词。 */
+  /** One-line description for panel identification; not included in the prompt. */
   description: string;
   system_prompt: string;
   persona: string;
@@ -263,8 +263,8 @@ export interface ResolvedInstance {
 }
 
 /**
- * v4 允许矩阵：只有构建机和调度机；两者都可以绑定 stdio / localhost HTTP Agent。
- * 确定性 shell 由执行器直接完成，不需要 Agent Profile。
+ * v4 allowed matrix: only builder and scheduler; both can bind stdio / localhost HTTP Agents.
+ * Deterministic shell work is done directly by the executor and needs no Agent Profile.
  */
 const AGENT_ADAPTERS: Record<string, string[]> = {
   builder: ["stdio-jsonrpc", "http-local"],
@@ -277,7 +277,7 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map((v) => String(v).trim()).filter(Boolean))];
 }
 
-/** 提示词类字段：统一去空白并限制长度，避免把整个知识库塞进 Profile。 */
+/** Prompt-like fields: trim whitespace and cap length uniformly, to avoid stuffing an entire knowledge base into a Profile. */
 function promptField(value: unknown, field: string, max: number): string {
   const text = String(value ?? "").trim();
   if (text.length > max) {
@@ -286,7 +286,7 @@ function promptField(value: unknown, field: string, max: number): string {
   return text;
 }
 
-/** 运行时限额；未提供的键保持原样，未知键透传。 */
+/** Runtime limits; unspecified keys are left as-is, unknown keys pass through. */
 function normalizeLimits(input?: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...(input ?? {}) };
   const bounds: Record<string, number> = {
@@ -309,7 +309,7 @@ function normalizeLimits(input?: Record<string, unknown>): Record<string, unknow
   return out;
 }
 
-/** `<role>-<letter>` 命名；冲突时继续向后取字母，最后才加短随机串。 */
+/** Naming as `<role>-<letter>`; on conflict keep advancing the letter, and only as a last resort append a short random string. */
 function uniqueInstanceName(roleId: string, used: Set<string>): string {
   const prefix = roleId.replace(/_/g, "-");
   for (let i = 0; i < 26 * 3; i++) {
@@ -324,11 +324,11 @@ function uniqueInstanceName(roleId: string, used: Set<string>): string {
 }
 
 /**
- * 名称（显示名）→ 实例 id。
+ * Name (display name) → instance id.
  *
- * 显示名可以中文，但实例 id 要派生出容器名 / 卷名 / 结点 id / 库名，只能有
- * 小写字母、数字和连字符。ASCII 字母数字原样保留，空格与常见分隔符变成 `-`，
- * 其余字符按码点展开：「测试机」→ `27979-35797-26426`。
+ * Display names may be Chinese, but the instance id is used to derive container names / volume names / node ids / database names,
+ * so it may contain only lowercase letters, digits, and hyphens. ASCII alphanumerics are kept as-is, spaces and common
+ * separators become `-`, and other characters are expanded by code point: 「测试机」→ `27979-35797-26426`.
  */
 function instanceIdFromName(raw: string): string {
   let out = "";
@@ -340,14 +340,14 @@ function instanceIdFromName(raw: string): string {
   out = out.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
   if (!out) out = "instance";
   if (out.length > 48) {
-    // 码点展开可能超过容器命名上限：保留前缀，用名称摘要收尾，保证同名同 id。
+    // Code-point expansion may exceed the container naming limit: keep the prefix and end with a name digest, so identical names map to identical ids.
     const digest = createHash("sha256").update(raw.trim()).digest("hex").slice(0, 8);
     out = `${out.slice(0, 39).replace(/-+$/, "")}-${digest}`;
   }
   return out;
 }
 
-/** 端口映射只允许 TCP、1–65535；容器端口与宿主端口都不能重复。 */
+/** Port mappings allow only TCP, 1–65535; container ports and host ports must each be unique. */
 function normalizePorts(input?: PortMapping[]): PortMapping[] {
   if (!input?.length) return [];
   if (!Array.isArray(input) || input.length > 8) {
@@ -437,9 +437,9 @@ export interface CreateDeploymentInput {
   instance_id?: string;
   role_id: string;
   display_name?: string;
-  /** container = Docker 容器（默认）；native = 主机直接跑角色进程。 */
+  /** container = Docker container (default); native = the host runs the role process directly. */
   execution?: "container" | "native";
-  /** native 部署没有镜像，可省略。 */
+  /** native deployments have no image, so it may be omitted. */
   image?: string;
   resource_profile?: Partial<ResourceProfile>;
   env?: Record<string, string>;
@@ -448,18 +448,18 @@ export interface CreateDeploymentInput {
   network_policy?: string;
   command?: string[];
   config_version?: number;
-  /** 启动前写进容器的配置文件；由部署计划生成，直接调用时可以省略。 */
+  /** Config files written into the container before startup; generated by the deployment plan and may be omitted on direct calls. */
   files?: Array<{ path: string; content: string }>;
-  /** 由主机本地凭据文件补齐的变量名（只传名字）。 */
+  /** Variable names filled from the host-local credential file (names only). */
   agent_env?: string[];
-  /** 工作能力值 W；不传时由 capability_detail 计算。 */
+  /** Capability score W; computed from capability_detail when not provided. */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
-  /** 调度机身份。不传时：主机还没有根调度机就是 root，否则必须是 node。 */
+  /** Scheduler identity. When omitted: root if the host has no root scheduler yet, otherwise it must be node. */
   scheduler_role?: "root" | "node";
-  /** node 调度机的父调度机 deployment_id。 */
+  /** The deployment_id of the parent scheduler for a node scheduler. */
   parent_scheduler_id?: string;
-  /** 构建机注册到哪台调度机（deployment_id）；不传时用本机根调度机。 */
+  /** Which scheduler the builder registers with (deployment_id); defaults to this host's root scheduler when omitted. */
   scheduler_id?: string;
   created_by: string;
 }
@@ -471,7 +471,7 @@ export interface CreateDeploymentPlanInput {
   instance_id?: string;
   display_name?: string;
   image?: string;
-  /** 构建机基础系统，注入容器环境变量 BUILDER_OS。 */
+  /** Builder base OS, injected as the container env var BUILDER_OS. */
   builder_os?: string;
   agent_profile_id?: string | null;
   api_profile_ids?: string[];
@@ -482,14 +482,14 @@ export interface CreateDeploymentPlanInput {
   network_policy?: string;
   command?: string[];
   config_version?: number;
-  /** 构建机工作能力值；六项明细由创建端加权计算，PCS 这里只做校验和冻结。 */
+  /** Builder capability score; the six detail values are weighted by the creating side, and the PCS only validates and freezes them here. */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
-  /** 调度机身份：root = 本机根调度机（每台主机最多一个），node = 挂在父调度机下的结点。 */
+  /** Scheduler identity: root = this host's root scheduler (at most one per host), node = a node hanging under a parent scheduler. */
   scheduler_role?: "root" | "node";
-  /** 结点调度机的父调度机 deployment_id（必须在本主机上）。 */
+  /** The parent scheduler's deployment_id for a node scheduler (must be on this host). */
   parent_scheduler_id?: string;
-  /** 构建机关联的调度机 deployment_id；不传时用本机根调度机。 */
+  /** The deployment_id of the scheduler the builder is associated with; defaults to this host's root scheduler when omitted. */
   scheduler_id?: string;
 }
 
@@ -545,7 +545,7 @@ export interface DeploymentPlanView {
   risk: "LOW" | "MEDIUM" | "HIGH";
   rollback_strategy: string;
   checks: Array<{ id: string; ok: boolean; detail: string }>;
-  /** 文件内容随签名命令下发，不回给浏览器，也不进计划视图。 */
+  /** File contents are delivered with the signed command; they are not returned to the browser and do not enter the plan view. */
   items: Array<Omit<DeploymentPlanItem, "files" | "agent_env">>;
   created_at: string;
   expires_at: string;
@@ -564,9 +564,9 @@ export class PcsService {
   private readonly jwtPrivateKey: string;
   private readonly jwtPublicKey: string;
   private readonly commandPrivateKey: string;
-  /** 未配置 PCS_CREDENTIAL_KEY_FILE 时为 null：SSH 主机接入 fail closed。 */
+  /** null when PCS_CREDENTIAL_KEY_FILE is unset: SSH host onboarding fails closed. */
   private readonly credentialKey: Buffer | null;
-  /** 调度机之间上报 ΣW 用的共享令牌；不配置时从命令签名私钥派生，重启不变。 */
+  /** Shared token schedulers use to report ΣW to each other; when unset, derived from the command signing private key, unchanged across restarts. */
   private readonly federationToken: string;
 
   constructor(readonly cfg: PcsConfig) {
@@ -579,12 +579,12 @@ export class PcsService {
       createHmac("sha256", this.commandPrivateKey).update("scheduler-federation").digest("hex");
   }
 
-  // ---------------------------------------------------------------- 任务附件
+  // ---------------------------------------------------------------- Task attachments
   /**
-   * 上传任务附件，返回构建机可下载的一次性地址。
+   * Upload a task attachment and return a one-time URL the builder can download.
    *
-   * 内容不进入任务 JSON：调度机只转发地址，任务列表轮询也不会反复搬运大文件。
-   * 令牌只存哈希，过期后连同内容一起清理。
+   * Content does not enter the task JSON: the scheduler only forwards the URL, so polling the task list never moves large files repeatedly.
+   * Only the token hash is stored; on expiry the token and content are cleaned up together.
    */
   async createTaskAttachment(input: {
     name?: unknown;
@@ -622,7 +622,7 @@ export class PcsService {
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [attachmentId, tokenHash, name, mediaType, data.length, data, expiresAt],
     );
-    // 顺手清掉过期附件，避免这段时间之外再单独跑清理任务。
+    // Clean up expired attachments along the way, so no separate cleanup job is needed between these runs.
     await query(`DELETE FROM pcs_task_attachments WHERE expires_at < now()`);
 
     const base = (
@@ -640,7 +640,7 @@ export class PcsService {
     };
   }
 
-  /** 构建机按一次性令牌取附件内容；令牌不对或已过期都当不存在。 */
+  /** The builder fetches attachment content with a one-time token; a wrong or expired token is treated as not found. */
   async getTaskAttachment(
     attachmentId: string,
     token: string,
@@ -667,9 +667,9 @@ export class PcsService {
     return { name: row.name, media_type: row.media_type, data: row.data };
   }
 
-  // ---------------------------------------------------------------- 身份
+  // ---------------------------------------------------------------- Identity
 
-  /** 管理员令牌由 CLI 用同一把 JWT 私钥签发；PCS 只验签 + 查 scope。 */
+  /** Admin tokens are issued by the CLI with the same JWT private key; the PCS only verifies the signature and checks scopes. */
   authenticateAdmin(token: string, scope: string): JwtClaims {
     const claims = verifyJwt(token, this.jwtPublicKey, {
       audience: ADMIN_AUDIENCE,
@@ -712,7 +712,7 @@ export class PcsService {
     return { host_token, expires_at: iso(exp * 1000) };
   }
 
-  /** CLI 也用同一套声明，避免出现第二套管理员鉴权。 */
+  /** The CLI uses the same set of claims, avoiding a second admin authentication scheme. */
   issueAdminToken(operator: string, hours = 8, scopes = ADMIN_SCOPES): string {
     const iat = Math.floor(nowMs() / 1000);
     return signJwt(
@@ -731,7 +731,7 @@ export class PcsService {
     );
   }
 
-  // ---------------------------------------------------------------- 主机
+  // ---------------------------------------------------------------- Hosts
 
   async createHost(input: { name: string; labels?: Record<string, unknown> }): Promise<{
     host_id: string;
@@ -833,17 +833,17 @@ export class PcsService {
   }
 
   /**
-   * 添加 SSH 主机：先落库（含加密私钥），再探测一次。
-   * 探测失败不删除主机——凭据写错时用户可以在详情页改地址/重试，而不是重填。
+   * Add an SSH host: persist it first (along with the encrypted private key), then probe once.
+   * A failed probe does not delete the host — if the credential was wrong, the user can fix the address/retry on the detail page instead of re-entering it.
    */
   async createSshHost(input: {
     name?: string;
     address: string;
     port?: number;
     user?: string;
-    /** 私钥认证；与 password 二选一。 */
+    /** Private-key auth; choose one of this and password. */
     private_key?: string;
-    /** 密码认证；与 private_key 二选一。 */
+    /** Password auth; choose one of this and private_key. */
     password?: string;
     labels?: Record<string, unknown>;
   }): Promise<{
@@ -878,8 +878,8 @@ export class PcsService {
     );
     const fingerprint = authType === "key" ? secretFingerprint(privateKey) : null;
 
-    // 之前从列表移除（REVOKED）的主机再次接入时复用原记录：
-    // 容器、部署和数据都还在，重新引导后可以接着用，不用重新部署。
+    // When a host previously removed from the list (REVOKED) is onboarded again, reuse the original record:
+    // its containers, deployments, and data are still there, and it can continue after re-bootstrapping without redeploying.
     const prior = await query<{ host_id: string }>(
       `SELECT c.host_id FROM pcs_host_credentials c
          JOIN pcs_hosts h ON h.host_id = c.host_id
@@ -953,9 +953,9 @@ export class PcsService {
   }
 
   /**
-   * 修改主机接入信息：显示名、地址、端口、用户、私钥。
-   * 私钥留空表示不改；地址、端口、用户也只在传入时更新。
-   * 用于密钥填错或机器换地址后原地修正，不必删掉重加。
+   * Update host access info: display name, address, port, user, private key.
+   * Leaving the private key blank means no change; address, port, and user are also updated only when provided.
+   * Used to correct a wrong key or a changed address in place, without deleting and re-adding.
    */
   async updateHost(
     hostId: string,
@@ -966,7 +966,7 @@ export class PcsService {
       user?: string;
       private_key?: string;
       password?: string;
-      /** 主机自身角色：容器宿主 / 裸机构建机 / 裸机调度机，三选一。 */
+      /** The host's own role: container host / bare-metal builder / bare-metal scheduler, one of three. */
       role_mode?: "containers" | "builder" | "scheduler";
     },
     operator = "system",
@@ -989,7 +989,7 @@ export class PcsService {
       if (!["containers", "builder", "scheduler"].includes(input.role_mode)) {
         throw new PcsError(400, "INVALID_HOST_ROLE", "role_mode 只能是 containers / builder / scheduler");
       }
-      // 裸机角色和容器互斥：还跑着容器时先让用户处理，避免悄悄杀掉正在工作的实例。
+      // Bare-metal roles and containers are mutually exclusive: if containers are still running, have the user resolve that first, avoiding silently killing working instances.
       if (input.role_mode !== previousRole) {
         const active = await query<{ instance_id: string; role_id: string; execution: string }>(
           `SELECT instance_id, role_id, execution FROM pcs_deployments
@@ -1124,8 +1124,8 @@ export class PcsService {
   }
 
   /**
-   * 角色切换后的收尾：切到裸机构建机就确保主机上有一个构建机进程；
-   * 切回容器宿主就把裸机构建机移除。失败只返回 warning，不回滚角色本身。
+   * Follow-up after a role switch: when switching to a bare-metal builder, ensure the host has a builder process;
+   * when switching back to container host, remove the bare-metal builder. Failures return only a warning and do not roll back the role itself.
    */
   private async afterRoleModeChange(
     hostId: string,
@@ -1165,8 +1165,8 @@ export class PcsService {
   }
 
   /**
-   * 把一台已经标记为「裸机构建机」的主机接入调度：确保有且只有一个 native
-   * 构建机部署。重复调用是幂等的；主机离线时命令会等它重新入网。
+   * Connect a host already marked as a "bare-metal builder" to scheduling: ensure there is exactly one native
+   * builder deployment. Repeated calls are idempotent; when the host is offline, the command waits for it to rejoin.
    */
   async ensureNativeBuilder(
     hostId: string,
@@ -1188,9 +1188,9 @@ export class PcsService {
         status: existing.status,
       };
     }
-    // FAILED / MISSING：主机重装或重建后本地期望态可能已丢，RESTART 不会带
-    // InstanceSpec，只能重新下发一条完整 DEPLOY。createDeployment 会把同一
-    // 实例的旧记录标成 REMOVED，由新部署接管。
+    // FAILED / MISSING: the local desired state may be gone after a host reinstall or rebuild, and RESTART does not carry
+    // an InstanceSpec, so a full DEPLOY must be sent again. createDeployment marks the old record for the same
+    // instance as REMOVED, and the new deployment takes over.
 
     const active = await this.activeSchedulers(hostId);
     const schedulerRef =
@@ -1207,7 +1207,7 @@ export class PcsService {
       );
     }
 
-    // 绑定一个能随部署下发的构建机 Agent；没有可用 Profile 时仍可跑确定性子任务。
+    // Bind a builder Agent that can be delivered with the deployment; deterministic subtasks can still run when no Profile is available.
     let agent: AgentProfileRow | null = null;
     let delivery: ReturnType<PcsService["agentDelivery"]> | null = null;
     for (const candidate of await this.listAgentProfiles()) {
@@ -1218,7 +1218,7 @@ export class PcsService {
         delivery = out;
         break;
       } catch {
-        // 引用了 Secret Store 的 Profile 不能随部署下发，换下一个。
+        // A Profile that references the Secret Store cannot be delivered with the deployment, so try the next one.
       }
     }
 
@@ -1235,7 +1235,7 @@ export class PcsService {
     };
     const capability = resolveCapability({ capability_detail: detail });
     const cpu = Math.max(1, Number(resources.cpu_count) || 1);
-    // 裸机进程不能像容器那样硬限额；按半台主机做准入预算，避免把整机账面吃满。
+    // Bare-metal processes cannot be hard-capped like containers; use half a host as the admission budget, so the whole machine is not fully booked.
     const memoryLimit = Math.max(
       2 * 1024 ** 3,
       Math.min(Math.round(memTotal * 0.5), 16 * 1024 ** 3),
@@ -1300,7 +1300,7 @@ export class PcsService {
     };
   }
 
-  /** 角色切回容器宿主时移除裸机构建机；只删这层部署，不动主机上的其它文件。 */
+  /** Remove the bare-metal builder when the role switches back to container host; delete only this deployment layer and leave other files on the host untouched. */
   private async removeNativeBuilders(hostId: string, operator: string): Promise<void> {
     for (const dep of await this.activeNativeBuilders(hostId)) {
       if (dep.desired_state === "REMOVED") continue;
@@ -1308,7 +1308,7 @@ export class PcsService {
     }
   }
 
-  /** 本地主机：PCS 所在机器，不需要 SSH 与私钥。 */
+  /** Local host: the machine running the PCS; no SSH or private key needed. */
   async createLocalHost(input: { name?: string } = {}): Promise<{
     host_id: string;
     transport: "local";
@@ -1320,7 +1320,7 @@ export class PcsService {
     );
     if (existing.rows[0]) {
       const hostId = existing.rows[0].host_id;
-      // 从列表移除只是吊销；再次添加本地主机时复活原记录，容器与数据继续用。
+      // Removing from the list is only a revocation; re-adding the local host revives the original record, and its containers and data keep working.
       await query(
         `UPDATE pcs_hosts SET status='PENDING', updated_at=now()
           WHERE host_id=$1 AND status='REVOKED'`,
@@ -1346,7 +1346,7 @@ export class PcsService {
     return { host_id: hostId, transport: "local", probe: await this.probeHost(hostId), created: true };
   }
 
-  /** 探测连通性并记录结果；返回结果同时写进 UI 的 last_probe。 */
+  /** Probe connectivity and record the result; the result is also written into the UI's last_probe. */
   async probeHost(hostId: string): Promise<SshProbe> {
     const cred = await this.getHostCredential(hostId);
     if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "主机没有接入信息");
@@ -1376,11 +1376,11 @@ export class PcsService {
   }
 
   /**
-   * 交互式终端的目标：实例在哪台主机、容器叫什么。
+   * Target of the interactive terminal: which host the instance is on and what the container is called.
    *
-   * 终端是管理员直接用的 root shell，不经过调度队列；这里只负责把
-   * (host_id, instance_id) 解析成容器落点，鉴权由调用方（管理员令牌 +
-   * 一次性票据）完成，不做任何命令审核。
+   * The terminal is a root shell used directly by administrators and bypasses the scheduling queue; this only resolves
+   * (host_id, instance_id) into a container endpoint, while the caller (admin token + one-time ticket) handles
+   * authentication and no command review is performed.
    */
   async terminalTarget(
     hostId: string,
@@ -1389,7 +1389,7 @@ export class PcsService {
     transport: "local" | "ssh";
     container: string;
     ssh?: SshTarget;
-    /** native 实例没有容器，终端直接落到主机 shell。 */
+    /** native instances have no container; the terminal lands directly in the host shell. */
     native?: boolean;
   }> {
     const r = await query<{ desired_state: string; status: string; execution: string | null }>(
@@ -1410,7 +1410,7 @@ export class PcsService {
     ) {
       throw conflict("INSTANCE_STOPPED", "实例未运行，先启动再打开终端");
     }
-    // 与 host-runtime/src/container-spec.ts 的 containerName 保持一致。
+    // Keep in sync with containerName in host-runtime/src/container-spec.ts.
     const container = `platform-${instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48)}`;
     const native = dep.execution === "native";
     const cred = await this.getHostCredential(hostId);
@@ -1420,7 +1420,7 @@ export class PcsService {
     return { transport: "local", container, native };
   }
 
-  /** 主机详情：主机行 + 接入方式（无密钥原文）+ 该主机上的部署。 */
+  /** Host detail: the host row + access mode (without key plaintext) + the deployments on that host. */
   async getHostDetail(hostId: string): Promise<{
     host: unknown;
     credential: HostCredentialRow | null;
@@ -1447,8 +1447,8 @@ export class PcsService {
   }
 
   /**
-   * SSH 引导：把 host-runtime 写到主机上并启动，等它入网。
-   * 本地主机用 PCS 自己的 node 进程；远程主机要求 node >= 22。
+   * SSH bootstrap: write host-runtime to the host and start it, then wait for it to join.
+   * Local hosts use the PCS's own node process; remote hosts require node >= 22.
    */
   async bootstrapHost(
     hostId: string,
@@ -1479,7 +1479,7 @@ export class PcsService {
       );
     }
 
-    // SSH 主机先补齐 Node 22 / Docker：用户只提供一次凭据，环境由平台装。
+    // For SSH hosts, provision Node 22 / Docker first: the user provides credentials once, and the platform installs the environment.
     const nodePath =
       cred.transport === "local"
         ? process.execPath
@@ -1511,8 +1511,8 @@ export class PcsService {
     const result =
       cred.transport === "local"
         ? await runLocalBootstrap(script, 45_000)
-        // 引导脚本内嵌 runtime bundle，超过单个 argv 的长度上限（E2BIG）；
-        // 通过 stdin 交给远端 sh，密码认证走 SSH_ASKPASS，不占用 stdin。
+        // The bootstrap script embeds the runtime bundle and exceeds the single-argv length limit (E2BIG);
+        // pass it to the remote sh via stdin. Password auth goes through SSH_ASKPASS and does not occupy stdin.
         : await execSsh(await this.sshTarget(hostId), "sh -s", {
             input: script,
             timeoutMs: 45_000,
@@ -1526,7 +1526,7 @@ export class PcsService {
       );
     }
 
-    // 入网是异步的：runtime 启动后立刻 enroll，随后第一次心跳把状态推到 ONLINE。
+    // Joining is asynchronous: runtime enrolls immediately after startup, and the first heartbeat then pushes the status to ONLINE.
     const deadline = nowMs() + 20_000;
     let latest = host;
     while (nowMs() < deadline) {
@@ -1558,7 +1558,7 @@ export class PcsService {
     };
   }
 
-  /** 引导时把模型凭据带到目标主机；文件不存在就跳过，部署时会明确报缺哪个变量。 */
+  /** Carry model credentials to the target host during bootstrap; skip if the file does not exist, and deployment reports exactly which variable is missing. */
   private readAgentEnvFile(): string | undefined {
     const file = this.cfg.agentEnvFile;
     if (!file) return undefined;
@@ -1570,8 +1570,8 @@ export class PcsService {
   }
 
   /**
-   * 远程环境准备：缺 Node 22 就装到 $HOME/opt，缺 Docker 就用同一个密码
-   * （经 stdin 交给 sudo -S）装 docker.io。返回引导脚本要用的 Node 路径。
+   * Remote environment setup: install Node 22 into $HOME/opt if missing, and install docker.io with the same password
+   * (passed to sudo -S via stdin) if Docker is missing. Returns the Node path the bootstrap script will use.
    */
   private async ensureRemoteEnvironment(
     target: SshTarget,
@@ -1580,7 +1580,7 @@ export class PcsService {
   ): Promise<string> {
     const script = buildEnvSetupScript({ nodePath: configuredNode, dockerRequired });
     const result = await execSsh(target, script, {
-      // 密码只走 stdin：不进 argv、不进日志；没有密码时脚本会明确报缺什么。
+      // The password goes only through stdin: never in argv or logs; with no password, the script explicitly reports what is missing.
       input: target.password ? `${target.password}\n` : undefined,
       timeoutMs: 600_000,
     });
@@ -1710,10 +1710,10 @@ export class PcsService {
   }
 
   /**
-   * 主机并入（架构规则 2）：hostId 的根调度机在 parentHostId 的树里成为结点调度机。
+   * Host merge (architecture rule 2): hostId's root scheduler becomes a node scheduler in parentHostId's tree.
    *
-   * 只改控制面的树，不重启任何调度机：hostId 内部的根调度机身份不变；
-   * 需要跨机上报时，由主机上的调度机配置 SCHEDULER_PARENT_URL / TOKEN 完成。
+   * Only the control plane's tree changes; no scheduler is restarted: the identity of the root scheduler inside hostId stays the same;
+   * cross-host reporting is enabled by configuring SCHEDULER_PARENT_URL / TOKEN on the host's scheduler.
    */
   async mergeHost(
     hostId: string,
@@ -1743,13 +1743,13 @@ export class PcsService {
           )
         ).rowCount,
       );
-    // 下级没有根调度机也允许并入：裸机构建机可以独立存在，
-    // 等它以后部署了调度机，host report 里的 syncFederationParent 会补上联邦上报。
+    // Merging is allowed even if the child has no root scheduler: bare-metal builders can exist independently,
+    // and once a scheduler is deployed there later, syncFederationParent in the host report adds federation reporting.
     if (!(await hasScheduler(parentHostId))) {
       throw conflict("PARENT_SCHEDULER_MISSING", "上级主机还没有根调度机，不能接收结点");
     }
 
-    // 沿 parent 链向上走：撞到自己说明目标在自己的子树里，会形成环。
+    // Walk up the parent chain: hitting yourself means the target is in your own subtree, which would form a cycle.
     let cursor: string | null = parentHostId;
     const seen = new Set<string>();
     while (cursor) {
@@ -1774,7 +1774,7 @@ export class PcsService {
     await this.audit(operator, "host.merge", hostId, null, {
       parent_host_id: parentHostId,
     });
-    // 把上级根调度机地址推给本机根调度机：不重启容器，下一次联邦周期开始上报。
+    // Push the parent root scheduler's address to this host's root scheduler: no container restart; reporting starts on the next federation cycle.
     await this.syncFederationParent(hostId);
     return out.rows[0];
   }
@@ -1795,10 +1795,10 @@ export class PcsService {
   }
 
   /**
-   * 联邦树 + 递归 ΣW。
+   * Federation tree + recursive ΣW.
    *
-   * 每台主机先算自己的本地构建机 W 之和，再按 parent_host_id 向上累加；
-   * 返回的每个节点都带 subtree_score，根节点的值就是整棵树的 ΣW。
+   * Each host first computes the sum of W for its local builders, then accumulates upward along parent_host_id;
+   * every returned node carries subtree_score, and the root node's value is the ΣW of the whole tree.
    */
   async getFleetTree(): Promise<{
     hosts: Array<Record<string, unknown>>;
@@ -1810,7 +1810,7 @@ export class PcsService {
       await query<any>(
         `SELECT h.host_id, h.hostname, h.status, h.parent_host_id, h.role_mode,
                 h.resources,
-                -- 只有真正在跑的构建机才算可派发能力：FAILED / 停止中的实例不计入 ΣW。
+                -- Only builders that are actually running count toward dispatchable capacity: FAILED / stopping instances are excluded from ΣW.
                 COALESCE(SUM(d.capability_score)
                   FILTER (WHERE d.role_id='builder'
                             AND d.status IN ('STARTING','HEALTHY')), 0)::int AS local_score,
@@ -1841,7 +1841,7 @@ export class PcsService {
     const aggregate = (hostId: string, depth = 0): { score: number; builders: number; depth: number } => {
       if (memo.has(hostId)) return memo.get(hostId)!;
       if (visiting.has(hostId)) {
-        // FK + merge 校验保证正常不会出现环；真出现了就截断，避免无限递归。
+        // FK + merge validation normally prevent cycles; if one does occur, cut it off to avoid infinite recursion.
         return { score: 0, builders: 0, depth };
       }
       visiting.add(hostId);
@@ -1892,10 +1892,10 @@ export class PcsService {
   }
 
   /**
-   * 彻底删除主机记录。
+   * Delete the host record outright.
    *
-   * 容器必须先在宿主上真正移除；只要还有未 REMOVED 的部署就拒绝，
-   * 避免 PCS 删了记录、机器上却留下没人管的容器。
+   * Containers must first be actually removed on the host; reject as long as any deployment is not REMOVED,
+   * so the PCS never deletes the record while leaving unmanaged containers on the machine.
    */
   async deleteHost(hostId: string, operator: string): Promise<{ host_id: string; deleted: true }> {
     await tx(async (c) => {
@@ -1909,12 +1909,12 @@ export class PcsService {
       if (Number(active.rows[0]?.n ?? 0) > 0) {
         throw conflict("HOST_HAS_DEPLOYMENTS", "主机上还有未移除的容器，先删除容器");
       }
-      // 这两张表没有外键，需要先清掉这台主机的绑定。
+      // These two tables have no foreign keys, so this host's bindings must be deleted first.
       await c.query(`DELETE FROM role_agent_bindings WHERE host_id=$1`, [hostId]);
       await c.query(`DELETE FROM role_api_bindings WHERE host_id=$1`, [hostId]);
       await c.query(`DELETE FROM pcs_commands WHERE host_id=$1`, [hostId]);
       await c.query(`DELETE FROM pcs_deployments WHERE host_id=$1`, [hostId]);
-      // 其余凭据 / 运行时 / 上报 / 注册令牌由外键级联删除。
+      // The remaining credentials / runtimes / reports / enrollment tokens are deleted by foreign-key cascade.
       await c.query(`DELETE FROM pcs_hosts WHERE host_id=$1`, [hostId]);
     });
     await this.audit(operator, "host.delete", hostId, null, {});
@@ -1965,9 +1965,9 @@ export class PcsService {
     );
   }
 
-  // ---------------------------------------------------------------- 调度机拓扑
+  // ---------------------------------------------------------------- Scheduler topology
 
-  /** 主机在局域网里的地址（SSH 接入信息）；本地主机没有地址时返回 null。 */
+  /** The host's LAN address (SSH access info); returns null when a local host has no address. */
   private async hostAddress(hostId: string): Promise<string | null> {
     const r = await query<{ address: string | null }>(
       `SELECT address FROM pcs_host_credentials WHERE host_id=$1`,
@@ -1978,8 +1978,8 @@ export class PcsService {
   }
 
   /**
-   * 调度机对外的 API 地址。容器内监听 8443，宿主端口由部署的 ports 决定；
-   * 优先用「主机地址 + 宿主端口」，没配 SSH 地址时回落到控制面配置。
+   * The scheduler's external API address. It listens on 8443 inside the container, and the host port is determined by the deployment's ports;
+   * prefer "host address + host port", falling back to the control plane config when no SSH address is configured.
    */
   private async schedulerUrlFor(hostId: string, ports: PortMapping[]): Promise<string | null> {
     const mapping = ports.find((p) => Number(p.container) === 8443);
@@ -1992,8 +1992,8 @@ export class PcsService {
   }
 
   /**
-   * 每台调度机独立一套库：根调度机沿用主机配置，结点调度机在库名后加实例后缀。
-   * 调度机启动时会自动建库并迁移（见 scheduler/src/migrate.ts）。
+   * Each scheduler gets its own database: the root scheduler uses the host config, and a node scheduler appends an instance suffix to the database name.
+   * The scheduler creates the database and migrates automatically on startup (see scheduler/src/migrate.ts).
    */
   private schedulerDatabaseUrlFor(
     hostId: string,
@@ -2015,7 +2015,7 @@ export class PcsService {
     return url.toString();
   }
 
-  /** 本主机上活动的调度机；根调度机排在最前。 */
+  /** Active schedulers on this host; the root scheduler comes first. */
   private async activeSchedulers(hostId: string): Promise<DeploymentRow[]> {
     const r = await query<DeploymentRow>(
       `SELECT * FROM pcs_deployments
@@ -2027,16 +2027,16 @@ export class PcsService {
   }
 
   /**
-   * 解析一台新调度机在树里的位置。
-   * 不指定身份时，第一台默认为根；根已存在就必须指定父调度机。
-   * 重部署同一实例沿用它的原身份，避免滚动更新被当成新根。
+   * Resolve a new scheduler's position in the tree.
+   * When no identity is specified, the first one defaults to root; once a root exists, a parent scheduler must be specified.
+   * Redeploying the same instance keeps its original identity, so a rolling update is not mistaken for a new root.
    */
   /**
-   * 把界面传来的调度机引用解析成一台在跑的部署。
+   * Resolve a scheduler reference from the UI into a running deployment.
    *
-   * 正常引用是 deployment_id；但实例名在主机内唯一，旧版界面传的是实例名，
-   * 这里按名兜底，避免一次前端发版就要求所有客户端同步。同一实例重新部署过时，
-   * active 按创建时间倒序，落到这台实例最新的那份部署上。
+   * The normal reference is a deployment_id; but instance names are unique within a host, and older UIs send an instance name,
+   * so fall back to name lookup, avoiding a front-end release that forces all clients to upgrade in sync. When the same instance has been redeployed,
+   * active is ordered by creation time descending, landing on the instance's newest deployment.
    */
   private resolveSchedulerRef(
     active: DeploymentRow[],
@@ -2084,7 +2084,7 @@ export class PcsService {
         `父调度机不存在或已停止（引用 ${parentId}）`,
       );
     }
-    // 沿父链向上走一遍：新位置不能出现在自己的下级里。
+    // Walk up the parent chain: the new position must not appear in your own descendants.
     const seen = new Set<string>();
     let cursor: string | null | undefined = parent.deployment_id;
     while (cursor) {
@@ -2098,12 +2098,12 @@ export class PcsService {
     return { role, parent };
   }
 
-  // ---------------------------------------------------------------- 部署
+  // ---------------------------------------------------------------- Deployments
 
   /**
-   * 主机角色与部署执行方式必须一致：
-   *   containers → 只能部署容器；builder → 只能跑宿主机上的构建机进程；
-   *   scheduler → 裸机调度机（暂未实现执行路径），不再接受任何容器部署。
+   * The host role and the deployment execution mode must match:
+   *   containers → only container deployments; builder → only builder processes on the host machine;
+   *   scheduler → bare-metal scheduler (execution path not implemented yet), which no longer accepts any container deployments.
    */
   private assertExecutionAllowed(
     host: HostRow,
@@ -2151,7 +2151,7 @@ export class PcsService {
     const instanceId = input.instance_id?.trim() || newId("ins");
     const ports = normalizePorts(input.ports);
     if (execution === "container") assertPinnedImage(image, this.cfg.imageAllowlist);
-    // 调度机的位置（根/结点）与构建机注册的调度机，都要在本主机现有部署里解析。
+    // The scheduler's position (root/node) and the scheduler a builder registers with must both resolve against existing deployments on this host.
     const active = await this.activeSchedulers(host.host_id);
     const placement =
       input.role_id === "scheduler"
@@ -2187,9 +2187,9 @@ export class PcsService {
       env.SCHEDULER_NODE_ID ??= `${host.host_id}:${instanceId}`;
       env.SCHEDULER_HOST_ID ??= host.host_id;
       env.SCHEDULER_ROLE ??= placement.role;
-      // 根也要令牌：它要校验子结点上报；结点还要知道往哪上报。
+      // The root needs a token too: it validates child-node reports; a node also needs to know where to report.
       env.SCHEDULER_FEDERATION_TOKEN ??= this.federationToken;
-      // 父结点中继任务时要能回调本机；地址由控制面按「主机地址 + 宿主端口」算好。
+      // The parent node must be able to call back to this machine when relaying tasks; the address is computed by the control plane as "host address + host port".
       if (schedulerUrl) env.SCHEDULER_ADVERTISE_URL ??= schedulerUrl;
       if (placement.role === "node" && placement.parent) {
         const parentUrl =
@@ -2214,14 +2214,14 @@ export class PcsService {
     }
     const command = input.command ? this.validateCommand(input.command) : undefined;
     validateFilesAndAgentEnv(input.files, input.agent_env, env);
-    // 目标主机上没有这个镜像时，先由控制面同步过去；同步期间部署状态是 SYNCING，
-    // 命令等同步完成后再下发。裸机角色没有镜像，直接下发。
+    // When the target host does not have the image, the control plane syncs it first; during sync the deployment status is SYNCING,
+    // and the command is dispatched after sync completes. Bare-metal roles have no image and are dispatched immediately.
     const imageReady =
       execution === "native" ? true : await this.isImageReady(host.host_id, image);
 
     const { deployment, commandRow, payload, issuedExpiry } = await tx(async (c) => {
-      // 同一实例的 generation 单调递增，并发部署也不会拿到同一个号
-      // 实例名只在主机内唯一：同一主机上的同名实例才需要串行分配 generation。
+      // A given instance's generation increases monotonically, so concurrent deployments never get the same number
+      // Instance names are unique only within a host: only same-named instances on the same host need serial generation allocation.
       await c.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
         `${host.host_id}/${instanceId}`,
       ]);
@@ -2240,9 +2240,9 @@ export class PcsService {
           current_generation: generation,
         });
       }
-      // 同一实例在同一主机上重新部署：旧部署让位给新一代，容器名由新部署接管。
-      // 不标掉的话旧记录仍是“活动部署”，主机端会以容器名冲突拒绝新部署。
-      // 按 host_id 限定：每台主机一个调度机，不同主机上的同名实例互不影响。
+      // Redeploying the same instance on the same host: the old deployment yields to the new generation, and the new deployment takes over the container name.
+      // If not marked, the old record remains an "active deployment" and the host side rejects the new deployment with a container-name conflict.
+      // Scoped by host_id: one scheduler per host, so same-named instances on different hosts do not affect each other.
       await c.query(
         `UPDATE pcs_deployments
             SET status='REMOVED', actual_state='MISSING', updated_at=now()
@@ -2253,7 +2253,7 @@ export class PcsService {
       const grantId = newId("rgr");
       const now = nowMs();
       const issuedAt = iso(now);
-      // 需要同步镜像时把命令有效期放长：几 GB 的传输可能超过默认 TTL。
+      // Extend the command's validity when an image sync is needed: a multi-GB transfer may exceed the default TTL.
       const ttlSeconds = imageReady ? this.cfg.commandTtlSeconds : Math.max(this.cfg.commandTtlSeconds, 1800);
       const expiresAt = iso(now + ttlSeconds * 1000);
 
@@ -2334,7 +2334,7 @@ export class PcsService {
         )
       ).rows[0];
 
-      // 镜像已在目标主机上才立刻下发命令；否则等同步完成后再插入。
+      // Dispatch the command immediately only if the image is already on the target host; otherwise insert it after sync completes.
       if (imageReady) {
         await c.query(
           `INSERT INTO pcs_commands
@@ -2366,7 +2366,7 @@ export class PcsService {
     return { deployment, command_id: commandRow };
   }
 
-  /** 目标主机上是否已有该镜像；探测失败按“已有”处理，保持原来的拉取行为。 */
+  /** Whether the target host already has the image; on probe failure treat it as "already present" and keep the original pull behavior. */
   private async isImageReady(hostId: string, image: string): Promise<boolean> {
     try {
       const cred = await this.getHostCredential(hostId);
@@ -2386,8 +2386,8 @@ export class PcsService {
   }
 
   /**
-   * 把控制面主机上的镜像推到目标主机（docker save | ssh docker load），
-   * 传完再下发部署命令。大镜像需要几分钟，期间部署状态保持 SYNCING。
+   * Push the image from the control plane host to the target host (docker save | ssh docker load),
+   * then dispatch the deployment command once the transfer is complete. Large images take several minutes, during which the deployment status stays SYNCING.
    */
   private async syncImageThenEnqueue(input: {
     deploymentId: string;
@@ -2436,7 +2436,7 @@ export class PcsService {
   private async transferImageToHost(hostId: string, image: string): Promise<void> {
     const cred = await this.getHostCredential(hostId);
     if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "主机没有接入信息");
-    // 源镜像在控制面所在主机上；按 repo:tag 保存，目标机 load 后才有可解析的 repo digest。
+    // The source image is on the control plane's host; save it as repo:tag so the target can resolve the repo digest after loading.
     const src = await runCommand("docker", ["image", "inspect", image, "--format", "{{index .RepoTags 0}}"]);
     const repoTag = src.code === 0 ? src.stdout.trim() : "";
     if (!repoTag) {
@@ -2470,7 +2470,7 @@ export class PcsService {
       try {
         save.kill("SIGKILL");
       } catch {
-        /* 已经退出 */
+        /* already exited */
       }
     }
     await saveDone;
@@ -2481,7 +2481,7 @@ export class PcsService {
       const detail = (loaded.stderr || loaded.stdout).trim().slice(-400);
       throw new PcsError(502, "IMAGE_TRANSFER_FAILED", detail || `docker load 退出码 ${loaded.code}`);
     }
-    // 本地构建的镜像 load 后可能只有 tag 没有 repo digest；补一次 tag 让 digest 引用可解析。
+    // A locally built image may have only a tag and no repo digest after loading; tag it once so digest references resolve.
     const fixed = await execSsh(
       target,
       [
@@ -2491,8 +2491,8 @@ export class PcsService {
       { timeoutMs: 60_000 },
     );
     if (fixed.code !== 0) {
-      // docker load 的 tar 里没有 repo digest 时，digest 引用在目标机解析不到。
-      // 目标机如果能连仓库，按 digest pull 一次即可（官方 ubuntu 只有一百多 MB）。
+      // When the tar from docker load has no repo digest, digest references cannot be resolved on the target machine.
+      // If the target can reach the registry, a single pull by digest is enough (official ubuntu is only a hundred-plus MB).
       const pulled = await execSsh(target, `docker pull ${shq(image)}`, {
         timeoutMs: 15 * 60_000,
       });
@@ -2630,11 +2630,11 @@ export class PcsService {
   }
 
   /**
-   * 把管理应用的任务请求转发到「拥有该实例的那台调度机」。
+   * Forward the admin app's task requests to "the scheduler that owns the instance".
    *
-   * 一台主机可以有根 + 多个结点调度机，各自一套库；管理应用默认只连控制面，
-   * 不可能直接知道结点地址。控制面按部署记录解析 scheduler_url 后转发，
-   * 管理应用和浏览器都不需要接触内网地址，也不需要调度机的额外凭据。
+   * A host can have a root + multiple node schedulers, each with its own database; the admin app connects only to the control plane by default
+   * and cannot know node addresses directly. The control plane resolves scheduler_url from the deployment record and forwards,
+   * so neither the admin app nor the browser touches internal addresses or needs extra scheduler credentials.
    */
   async proxySchedulerDeployment(
     deploymentId: string,
@@ -2694,12 +2694,12 @@ export class PcsService {
   }
 
   /**
-   * 随部署下发给容器的 Agent Profile 视图与凭据变量名。
+   * The Agent Profile view and credential variable names delivered to the container with the deployment.
    *
-   * Profile 文件里只放绑定的 Agent 和实例绑定，不放 API Profile：模型调用由
-   * cli-agent 走 Claude 兼容端点，密钥从主机本地凭据文件注入。若把 API
-   * Profile 也放进去，host-runtime 会要求 Secret Store 实例 JWT，容器里没有，
-   * 实例会失败关闭。
+   * The Profile file contains only the bound Agent and instance bindings, not API Profiles: model calls go through
+   * cli-agent to a Claude-compatible endpoint, with keys injected from the host-local credential file. Including API
+   * Profiles would make host-runtime require a Secret Store instance JWT, which the container does not have,
+   * so the instance would fail closed.
    */
   private agentDelivery(
     agent: AgentProfileRow,
@@ -2752,10 +2752,10 @@ export class PcsService {
     );
     const env: Record<string, string> = {
       PROFILES_FILE: "/opt/platform/profiles.json",
-      // 容器环境 → Agent 适配器 → cli-agent 的两层放行表。
+      // Two-level allowlist: container env → Agent adapter → cli-agent.
       PLATFORM_AGENT_PASS_ENV: "ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL",
     };
-    // 调度机入口只认 SCHEDULER_* 变量；构建机入口读 AGENT_PROFILE_ID。
+    // The scheduler entry point only reads SCHEDULER_* vars; the builder entry point reads AGENT_PROFILE_ID.
     if (roleId === "scheduler") {
       env.SCHEDULER_INSTANCE_ID = instanceId;
       env.SCHEDULER_AGENT_PROFILE_ID = agent.agent_profile_id;
@@ -2770,8 +2770,8 @@ export class PcsService {
   }
 
   /**
-   * 内置角色的部署载荷：调度机的服务/SQL、构建机的实例运行时都由控制面随部署下发。
-   * 镜像保持官方 ubuntu，代码更新只换这些文件，不重建也不传输镜像。
+   * Deployment payload for built-in roles: the scheduler's service/SQL and the builder's instance runtime are both delivered by the control plane with the deployment.
+   * The image stays official ubuntu; code updates only replace these files, with no image rebuild or transfer.
    */
   private roleAppFiles(role: "scheduler" | "builder"): Array<{ path: string; content: string }> {
     const dir = role === "scheduler" ? this.cfg.schedulerAppDir : this.cfg.builderAppDir;
@@ -2794,10 +2794,10 @@ export class PcsService {
           walk(childAbs, childRel);
         } else {
           files.push({
-            // Agent Profile 的入口固定是 /opt/platform/agents/cli-agent.mjs。
+            // The Agent Profile's entry point is fixed at /opt/platform/agents/cli-agent.mjs.
             path: childRel === "cli-agent.mjs"
               ? "/opt/platform/agents/cli-agent.mjs"
-              // Codex 的配置目录固定是 /opt/platform/codex（CODEX_HOME）。
+              // Codex's config directory is fixed at /opt/platform/codex (CODEX_HOME).
               : childRel.startsWith("codex/")
                 ? `/opt/platform/${childRel}`
                 : `/opt/platform/app/${childRel}`,
@@ -2810,18 +2810,18 @@ export class PcsService {
     if (!files.length) {
       throw new PcsError(409, code, `${label}部署载荷目录为空：${dir}`);
     }
-    // 部署通道的硬限制（≤16 个文件、单文件 1MiB）在这里先校验，避免预览通过、应用时才失败。
+    // The deployment channel's hard limits (≤16 files, 1MiB each) are validated here first, so a preview does not pass and then fail only on apply.
     validateFilesAndAgentEnv(files, undefined, {});
     return files;
   }
 
-  // ---------------------------------------------------------------- 部署计划（§4.6）
+  // ---------------------------------------------------------------- Deployment plans (§4.6)
 
   /**
-   * 预览部署计划并绑定摘要。
+   * Preview a deployment plan and bind the digest.
    *
-   * 计划不做任何写操作（除了记录预览记录）；apply 会用同一份 intent 重新构建，
-   * 主机状态、实例 generation、同主机活动部署数量任一变化都会导致摘要不同。
+   * The plan performs no writes (other than recording the preview); apply rebuilds from the same intent, and any change
+   * to host status, instance generation, or the number of active deployments on the host yields a different digest.
    */
   async previewDeploymentPlan(
     input: CreateDeploymentPlanInput,
@@ -2832,10 +2832,10 @@ export class PcsService {
     if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "目标主机已被吊销");
     if (!input.role_id?.trim()) throw new PcsError(400, "INVALID_ROLE", "缺少 role_id");
 
-    // 部署计划只描述容器；裸机角色由主机设置直接创建，不走计划。
+    // Deployment plans describe containers only; bare-metal roles are created directly from host settings and do not go through a plan.
     this.assertExecutionAllowed(host, input.role_id, "container");
 
-    // 工作能力值只对构建机有意义；调度机与普通角色记 0。
+    // Capability score is meaningful only for builders; schedulers and ordinary roles record 0.
     const capability =
       input.role_id === "builder"
         ? resolveCapability(input)
@@ -2844,9 +2844,9 @@ export class PcsService {
     const count = Math.max(1, Math.min(Number(input.count ?? 1), 4));
     if (!Number.isInteger(count)) throw new PcsError(400, "INVALID_COUNT", "count 必须是 1–4");
 
-    // 名称可以中文，存 display_name；实例 id 由它派生（容器名/卷名/结点 id/库名都用 id）。
-    // 直接传 instance_id 的调用方两种形式都接受：已经合法的 ASCII id 原样使用，
-    // 其余（含中文）按 instanceIdFromName 展开。
+    // Names may be Chinese and are stored as display_name; the instance id is derived from it (container names/volume names/node id/database names all use the id).
+    // Callers that pass instance_id directly are accepted in both forms: an already valid ASCII id is used as-is,
+    // and everything else (including Chinese) is expanded via instanceIdFromName.
     const rawDisplayName = (input.display_name ?? "").trim();
     const rawInstanceId = (input.instance_id ?? "").trim();
     if (rawDisplayName.length > 32 || rawInstanceId.length > 64) {
@@ -2888,8 +2888,8 @@ export class PcsService {
       apis.push(p);
     }
 
-    // 两个内置角色的镜像都由系统决定：调度机用 PCS_SCHEDULER_IMAGE，构建机按系统用
-    // PCS_BUILDER_IMAGES（官方 ubuntu）。界面/Profile 里的镜像只作为兜底。
+    // Both built-in roles' images are decided by the system: the scheduler uses PCS_SCHEDULER_IMAGE, and the builder uses
+    // PCS_BUILDER_IMAGES per OS (official ubuntu). Images in the UI/Profile serve only as a fallback.
     const osImage =
       input.role_id === "builder" && input.builder_os
         ? this.cfg.builderImages[input.builder_os]
@@ -2911,7 +2911,7 @@ export class PcsService {
       );
     }
     assertPinnedImage(image, this.cfg.imageAllowlist);
-    // 内置角色的应用不在镜像里：随部署把载荷写进容器，镜像只是官方 ubuntu。
+    // Built-in roles' apps are not in the image: the payload is written into the container with the deployment, and the image is just official ubuntu.
     const builtinRole =
       input.role_id === "scheduler" ? "scheduler" : input.role_id === "builder" ? "builder" : null;
     const appFiles = builtinRole ? this.roleAppFiles(builtinRole) : [];
@@ -2941,7 +2941,7 @@ export class PcsService {
       )
     ).rows;
 
-    // 调度机一次只能加一台：根唯一，结点各自一个容器。
+    // Only one scheduler can be added at a time: the root is unique, and each node gets its own container.
     if (input.role_id === "scheduler" && count !== 1) {
       throw new PcsError(400, "INVALID_COUNT", "调度机一次只能部署 1 台");
     }
@@ -2956,7 +2956,7 @@ export class PcsService {
       names.push(name);
       itemInputs.push({
         instance_id: name,
-        // 第一台用用户填的名称（可以中文）；批量部署的其余实例沿用自动生成的 id。
+        // The first one uses the user-provided name (may be Chinese); the remaining instances in a batch deployment keep auto-generated ids.
         display_name: i === 0 && (rawDisplayName || rawInstanceId)
           ? rawDisplayName || rawInstanceId
           : name,
@@ -2969,7 +2969,7 @@ export class PcsService {
       throw new PcsError(400, "INVALID_PORTS", "多实例分配的宿主端口越界");
     }
 
-    // 位置解析：根调度机唯一；结点挂在同主机已有的调度机下。
+    // Position resolution: the root scheduler is unique; a node hangs under an existing scheduler on the same host.
     const activeSchedulers = active.filter((r) => r.role_id === "scheduler");
     const schedulerPlacement =
       input.role_id === "scheduler"
@@ -3005,7 +3005,7 @@ export class PcsService {
         allowlist: this.cfg.networkPolicies,
       });
     }
-    // 官方 ubuntu 镜像没有 ENTRYPOINT，入口脚本由部署载荷提供。
+    // The official ubuntu image has no ENTRYPOINT; the entry script comes from the deployment payload.
     const command = input.command
       ? this.validateCommand(input.command)
       : builtinRole
@@ -3025,7 +3025,7 @@ export class PcsService {
     const maxByInstance = new Map(maxRows.map((r) => [r.instance_id, Number(r.max_generation)]));
 
     const items: DeploymentPlanItem[] = itemInputs.map((x, index) => {
-      // 容器入口靠这些环境变量生成实例配置；由控制面统一注入，调用方不必重复填。
+      // The container entry point uses these env vars to build the instance config; the control plane injects them uniformly, so callers need not fill them in again.
       const instanceEnv: Record<string, string> = {
         INSTANCE_ID: x.instance_id,
         ROLE_ID: input.role_id,
@@ -3033,24 +3033,24 @@ export class PcsService {
       };
       if (input.role_id === "builder") {
         if (input.builder_os) instanceEnv.BUILDER_OS = input.builder_os;
-        // W 随部署环境进入容器，构建机注册时原样上报；调度机按它过滤任务难度。
+        // W enters the container with the deployment env, and the builder reports it verbatim on registration; the scheduler uses it to filter by task difficulty.
         instanceEnv.CAPABILITY_SCORE = String(capability.score);
         if (Object.keys(capability.detail).length) {
           instanceEnv.CAPABILITY_DETAIL = JSON.stringify(capability.detail);
         }
-        // 构建机注册到选中的调度机；没选就用本机根调度机，再回落到控制面配置。
+        // The builder registers with the selected scheduler; if none is selected, use this host's root scheduler, falling back to the control plane config.
         if (builderSchedulerUrl) instanceEnv.SCHEDULER_URL = builderSchedulerUrl;
       }
       if (input.role_id === "scheduler" && schedulerPlacement) {
-        // 入口脚本用实例 id 注册 agent-runtime；名称可能是中文，这里必须是派生后的 ASCII id。
+        // The entry script registers agent-runtime with the instance id; names may be Chinese, so this must be the derived ASCII id.
         instanceEnv.SCHEDULER_INSTANCE_ID = x.instance_id;
-        // 节点身份必须到实例一级：同一台主机上的根、结点各自的 node_id 不能相同。
+        // Node identity must be at the instance level: the root and nodes on the same host must each have a distinct node_id.
         instanceEnv.SCHEDULER_NODE_ID = `${host.host_id}:${x.instance_id}`;
         instanceEnv.SCHEDULER_HOST_ID = host.host_id;
         instanceEnv.SCHEDULER_ROLE = schedulerPlacement.role;
-        // 根也要令牌：它要校验子结点上报；结点还要知道往哪上报。
+        // The root needs a token too: it validates child-node reports; a node also needs to know where to report.
         instanceEnv.SCHEDULER_FEDERATION_TOKEN = this.federationToken;
-        // 父结点中继任务时要能回调本机。
+        // The parent node must be able to call back to this machine when relaying tasks.
         if (plannedSchedulerUrl) instanceEnv.SCHEDULER_ADVERTISE_URL = plannedSchedulerUrl;
         if (schedulerPlacement.role === "node" && schedulerPlacement.parent) {
           const parentUrl =
@@ -3076,7 +3076,7 @@ export class PcsService {
         }
       }
       if (agent?.agent_profile_id) instanceEnv.AGENT_PROFILE_ID = agent.agent_profile_id;
-      // 绑定 Agent 时把 Profile 视图和凭据变量名一起下发；没有绑定就保持原行为。
+      // When an Agent is bound, deliver the Profile view together with the credential variable names; with no binding, keep the original behavior.
       const delivery = agent ? this.agentDelivery(agent, input.role_id, x.instance_id) : null;
       const files = [...(delivery?.files ?? []), ...appFiles];
       return {
@@ -3087,7 +3087,7 @@ export class PcsService {
         resource_profile: profile,
         env: { ...instanceEnv, ...(delivery?.env ?? {}), ...env },
         volumes,
-        // 多实例时宿主端口按顺序递增，避免同一台主机上端口冲突。
+        // With multiple instances, host ports increment sequentially to avoid port conflicts on the same host.
         ports: ports.map((p) => ({ container: p.container, host: p.host + index })),
         network_policy: policy,
         command: command ?? null,
@@ -3171,7 +3171,7 @@ export class PcsService {
       throw new PcsError(409, "DEPLOYMENT_CHECK_FAILED", "部署前校验未通过", { checks });
     }
 
-    // v4 没有审核机；只有“会中断运行中构建”的部署才提高风险提示。
+    // v4 has no reviewer role; only deployments that "would interrupt a running build" raise the risk warning.
     const risk: "LOW" | "MEDIUM" | "HIGH" = interrupt ? "HIGH" : "MEDIUM";
     const intent: DeploymentPlanIntent = { host_id: host.host_id, items };
     const digestInput = this.planDigestInput(host, active.length, intent);
@@ -3210,8 +3210,8 @@ export class PcsService {
         ? "保留上一 generation；健康检查失败时停止新实例并回滚到上一镜像 digest"
         : "无上一版本；失败时保留部署记录并停止新容器",
       checks,
-      // 浏览器只需要知道部署了什么；env 里的 DATABASE_URL 这类值不能出控制面，
-      // files 里的应用 bundle 也不该塞进计划视图。
+      // The browser only needs to know what is being deployed; values like DATABASE_URL in env must not leave the control plane,
+      // and the app bundle in files should not be stuffed into the plan view either.
       items: items.map(({ files, agent_env, ...item }) => ({
         ...item,
         env: redactEnvForView(item.env),
@@ -3298,7 +3298,7 @@ export class PcsService {
     if (!host) throw notFound("HOST_NOT_FOUND", "目标主机不存在");
     if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "目标主机已被吊销");
 
-    // 重新计算：主机状态 / 活动部署数量 / generation 变化都会改变摘要。
+    // Recompute: changes to host status / active deployment count / generation all change the digest.
     const activeCount = Number(
       (
         await query<{ n: number }>(
@@ -3398,20 +3398,20 @@ export class PcsService {
       plan_digest: row.plan_digest,
       deployment_ids: deploymentIds,
     });
-    // 旧计划里可能还留着未脱敏的 env；回执统一再遮一遍。
+    // Older plans may still contain unredacted env; redact it once more uniformly in the receipt.
     const planView = row.plan && Array.isArray(row.plan.items)
       ? { ...row.plan, items: row.plan.items.map((item) => ({ ...item, env: redactEnvForView(item.env ?? {}) })) }
       : row.plan;
     return { plan: planView, deployments };
   }
 
-  // ---------------------------------------------------------------- 审批令牌
+  // ---------------------------------------------------------------- Approval tokens
 
   /**
-   * 管理应用签发一次性审批令牌。
+   * The admin app issues a one-time approval token.
    *
-   * 令牌只绑定调用方给出的 request/digest/action_scope；调度机在 decideApproval
-   * 里会与待决请求逐项比对，任何篡改都会 403/409。MFA 未配置时 fail closed。
+   * The token binds only the request/digest/action_scope supplied by the caller; when deciding, the scheduler compares it
+   * item by item against the pending request in decideApproval, and any tampering yields 403/409. Fails closed when MFA is not configured.
    */
   issueApprovalToken(
     input: ApprovalTokenInput,
@@ -3477,11 +3477,11 @@ export class PcsService {
     };
   }
 
-  // ---------------------------------------------------------------- 命令通道
+  // ---------------------------------------------------------------- Command channel
 
   /**
-   * 长轮询取命令。DELIVERED 超过重投窗口会回到 PENDING；重试耗尽则 FAILED。
-   * 同一命令用 command_id 幂等，重复投递由 Host Runtime 去重。
+   * Long-poll for commands. A DELIVERED command past the redelivery window returns to PENDING; once retries are exhausted it becomes FAILED.
+   * Commands are idempotent by command_id, and Host Runtime deduplicates repeated deliveries.
    */
   async nextCommand(
     hostId: string,
@@ -3597,7 +3597,7 @@ export class PcsService {
     });
   }
 
-  // ---------------------------------------------------------------- 上报
+  // ---------------------------------------------------------------- Reports
 
   async storeReport(host: HostRow, body: Record<string, any>): Promise<{ ok: true }> {
     const containers: Array<Record<string, any>> = Array.isArray(body.containers)
@@ -3651,14 +3651,14 @@ export class PcsService {
             String(ct.health ?? "none"),
             JSON.stringify(ct),
             host.host_id,
-            // 容器带 deployment_id 时按它匹配：实例名可能被上一代部署复用，
-            // 按 instance_id 更新会把旧容器状态记到新部署头上（显示 HEALTHY 却根本没跑）。
+            // When the container carries a deployment_id, match by it: an instance name may be reused by the previous deployment generation,
+            // and updating by instance_id would attribute an old container's state to the new deployment (showing HEALTHY although nothing is running).
             String(ct.deployment_id ?? ""),
           ],
         );
       }
 
-      // 期望运行但这次上报里不见的容器：先标 MISSING，交给 reconciler，不立即判死
+      // Containers expected to run but absent from this report: mark them MISSING first, hand them to the reconciler, and do not declare them dead immediately
       await c.query(
         `UPDATE pcs_deployments
             SET actual_state='MISSING', updated_at=now()
@@ -3669,19 +3669,19 @@ export class PcsService {
       );
     });
 
-    // 调度机维护自己的主机名册，实例注册要求主机已在名册里。
-    // 推送失败不影响上报（下次心跳会重试），PCS 不因调度机不可用而卡住。
+    // The scheduler maintains its own host roster, and instance registration requires the host to already be in it.
+    // A failed push does not affect the report (the next heartbeat retries), and the PCS does not stall just because a scheduler is unavailable.
     void this.pushHostToScheduler(host.host_id, state);
-    // 调度机重启或上级地址变化后，靠心跳把联邦上级重新推一遍。
+    // After a scheduler restart or a parent address change, the heartbeat pushes the federation parent again.
     void this.syncFederationParent(host.host_id);
 
     return { ok: true };
   }
 
   /**
-   * 主机并入只是 `pcs_hosts.parent_host_id` 的一行引用：
-   * 这里把「上级根调度机的地址」推给本机根调度机，让它开始向上汇报 ΣW；
-   * 脱离时推 null。容器不重启，调度机上报周期会自动生效。
+   * Host merge is just one reference row in `pcs_hosts.parent_host_id`:
+   * here we push "the parent root scheduler's address" to this host's root scheduler so it starts reporting ΣW upward;
+   * on detach, push null. Containers are not restarted, and the scheduler's reporting cycle takes effect automatically.
    */
   private async syncFederationParent(hostId: string): Promise<void> {
     try {
@@ -3708,7 +3708,7 @@ export class PcsService {
         ).rows[0];
         parentUrl = String(parent?.scheduler_url ?? "").trim() || null;
         if (!parentUrl) {
-          // 上级还没部署好根调度机：保持现状，等下一次心跳再推。
+          // The parent's root scheduler is not deployed yet: keep the status quo and push again on the next heartbeat.
           return;
         }
       }
@@ -3749,10 +3749,10 @@ export class PcsService {
     }
   }
 
-  /** 把主机状态与资源推给调度机，供领任务时做准入与预算判断。 */
+  /** Push host status and resources to the scheduler, for admission and budget decisions when claiming tasks. */
   private async pushHostToScheduler(hostId: string, hostState: string): Promise<void> {
-    // 每台调度机独立一套库，主机名册要推给这台主机上的所有调度机（根 + 结点），
-    // 否则构建机注册到结点时会报 HOST_UNKNOWN。没有在册调度机时退回控制面配置。
+    // Each scheduler has its own database, so the host roster is pushed to every scheduler on this host (root + nodes);
+    // otherwise a builder registering with a node reports HOST_UNKNOWN. Falls back to the control plane config when no scheduler is registered.
     const r = await query<{ hostname: string; os: string; arch: string; resources: any }>(
       `SELECT hostname, os, arch, resources FROM pcs_hosts WHERE host_id=$1`,
       [hostId],
@@ -3803,10 +3803,10 @@ export class PcsService {
   // ---------------------------------------------------------------- Agent / API Profile（P4）
 
   /**
-   * Agent Profile 的创建入口。
+   * Entry point for creating an Agent Profile.
    *
-   * 只有 PCS 能定义“哪个角色允许哪种 Adapter、这个 Agent 能拿哪些工具”。
-   * 任务 payload 与 Agent 自己的输出都不能扩大这两个集合。
+   * Only the PCS can define "which role allows which Adapter, and which tools this Agent can use".
+   * Neither the task payload nor the Agent's own output can expand these two sets.
    */
   async createAgentProfile(input: CreateAgentProfileInput, operator: string): Promise<AgentProfileRow> {
     const roleId = String(input.role_id ?? "").trim();
@@ -3827,7 +3827,7 @@ export class PcsService {
     const name = String(input.name ?? "").trim();
     if (!name) throw new PcsError(400, "INVALID_PROFILE", "缺少 name");
     const image = String(input.artifact_image ?? "").trim();
-    // 允许不指定 Agent 镜像：http-local 等适配器直接跑在实例镜像里。
+    // Allowing no Agent image: adapters such as http-local run directly in the instance image.
     if (image) assertPinnedImage(image, this.cfg.imageAllowlist);
 
     const profileId = String(input.agent_profile_id ?? "").trim() || newId("agp");
@@ -3906,7 +3906,7 @@ export class PcsService {
     return r.rows[0] ? normalizeAgentProfile(r.rows[0]) : null;
   }
 
-  /** 修改 Agent Profile。角色不可改，避免已有绑定突然变成跨角色。 */
+  /** Update an Agent Profile. The role is immutable, to avoid existing bindings suddenly becoming cross-role. */
   async updateAgentProfile(
     profileId: string,
     input: Partial<CreateAgentProfileInput>,
@@ -3933,7 +3933,7 @@ export class PcsService {
       input.artifact_image !== undefined
         ? String(input.artifact_image).trim()
         : current.artifact_image;
-    // 只校验真正改过的镜像：历史配置里的占位镜像不应挡住改名 / 启停用。
+    // Validate only the image that actually changed: placeholder images in historical configs should not block a rename / enable-disable.
     if (image && image !== current.artifact_image) {
       assertPinnedImage(image, this.cfg.imageAllowlist);
     }
@@ -4003,7 +4003,7 @@ export class PcsService {
     return normalizeAgentProfile(r.rows[0]);
   }
 
-  /** 删除未被实例使用的 Agent Profile；有绑定就拒绝，避免实例失去执行器。 */
+  /** Delete an Agent Profile not used by any instance; reject if it has bindings, so an instance does not lose its executor. */
   async deleteAgentProfile(profileId: string, operator: string): Promise<{ deleted: boolean }> {
     const current = await this.getAgentProfile(profileId);
     if (!current) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile 不存在：${profileId}`);
@@ -4108,7 +4108,7 @@ export class PcsService {
     return r.rows[0] ? normalizeApiProfile(r.rows[0]) : null;
   }
 
-  /** 修改 API Profile。kind 不可改；secret_ref 仍只存引用，不接收密钥明文。 */
+  /** Update an API Profile. kind is immutable; secret_ref still stores only a reference and never accepts secret plaintext. */
   async updateApiProfile(
     apiId: string,
     input: Partial<CreateApiProfileInput>,
@@ -4130,7 +4130,7 @@ export class PcsService {
       this.cfg.allowInsecureApiUrls &&
       parsed.protocol === "http:" &&
       ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname);
-    // 地址没变时沿用原有判断，避免历史配置挡住改名 / 启停用。
+    // When the address is unchanged, keep the existing judgment, so historical config does not block a rename / enable-disable.
     if (baseUrl !== current.base_url && parsed.protocol !== "https:" && !loopbackDev) {
       throw new PcsError(400, "INSECURE_API_URL", "API Profile 只允许 https（本地开发需显式开启 PCS_ALLOW_INSECURE_API_URLS）");
     }
@@ -4174,7 +4174,7 @@ export class PcsService {
     return normalizeApiProfile(r.rows[0]);
   }
 
-  /** 删除未被引用的 API Profile；实例绑定、Agent 模型/工具引用与 fallback 都算占用。 */
+  /** Delete an API Profile that is not referenced; instance bindings, Agent model/tool references, and fallback all count as usage. */
   async deleteApiProfile(apiId: string, operator: string): Promise<{ deleted: boolean }> {
     const current = await this.getApiProfile(apiId);
     if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile 不存在：${apiId}`);
@@ -4209,8 +4209,8 @@ export class PcsService {
   }
 
   /**
-   * 控制台写入 API 密钥：值只转发给 Secret Store，PCS 不落库、不回显、不记日志。
-   * 写入后实例仍用 Profile 里的 secret:// 引用去 Secret Store 解析。
+   * Write an API key from the console: the value is forwarded only to the Secret Store; the PCS does not persist, echo, or log it.
+   * After writing, instances still resolve via the secret:// reference in the Profile against the Secret Store.
    */
   async setApiProfileSecret(
     apiId: string,
@@ -4261,7 +4261,7 @@ export class PcsService {
         if (body.error?.code) code = body.error.code;
         if (body.error?.message) message = body.error.message;
       } catch {
-        // 保留状态码描述
+        // Keep the status code description
       }
       throw new PcsError(502, code, message);
     }
@@ -4271,7 +4271,7 @@ export class PcsService {
     return { ok: true, secret_ref: current.secret_ref };
   }
 
-  /** 所有实例的 Agent / API 绑定，供管理面板一次取全。实例名只在主机内唯一，按主机作用域返回。 */
+  /** Agent / API bindings for all instances, fetched at once by the admin panel. Instance names are unique only within a host, so results are host-scoped. */
   async listBindings(): Promise<
     Array<{
       host_id: string;
@@ -4325,7 +4325,7 @@ export class PcsService {
     );
   }
 
-  /** 绑定 Agent。跨角色、未启用或不存在都拒绝。实例名只在主机内唯一，绑定按主机作用域。 */
+  /** Bind an Agent. Cross-role, disabled, or missing ones are rejected. Instance names are unique only within a host, so bindings are host-scoped. */
   async bindAgent(
     hostId: string,
     instanceId: string,
@@ -4398,10 +4398,10 @@ export class PcsService {
   }
 
   /**
-   * 解析实例的 Agent/API 绑定。
+   * Resolve an instance's Agent/API bindings.
    *
-   * 返回值是 ``运行时视图''：包含 adapter、entrypoint、base_url 与 secret_ref，
-   * 但永远不含 secret_ref 背后的值。调度机与 Host Runtime 只按这份视图执行。
+   * The return value is the "runtime view": it contains adapter, entrypoint, base_url, and secret_ref,
+   * but never the value behind secret_ref. The scheduler and Host Runtime execute only from this view.
    */
   async resolveInstance(hostId: string, instanceId: string): Promise<ResolvedInstance | null> {
     const b = (
@@ -4453,7 +4453,7 @@ export class PcsService {
     return r.rows;
   }
 
-  // ---------------------------------------------------------------- 清理
+  // ---------------------------------------------------------------- Cleanup
 
   async sweep(): Promise<{ offline: string[] }> {
     const r = await query(
@@ -4474,7 +4474,7 @@ export class PcsService {
 
 const shq = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** 在 PCS 所在主机上跑一个本地命令（用于 docker save / inspect）。 */
+/** Run a local command on the PCS's host (used for docker save / inspect). */
 function runCommand(
   command: string,
   args: string[],

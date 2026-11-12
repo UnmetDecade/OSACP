@@ -1,9 +1,10 @@
 /**
- * 工作能力值 W（0–1000），与调度机 scheduler/src/capability.ts 同一套公式。
+ * Capability score W (0–1000), using the same formula as the scheduler's scheduler/src/capability.ts.
  *
- * PCS 在创建构建机时计算并冻结到部署记录里；部署计划把 W 注入容器环境变量，
- * 构建机启动注册时原样上报给调度机。两边公式必须保持一致，否则会出现
- * “界面显示的 W”和“调度机实际用于过滤的 W”不一致。
+ * The PCS computes it when creating a builder and freezes it into the deployment record; the deployment plan
+ * injects W into the container environment, and the builder reports it verbatim to the scheduler on startup.
+ * The two formulas must stay in sync, otherwise "the W shown in the UI" and "the W the scheduler actually
+ * filters on" will diverge.
  */
 export interface CapabilityDetail {
   cores?: number;

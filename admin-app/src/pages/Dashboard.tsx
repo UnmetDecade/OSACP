@@ -17,29 +17,29 @@ import { mergeHost } from "../api";
 import { errorMessage } from "../live/client";
 
 /**
- * 总览：一台主机的「AI Agent 工作室」。
- * 调度机在上，构建机在下，右侧是上手步骤和最近活动；所有数据都按当前主机过滤。
+ * Overview: one host's "AI Agent studio".
+ * Schedulers on top, builders below, getting-started steps and recent activity on the right; all data is filtered by the current host.
  */
 export function Dashboard() {
   const live = useLive();
   const { host } = useHostScope();
   const [params, setParams] = useSearchParams();
   const [addOpen, setAddOpen] = useState(false);
-  // 第三种入口：把一台已经接入控制面的主机挂到当前主机下。
+  // Third entry point: attach a host already onboarded to the control plane under the current host.
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [attachBusy, setAttachBusy] = useState(false);
   const [attachError, setAttachError] = useState("");
-  // 创建任务用弹窗就地完成，不跳走任务页，避免打断当前主机的操作。
+  // Create tasks in a dialog in place, without navigating to the tasks page, so current-host work is not interrupted.
   const [createOpen, setCreateOpen] = useState(false);
-  // 部署构建机先弹优缺点对照：容器构建机 or 裸机构建机。
+  // Deploying a builder first shows a trade-off comparison: container builder or bare-metal builder.
   const [builderChoiceOpen, setBuilderChoiceOpen] = useState(false);
-  // 新增构建机 / 调度机只从 AI Agent 工作室进入；?add= 供其他页面跳回工作室。
+  // Adding a builder / scheduler is entered only from the AI Agent studio; ?add= lets other pages jump back to it.
   const [addRole, setAddRole] = useState<"builder" | "scheduler" | null>(() => {
     const add = params.get("add");
     return add === "builder" || add === "scheduler" ? add : null;
   });
-  // 从某台结点调度机的「＋」进来时记住父调度机（deployment_id），新角色默认挂在它下面。
+  // When opened from a node scheduler's "+", remember the parent scheduler (deployment_id); new characters hang under it by default.
   const [addUnder, setAddUnder] = useState<string | null>(null);
   function closeAdd() {
     setAddRole(null);
@@ -49,12 +49,12 @@ export function Dashboard() {
       setParams(params, { replace: true });
     }
   }
-  // 角色选择弹窗里点哪一类，都保留从「＋」带进来的父调度机。
+  // Whichever character type is chosen in the dialog, keep the parent scheduler carried in from the "+".
   function chooseRole(kind: "builder" | "scheduler") {
     setAddOpen(false);
     setAddRole(kind);
   }
-  // 「接入主机」只列已经接入控制面的主机；当前主机自己和它的上下级要排除，避免联邦树成环。
+  // "Onboard host" lists only hosts already onboarded to the control plane; exclude the current host itself and its ancestors/descendants to avoid cycles in the federation tree.
   const attachCandidates = (() => {
     if (!host) return [];
     const blocked = new Set<string>([host.id]);
@@ -97,8 +97,8 @@ export function Dashboard() {
       setAttachBusy(false);
     }
   }
-  // 工作室树会把并入本机的主机一起展开，构建机统计也按整棵子树算，
-  // 否则画面上有 3 台、顶部却只显示本机的 2 台。
+  // The studio tree expands hosts folded into this one, and builder counts cover the whole subtree,
+  // otherwise the canvas shows 3 while the header reports only this host's 2.
   const studioHostIds = (() => {
     const ids = new Set<string>();
     if (!host) return ids;
@@ -113,7 +113,7 @@ export function Dashboard() {
   const builders = db.instances.filter(
     (i) => i.role === "builder" && (!host || studioHostIds.has(i.host_id)),
   );
-  // 总览只认本机根调度机：结点调度机在调度台里看，入口始终是根。
+  // The overview recognizes only the local root scheduler: node schedulers are viewed on the scheduler page, and the entry point is always the root.
   const hostSchedulers = db.instances.filter(
     (i) => i.role === "scheduler" && (!host || i.host_id === host.id),
   );
@@ -128,7 +128,7 @@ export function Dashboard() {
     failed: hostTasks.filter((t) => t.state === "FAILED").length,
   };
   const schedulerReady = Boolean(scheduler);
-  // 裸机构建机可以直接注册到别的调度机，不再要求本机先有调度机。
+  // A bare-metal builder can register with another scheduler directly; the host no longer needs a scheduler first.
   const buildersReady = builders.length > 0;
   const steps: {
     title: string;
@@ -151,7 +151,7 @@ export function Dashboard() {
       title: t("部署构建机"),
       desc: t("用 Docker 容器运行构建 Agent，执行研发任务。"),
       done: buildersReady,
-      // 步骤里直接进新建构建机；容器/裸机取舍只在工作室空态入口出现。
+      // The steps lead straight into creating a builder; the container/bare-metal choice appears only at the studio's empty-state entry.
       run: () => setAddRole("builder"),
       action: t("立即部署 →"),
       blocked: "",

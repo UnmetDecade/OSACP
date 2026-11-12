@@ -1,8 +1,8 @@
 /**
- * 最小 ustar 打包器。
+ * Minimal ustar packer.
  *
- * 只用来把部署带来的配置文件写进容器（Docker 的 PUT /containers/{id}/archive
- * 要求 tar）。不引入依赖：只支持普通文件和必要的父目录，单文件上限 1MiB。
+ * Only used to write deployment-provided config files into a container (Docker's PUT /containers/{id}/archive
+ * requires tar). No dependencies: only regular files and the necessary parent directories are supported, with a 1MiB per-file limit.
  */
 
 const BLOCK = 512;
@@ -28,7 +28,7 @@ function header(name: string, mode: number, size: number, type: "0" | "5"): Buff
   writeString(buf, 116, 8, octal(0, 8));
   writeString(buf, 124, 12, octal(size, 12));
   writeString(buf, 136, 12, octal(Math.floor(Date.now() / 1000), 12));
-  // 校验和字段先填空格，再按整体字节求和。
+  // Fill the checksum field with spaces first, then sum over the whole byte range.
   buf.fill(0x20, 148, 156);
   writeString(buf, 156, 1, type);
   writeString(buf, 257, 6, "ustar\0");
@@ -42,12 +42,12 @@ function header(name: string, mode: number, size: number, type: "0" | "5"): Buff
 }
 
 export interface TarFile {
-  /** 容器内绝对路径，例如 /opt/platform/profiles.json */
+  /** Absolute path inside the container, e.g. /opt/platform/profiles.json */
   path: string;
   content: string;
 }
 
-/** 生成 tar；调用方把 path=/ 传给 Docker，路径去掉开头的 / 即落到容器根。 */
+/** Build the tar; the caller passes path=/ to Docker, and stripping the leading / lands the path at the container root. */
 export function buildTar(files: TarFile[]): Buffer {
   const blocks: Buffer[] = [];
   const dirs = new Set<string>();
@@ -58,7 +58,7 @@ export function buildTar(files: TarFile[]): Buffer {
     const data = Buffer.from(file.content, "utf8");
     if (data.length > MAX_SIZE) throw new Error(`tar 文件超过 1MiB：${file.path}`);
 
-    // 父目录先入包，Docker 解包时才不会因为目录缺失失败。
+    // Add parent directories first so Docker's unpack does not fail on missing directories.
     const parts = name.split("/");
     parts.pop();
     let dir = "";

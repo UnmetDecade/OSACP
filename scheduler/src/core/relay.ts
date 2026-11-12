@@ -6,15 +6,15 @@ import { selfNodeId } from "../node.js";
 import type { CreateTaskInput } from "../repo/task-insert.js";
 
 /**
- * 跨调度机任务中继（架构规则：根 → 结点 → 孙结点）。
+ * Cross-scheduler task relay (architecture rule: root → node → grandchild).
  *
- * 规则：
- *   - 只下推，不复制。父结点把任务行留在本地 QUEUED，但从领取候选里排除；
- *     真正的执行发生在子结点自己的库里。
- *   - 目标是「根接不住」的任务：带 target_instance_id 但本机没有这个实例，
- *     或本机没有能接住难度 D 的在线构建机。
- *   - 状态由父结点周期拉取子结点的任务行并镜像回来；取消同样向下转发。
- *   - 子树整体没有能力时任务留在父结点排队，不会凭空消失。
+ * Rules:
+ *   - Push down only, never copy. The parent keeps the task row locally as QUEUED but excludes it from claim candidates;
+ *     actual execution happens in the child's own database.
+ *   - Target "tasks the root cannot handle": carries target_instance_id but this machine has no such instance,
+ *     or this machine has no online builder capable of difficulty D.
+ *   - The parent periodically pulls the child's task row and mirrors its state back; cancellation is forwarded downward too.
+ *   - When the whole subtree lacks capability, the task stays queued on the parent and never vanishes.
  */
 
 const MAX_RELAY_DEPTH = 8;
@@ -48,8 +48,8 @@ function logRelay(message: string, extra?: unknown): void {
 }
 
 /**
- * 任务创建后调用：本机接不住就挑一个直接子结点下推。
- * 失败只记日志，任务继续留在本机队列，不影响正常提交。
+ * Called after task creation: if this machine cannot handle it, pick a direct child and push it down.
+ * Failure is only logged; the task stays in the local queue and normal submission is unaffected.
  */
 export async function maybeRelayTask(
   task: TaskRow,
@@ -58,9 +58,9 @@ export async function maybeRelayTask(
   if (!config.federationToken) return null;
   const depth = Number(input.relay?.depth ?? task.relay_depth ?? 0);
   if (depth >= MAX_RELAY_DEPTH) return null;
-  // 工作流子任务要留在同一个库里推进，跨库中继会拆散状态机。
+  // Workflow child tasks must advance in the same database; cross-database relay would split the state machine.
   if (task.workflow_run_id || task.parent_task_id) return null;
-  // 已经下推过的任务不再换结点，避免重复投递与两边同时跑。
+  // A task already pushed down is not moved to another node, avoiding duplicate delivery and running on both sides.
   const relayed = await q1(`SELECT 1 AS ok FROM task_relays WHERE parent_task_id = $1`, [
     task.task_id,
   ]);
@@ -87,7 +87,7 @@ export async function maybeRelayTask(
   }
 }
 
-/** 目标实例不在本机时，找实例名册里包含它的直接子结点。 */
+/** When the target instance is not local, find the direct child whose instance roster contains it. */
 async function relayNodeForInstance(instanceId: string): Promise<RelayNode | null> {
   const local = await q1(`SELECT 1 AS ok FROM role_instances WHERE instance_id = $1 LIMIT 1`, [
     instanceId,
@@ -107,9 +107,9 @@ async function relayNodeForInstance(instanceId: string): Promise<RelayNode | nul
 }
 
 /**
- * 未指定目标实例的构建任务：本机有能接住的在线构建机就留在本机；
- * 否则找子树里能接住难度 D 的直接子结点（难度越高优先能力刚好够的，
- * 不限难度时优先更闲的）。
+ * Build task with no target instance: keep it local if an online builder can handle it;
+ * otherwise find a direct child that can handle difficulty D (the higher the difficulty, the more we prefer one just capable enough,
+ * and when difficulty is unrestricted, prefer the idler one).
  */
 async function relayNodeForCapacity(
   taskType: string,
@@ -129,7 +129,7 @@ async function relayNodeForCapacity(
   );
   if (Number(local?.n ?? 0) > 0) return null;
 
-  // 已经下推过的任务不再换结点，避免两边同时跑。
+  // A task already pushed down is not moved to another node, avoiding running on both sides.
   const relayed = await q1(`SELECT 1 AS ok FROM task_relays WHERE parent_task_id = $1`, [
     parentTaskId,
   ]);
@@ -251,8 +251,8 @@ function childSummary(child: any): string {
 
 function childOutputs(child: any): Record<string, unknown> {
   const attempt = latestAttempt(child);
-  // 多级中继：中间结点自己没有 attempt，输出挂在它下推的子任务上，
-  // 必须把嵌套的 child_result.outputs 原样带上来，否则根结点只拿到摘要。
+  // Multi-level relay: the intermediate node has no attempt of its own; outputs hang off the child task it pushed down,
+  // so the nested child_result.outputs must be lifted up verbatim, or the root only gets the summary.
   const raw = attempt?.outputs ?? child?.relay?.child_result?.outputs;
   return raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as Record<string, unknown>)
@@ -357,7 +357,7 @@ async function sendChildCancel(row: RelayRow): Promise<void> {
   }
 }
 
-/** 取消任务时调用：父结点已经取消，子结点必须跟着停。 */
+/** Called on cancel: once the parent is cancelled, the child must stop too. */
 export async function requestRelayCancel(parentTaskId: string): Promise<void> {
   const row = await q1<RelayRow>(
     `SELECT r.*, t.status AS parent_status, t.cancel_requested_at
@@ -369,8 +369,8 @@ export async function requestRelayCancel(parentTaskId: string): Promise<void> {
 }
 
 /**
- * 周期镜像：拉取每个 ACTIVE 中继对应的子结点任务，把状态/结果写回父任务。
- * 子结点不可达时只累计错误，任务保持原状，宁可慢也不重复执行。
+ * Periodic mirror: pull the child task for each ACTIVE relay and write its state/result back to the parent task.
+ * When a child is unreachable, only count the error and leave the task as is: slower is better than duplicate execution.
  */
 export async function syncRelays(limit = 50): Promise<{ checked: number; updated: number }> {
   const rows = await q<RelayRow>(
@@ -443,7 +443,7 @@ export async function syncRelays(limit = 50): Promise<{ checked: number; updated
   return { checked: rows.length, updated };
 }
 
-/** 供 getTask 展示：任务被下推到了哪个结点。 */
+/** For getTask display: which node the task was pushed down to. */
 export async function relayInfo(taskId: string): Promise<Record<string, any> | null> {
   return q1(
     `SELECT child_node_id, child_url, child_task_id, state, child_state,

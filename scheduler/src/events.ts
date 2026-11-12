@@ -11,10 +11,10 @@ export interface EventInput {
 }
 
 /**
- * 事件只追加，与状态变更同事务（§4.4）。
+ * Events are append-only and written in the same transaction as state changes (§4.4).
  *
- * 同时写 outbox_events（§8.1）：task_events 是审计视野，outbox 是对外通知的
- * 唯一可靠来源。两者必须在一个事务里落库，否则界面看到的事件和数据库状态会分叉。
+ * outbox_events is written too (§8.1): task_events is the audit view, outbox is the
+ * only reliable source for external notifications. Both must commit in one transaction, or the events the UI sees will diverge from database state.
  */
 export async function appendEvent(c: Client, e: EventInput): Promise<void> {
   await c.query(

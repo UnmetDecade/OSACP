@@ -59,7 +59,7 @@ function instanceState(status: string, actual = "", deploymentStatus = ""): Inst
     default:
       break;
   }
-  // 镜像还没到目标主机：控制面正在后台同步，容器尚未创建。
+  // The image has not reached the target host yet: the control plane is syncing in the background and the container is not created.
   if (deploymentStatus === "SYNCING") return "SYNCING";
   if (deploymentStatus === "HEALTHY" || actual === "RUNNING") return "ONLINE";
   if (deploymentStatus === "STOPPED" || actual === "STOPPED") return "OFFLINE";
@@ -84,8 +84,8 @@ function taskState(status: string): TaskState {
 }
 
 /**
- * 构建机系统：运行时上报的 capabilities.os 最准（入口脚本从 BUILDER_OS 写进配置），
- * 官方 ubuntu 镜像的 digest 里没有版本号，只能靠上报；旧镜像再退回按镜像名匹配。
+ * Builder OS: the runtime-reported capabilities.os is most accurate (the entry script writes it from BUILDER_OS into config),
+ * the official ubuntu image digest carries no version, so reporting is the only source; legacy images fall back to image-name matching.
  */
 function osOf(reported: string | undefined, image: string | undefined): BuilderOs {
   const hit =
@@ -101,9 +101,9 @@ function roleOf(raw: string | undefined, taskType = ""): Role {
 }
 
 /**
- * 调度机注册行里带着 allowed_task_types；但管理端只连一台调度机，
- * 其他主机（或联邦子树）的实例只有控制面部署记录，没有注册行。
- * 这时按角色给默认能力，否则「创建任务」会误报没有可接任务的构建机。
+ * Scheduler registration rows carry allowed_task_types; but the admin app connects to only one scheduler,
+ * so instances on other hosts (or in the federation subtree) have only control plane deployment records, no registration row.
+ * Give them default capabilities by role in that case, otherwise "Create task" wrongly reports no builder available.
  */
 const ROLE_TASK_TYPES: Record<Role, string[]> = {
   builder: ["task.build", "task.chat.builder", "task.console.builder"],
@@ -118,8 +118,8 @@ export type SyncSummary = {
 };
 
 /**
- * 从调度机（必需）与控制面（可选）读取事实，覆盖内存视图。
- * 任一步失败时保留该部分的旧数据，界面不因单点故障清空。
+ * Read facts from the scheduler (required) and control plane (optional) to overwrite the in-memory view.
+ * If either step fails, keep the previous data for that part so a single point of failure does not blank the UI.
  */
 export async function syncLive(connection: LiveConnection): Promise<SyncSummary> {
   const [
@@ -144,12 +144,12 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     pcs(connection, "/api/v1/platform/fleet"),
   ]);
 
-  // 控制面是管理页的必需依赖；调度机只是任务视图。
-  // 调度机停掉时仍要能用（否则点完“停止”就再也点不到“启动”）。
+  // The control plane is a required dependency of the admin pages; the scheduler only feeds the task view.
+  // It must still work when the scheduler is down (otherwise after clicking "Stop" you could never reach "Start").
   if (hostsRes.status === "rejected") throw hostsRes.reason;
   const instancesOut = settled(instancesRes);
 
-  // ---- 联邦树（控制面）：并入关系与逐级 ΣW
+  // ---- Federation tree (control plane): fold relationships and per-level ΣW
   const fleetOut = settled(fleetRes);
   if (fleetOut) {
     const fleet: Fleet = {
@@ -175,10 +175,10 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
   }
   const fleetById = new Map(db.fleet.hosts.map((h) => [h.host_id, h]));
 
-  // ---- 主机（控制面）
+  // ---- Hosts (control plane)
   const hostsOut = settled(hostsRes);
   if (hostsOut) {
-    // 已吊销的主机视为已删除：从所有页面和主机切换器里消失。
+    // Revoked hosts count as deleted: they disappear from all pages and the host switcher.
     const hosts: Host[] = ((hostsOut?.hosts ?? []) as any[])
       .filter((h) => h.status !== "REVOKED")
       .map((h) => {
@@ -230,12 +230,12 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     replace(db.hosts, hosts);
   }
 
-  // ---- Agent / API（控制面）
+  // ---- Agent / API (control plane)
   const agentsOut = settled(agentsRes);
   if (agentsOut) {
-    // v4 只有 scheduler / builder 两种角色。控制面里遗留的 v3 角色
-    // （worker / tester / reviewer / after_sales）不再映射成 builder，
-    // 否则它们会被当成构建机 Agent 出现在绑定弹窗里。
+    // v4 has only the scheduler / builder roles. Legacy v3 roles left in the control plane
+    // (worker / tester / reviewer / after_sales) are no longer mapped to builder,
+    // otherwise they would appear as builder Agents in the binding dialog.
     const agents: AgentProfile[] = (agentsOut?.agent_profiles ?? [])
       .filter((a: any) => a.role_id === "scheduler" || a.role_id === "builder")
       .map((a: any) => ({
@@ -284,8 +284,8 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     replace(db.apis, apis);
   }
 
-  // ---- 实例绑定（Agent / API）：以控制面为准，调度机上报名可能滞后
-  // 绑定按「主机/实例」作用域索引：同名实例在不同主机上是不同实例，各自有自己的绑定。
+  // ---- Instance bindings (Agent / API): the control plane is authoritative; scheduler reports may lag
+  // Bindings are indexed by host/instance scope: same-named instances on different hosts are distinct and have their own bindings.
   const deploymentsOut = settled(deploymentsRes);
   const scopeOf = (hostId: unknown, instanceId: unknown) =>
     `${String(hostId ?? "")}/${String(instanceId ?? "")}`;
@@ -295,18 +295,18 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     bindingsById.set(scopeOf(b.host_id, b.instance_id), b);
   }
 
-  // ---- 实例：调度机注册状态优先，控制面部署补容器信息
-  // 实例名只在主机内唯一（两台主机都可以有 builder-a），所有索引都用「主机/实例」作用域键。
-  // 删除实例后，调度机上那条注册记录不会自己消失（变成 OFFLINE），但控制面已经没有部署。
-  // 继续展示会让「删除」看起来没生效，再点删除还会报“没有可操作的部署记录”。
+  // ---- Instances: scheduler registration state wins; control plane deployments fill in container info
+  // Instance names are unique only within a host (both hosts may have builder-a); all indexes use a host/instance scope key.
+  // After an instance is deleted, its scheduler registration does not disappear on its own (it becomes OFFLINE), but the control plane has no deployment.
+  // Continuing to show it makes deletion look ineffective, and clicking delete again reports "no deployment record to act on".
   const latestDeployment = new Map<string, any>();
   const deploymentByScope = new Map<string, any>();
-  // deployment_id → 部署记录：解析构建机绑定的调度机、结点调度机的父级。
+  // deployment_id → deployment record: resolves the scheduler a builder is bound to and the parent of a node scheduler.
   const deploymentById = new Map<string, any>();
-  // deployment_id → 实例名：调度机重启后构建机/子调度机手里可能还是旧部署 id，
-  // 界面按实例名匹配才不会因为一次重启就“看不见”实例。
+  // deployment_id → instance name: after a scheduler restart, builders/child schedulers may still hold the old deployment id,
+  // so matching by instance name keeps instances visible across a restart.
   const instanceByDeployment = new Map<string, string>();
-  // 已从列表移除（REVOKED）的主机连同它的实例、任务一起隐藏。
+  // Hosts removed from the list (REVOKED) are hidden together with their instances and tasks.
   const visibleHostIds = new Set(db.hosts.map((h) => h.id));
   for (const d of (deploymentsOut?.deployments ?? []) as any[]) {
     if (!visibleHostIds.has(String(d.host_id))) continue;
@@ -323,7 +323,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       deploymentByScope.set(key, d);
     }
   }
-  // 每台主机上的活跃调度机部署：实例 → 它所属调度机的请求都发给这条部署。
+  // Active scheduler deployment per host: requests for an instance → its owning scheduler all go to this deployment.
   const activeSchedulerByScope = new Map<string, any>();
   for (const [key, dep] of deploymentByScope) {
     if (dep.role_id === "scheduler" && dep.deployment_id) {
@@ -337,8 +337,8 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     }
     return undefined;
   };
-  // 构建机部署里记的调度机部署 id 可能已经过期（调度机重启换了部署），
-  // 先还原成「主机 + 实例名」再取当前部署；解析不了就退回本机根调度机。
+  // The scheduler deployment id recorded in a builder deployment may be stale (the scheduler restarted with a new deployment),
+  // so resolve it to host + instance name first, then take the current deployment; if that fails, fall back to the local root scheduler.
   const resolveSchedulerDeployment = (rawDepId: unknown): any | undefined => {
     if (!rawDepId) return undefined;
     const ref = deploymentById.get(String(rawDepId));
@@ -353,7 +353,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     if (reported && db.hosts.some((h) => h.id === reported)) return reported;
     const byName = reported ? db.hosts.find((h) => h.name === reported) : undefined;
     if (byName) return byName.id;
-    // 名字对不上时，用同名实例的部署记录兜底（同名多主机时取最近一条）。
+    // When names do not match, fall back to deployment records of same-named instances (the most recent one when multiple hosts share the name).
     let fallback = "";
     for (const dep of deploymentByScope.values()) {
       if (dep.instance_id === row?.instance_id) fallback = String(dep.host_id ?? "");
@@ -365,12 +365,12 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     .map((row) => ({ row, id: String(row.instance_id), hostId: normalizeHostId(row) }))
     .filter(({ hostId }) => visibleHostIds.has(hostId))
     .filter(({ row, id, hostId }) => {
-      // 控制面显示已删除、调度机也不再上报 ONLINE：视为已删除，不再显示。
+      // Deleted in the control plane and no longer reported ONLINE by the scheduler: treat as deleted and stop showing it.
       const latest = latestDeployment.get(scopeOf(hostId, id));
       return !(latest?.status === "REMOVED" && row.state !== "ONLINE");
     });
 
-  // 作用域 → 实例；调度机注册行与控制面部署取并集。
+  // Scope → instance; union of scheduler registration rows and control plane deployments.
   const scopes = new Map<string, { id: string; hostId: string; row?: any }>();
   for (const [key, dep] of deploymentByScope) {
     scopes.set(key, { id: String(dep.instance_id), hostId: String(dep.host_id) });
@@ -391,7 +391,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     const cpu = num(profile.cpu_limit, role === "scheduler" ? 4 : 2);
     const memMb = Math.round(num(profile.memory_limit_bytes, role === "scheduler" ? 6144 : 4096) / 1024 ** 2);
     const image = String(dep?.image ?? "");
-    // 心跳超过 90 秒视为旧行：实例已经换到本机调度机，或这行属于另一台调度机。
+    // A heartbeat older than 90 seconds counts as a stale row: the instance moved to the local scheduler, or the row belongs to another scheduler.
     const rowFresh = (() => {
       const at = row?.last_heartbeat_at;
       if (!at) return false;
@@ -399,21 +399,21 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       return Number.isFinite(ts) && Date.now() - ts < 90_000;
     })();
     const mappings = Array.isArray(dep?.ports) ? (dep.ports as any[]) : [];
-    // 构建机 sshd 在 2222；调度机镜像用标准 22，统一映射宿主端口给 SSH 排障。
+    // Builder sshd listens on 2222; the scheduler image uses standard 22; host ports are mapped uniformly for SSH troubleshooting.
     const sshPort = Number(
       mappings.find((p) => Number(p?.container) === (role === "scheduler" ? 22 : 2222))?.host,
     );
-    // 调度机 API 的宿主端口；同一台主机上多台调度机各有自己的端口。
+    // Host port for the scheduler API; multiple schedulers on one host each have their own port.
     const schedulerPort = Number(
       mappings.find((p) => Number(p?.container) === 8443)?.host,
     );
-    // 这台实例的任务请求该发给哪台调度机：调度机是自己，构建机是注册关系里的那台。
+    // Which scheduler receives task requests for this instance: itself for a scheduler, or the registered scheduler for a builder.
     const ownerScheduler =
       role === "scheduler"
         ? dep
         : resolveSchedulerDeployment(dep?.scheduler_deployment_id) ?? hostRootScheduler(hostId);
     return {
-      // 实例名只在主机内唯一：两台主机都叫 builder-a 时用它区分。
+      // Instance names are unique only within a host; this distinguishes when both hosts have builder-a.
       key,
       id,
       deployment_id: dep?.deployment_id ? String(dep.deployment_id) : undefined,
@@ -421,7 +421,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       role,
       os: role === "builder" ? osOf(String(row?.capabilities?.os ?? ""), image) : undefined,
       host_id: hostId,
-      // SSH 要在宿主机上执行；用主机地址而不是显示名，否则复制出来连不上。
+      // SSH runs on the host machine, so use the host address rather than the display name, or the copied command will not connect.
       ssh_host: (() => {
         const host = db.hosts.find((h) => h.id === hostId);
         return host?.address || host?.name;
@@ -445,12 +445,12 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       cpu_limit: cpu,
       mem_limit_mb: memMb,
       disk_gb: num(dep?.labels?.disk_gb, 20),
-      // 镜像还在运往目标主机的路上：这时调度机里可能还留着上一轮的旧状态
-      // （OFFLINE / STARTING），以控制面的 SYNCING 为准，界面才会显示“同步镜像”。
+      // The image is still on its way to the target host: the scheduler may still hold stale state from the previous round
+      // (OFFLINE / STARTING); trust the control plane's SYNCING so the UI shows "syncing image".
       //
-      // 每台主机有自己的调度机，而管理端只连其中一台：别的主机的实例在本机调度库里
-      // 会留下不再心跳的旧行（OFFLINE）。心跳过期的行不动用，以容器实际状态为准，
-      // 否则 112 上跑得好好的构建机会显示成离线。
+      // Each host has its own scheduler and the admin app connects to only one: instances from other hosts leave
+      // stale rows that no longer heartbeat (OFFLINE) in the local scheduler database. Ignore rows with expired heartbeats and use the actual container state,
+      // otherwise a healthy builder on 112 would show as offline.
       state:
         dep?.status === "SYNCING"
           ? "SYNCING"
@@ -486,7 +486,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
         : dep?.scheduler_deployment_id
           ? instanceByDeployment.get(String(dep.scheduler_deployment_id)) ?? null
           : null,
-      // 请求直接发给这条部署；构建机所属调度机重启后这里换成新部署 id。
+      // Requests go directly to this deployment; after the builder's scheduler restarts, this switches to the new deployment id.
       scheduler_deployment_id: ownerScheduler?.deployment_id
         ? String(ownerScheduler.deployment_id)
         : null,
@@ -495,8 +495,8 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
   });
   replace(db.instances, instances);
 
-  // ---- 任务：每台调度机各自一套库，所以逐台拉取后合并。
-  // 部署列表拿不到时退回默认调度机（只有根调度机的旧环境）。
+  // ---- Tasks: each scheduler has its own database, so fetch per scheduler and merge.
+  // Fall back to the default scheduler when the deployment list is unavailable (legacy setups with only a root scheduler).
   type TaskRow = { row: any; schedulerDep: string | null; schedulerInstance: string | null };
   let taskRows: TaskRow[] = [];
   const schedulerDeps = [...activeSchedulerByScope.values()].filter((dep) => dep?.deployment_id);
@@ -526,7 +526,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       schedulerInstance: null,
     }));
   }
-  // 去掉「这台主机上刚重启、根调度机还留着旧行」之外的重名：任务 id 全局唯一，按 id 去重。
+  // Deduplicate beyond the "just restarted host with a stale root scheduler row" case: task ids are globally unique, so dedupe by id.
   const seenTaskIds = new Set<string>();
   const tasks: Task[] = taskRows
     .filter(({ row }) => {
@@ -563,7 +563,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     replace(db.tasks, tasks);
   }
 
-  // ---- 执行日志（控制面审计）
+  // ---- Execution logs (control plane audit)
   const auditsOut = settled(auditsRes);
   if (auditsOut) {
     const logs: LogEntry[] = (auditsOut?.audit_logs ?? []).map((a: any) => ({

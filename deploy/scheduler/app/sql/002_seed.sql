@@ -1,5 +1,5 @@
--- v4 演示种子：两个角色（scheduler / builder），构建机是 Ubuntu 容器。
--- 调度机只保存任务、租约与派发记录；构建机负责执行。
+-- v4 demo seed: two roles (scheduler / builder); the builder is an Ubuntu container.
+-- The scheduler stores only tasks, leases and dispatch records; the builder does the execution.
 BEGIN;
 
 INSERT INTO resource_profiles (profile_id, cpu_millicores, memory_bytes, disk_bytes, timeout_seconds) VALUES
@@ -37,7 +37,7 @@ INSERT INTO role_instances (instance_id, role_id, host_id, state, agent_profile_
    '{"healthy":["code.build","shell","llm"],"os":"ubuntu24.04"}', app_now())
 ON CONFLICT DO NOTHING;
 
--- v4 只有一种工作流：一步构建。没有审核、审批、测试机阶段。
+-- v4 has only one workflow: a single build step. No review, approval or test-machine phases.
 INSERT INTO workflow_templates
   (workflow_template_id, name, version, phases, approval_policy_ref)
 VALUES

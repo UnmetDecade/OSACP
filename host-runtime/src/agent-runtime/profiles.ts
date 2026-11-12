@@ -34,10 +34,10 @@ export function loadProfilesFile(file: string): ProfilesFile {
 }
 
 /**
- * 加载本实例的 Profile。
+ * Load this instance's Profiles.
  *
- * 校验是失败关闭的：角色/Adapter 矩阵、绑定关系、API 子集任意一项不满足，
- * 实例直接拒绝启动执行器，而不是“先跑起来再说”。
+ * Validation is fail-closed: if any of the role/Adapter matrix, bindings, or API subset is not satisfied,
+ * the instance refuses to start the executor outright instead of "getting it running first".
  */
 export function resolveInstanceProfiles(
   file: ProfilesFile,
@@ -102,7 +102,7 @@ export function resolveInstanceProfiles(
     api.set(id, p);
   }
 
-  // Agent 声明的模型/工具 API 必须是实例绑定 API 的子集
+  // The model/tool APIs declared by the Agent must be a subset of the instance's bound APIs
   const declared = [
     ...(agent.model_api_profile_id ? [agent.model_api_profile_id] : []),
     ...(agent.tool_api_profile_ids ?? []),
@@ -120,8 +120,8 @@ export function resolveInstanceProfiles(
 }
 
 /**
- * 任务信封校验（§5.2）：只引用、不解析实现。
- * 版本不一致、未绑定 Agent 或 API 超集都拒绝，任务回队且不消耗重试。
+ * Task envelope validation (§5.2): references only, no implementation parsing.
+ * Version mismatch, unbound Agent, or a superset of APIs is rejected; the task returns to the queue without consuming a retry.
  */
 export function assertEnvelopeAllowed(
   profiles: RuntimeProfiles,

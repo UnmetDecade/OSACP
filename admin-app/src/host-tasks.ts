@@ -2,9 +2,9 @@ import { db } from "./store";
 import type { Host, Task } from "./types";
 
 /**
- * 一台主机能看到哪些任务：
- * - 已经派到这台主机上实例的任务；
- * - 还没指派的目标实例的任务，归给这台主机的根调度机。
+ * Which tasks a host can see:
+ * - tasks already dispatched to instances on this host;
+ * - tasks whose target instance is not yet assigned, attributed to this host's root scheduler.
  */
 export function tasksForHost(host: Host | undefined): Task[] {
   if (!host) return [];

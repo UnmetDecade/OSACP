@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 清空演示库并重新灌种子数据（含时钟归零）。只用于本地/测试环境。
+# Clear the demo database and reload seed data (including resetting the clock). Local/test environments only.
 set -euo pipefail
 PG_CONTAINER="${PG_CONTAINER:-pg-sched}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"

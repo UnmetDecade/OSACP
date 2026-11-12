@@ -1,7 +1,7 @@
 import { q } from "../db.js";
 import { ApiError } from "../errors.js";
 
-/** 控制面（PCS）上报的主机事实；调度机只据此维护可派发主机表。 */
+/** Host facts reported by the control plane (PCS); the scheduler uses them only to maintain the dispatchable host table. */
 export interface HostSyncInput {
   host_id: string;
   name?: string;
@@ -16,8 +16,8 @@ export interface HostSyncInput {
 const STATES = new Set(["NORMAL", "WARNING", "THROTTLED", "PROTECTING", "RECOVERING"]);
 
 /**
- * 主机名册同步。未知状态一律收敛成 PROTECTING：宁可暂时不派发，
- * 也不要让一台状态不明的机器接走任务。
+ * Host roster sync. Unknown states all collapse to PROTECTING: better to stop dispatching for now
+ * than let a machine in an unknown state take tasks.
  */
 export async function upsertHost(input: HostSyncInput) {
   const hostId = String(input.host_id ?? "").trim();

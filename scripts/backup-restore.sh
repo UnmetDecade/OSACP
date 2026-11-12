@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# 控制面备份 / 恢复 / 校验（P7）。
+# Control-plane backup / restore / verification (P7).
 #
-# 用法：
+# Usage:
 #   ./backup-restore.sh backup  OUTDIR
-#   ./backup-restore.sh restore BACKUP_DIR [目标库后缀，默认 _restore]
+#   ./backup-restore.sh restore BACKUP_DIR [target DB suffix, default _restore]
 #   ./backup-restore.sh verify  BACKUP_DIR
 #
-# 默认通过 docker 容器 pg-sched 执行 pg_dump/pg_restore/psql；
-# 有本机客户端时可设置 PG_MODE=local。
+# By default, pg_dump/pg_restore/psql are executed through the docker container pg-sched;
+# if a local client is available, set PG_MODE=local.
 #
-# 备份内容：
-#   scheduler.dump / platform_control.dump   pg_dump 自定义格式
-#   artifacts.tar                            可选，调度机制品目录
-#   manifest.json                            关键表行数与制品校验和
+# Backup contents:
+#   scheduler.dump / platform_control.dump   pg_dump custom format
+#   artifacts.tar                            Optional, scheduler artifact directory
+#   manifest.json                            Row counts of key tables and artifact checksums
 #   SHA256SUMS
 #
-# 注意：备份含审计与业务数据，不含 JWT/命令私钥、Secret Store 密钥值；
-#       备份目录权限 0700，恢复目标库不覆盖原库。
+# Note: backups contain audit and business data, but not JWT/command private keys or Secret Store key values;
+#       the backup directory has permissions 0700, and the restore target DB does not overwrite the original DB.
 set -euo pipefail
 
 MODE="${1:-}"

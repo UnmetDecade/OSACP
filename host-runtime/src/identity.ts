@@ -33,18 +33,18 @@ export function saveIdentity(dir: string, identity: HostIdentity): void {
   fs.renameSync(tmp, file);
 }
 
-/** 令牌是否还能用：留一小时余量给续期。 */
+/** Whether the token is still usable: keep a one-hour margin for renewal. */
 export function tokenUsable(identity: HostIdentity, marginSeconds = 3600): boolean {
   return Date.parse(identity.expires_at) - marginSeconds * 1000 > Date.now();
 }
 
-/** 机器指纹：machine-id 优先，避免容器/重启后变化。 */
+/** Machine fingerprint: prefer machine-id so it does not change in containers or across reboots. */
 export function machineFingerprint(): string {
   let machineId = "";
   try {
     machineId = fs.readFileSync("/etc/machine-id", "utf8").trim();
   } catch {
-    // macOS / 容器里没有
+    // Absent on macOS / in containers
   }
   const seed = `${machineId || os.hostname()}|${os.arch()}|${os.hostname()}`;
   return `sha256:${createHash("sha256").update(seed).digest("hex")}`;

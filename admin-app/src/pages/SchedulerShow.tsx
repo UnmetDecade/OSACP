@@ -12,7 +12,7 @@ import { Icon } from "../components/Icon";
 import { builderAction, sshCommand } from "../api";
 import type { Instance } from "../types";
 
-/** 单个调度机的详情：队列、运行中的任务、绑定的 Agent 和配置。 */
+/** Single scheduler details: queue, running tasks, bound Agents and configuration. */
 export function SchedulerShow() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -34,10 +34,10 @@ export function SchedulerShow() {
   const s = scheduler;
   const host = db.hosts.find((h) => h.id === s.host_id);
   const internalRole = s.scheduler_role ?? "root";
-  // 从当前主机看：并入主机的根不是本机的根，而是父主机根下的结点。
+  // From the current host's view: a folded host's root is not this host's root, but a node under the parent host's root.
   const merged = internalRole === "root" && scopeHost?.id !== s.host_id;
   const externalRole = internalRole === "node" || merged ? "node" : "root";
-  // 父引用优先按实例名解析：调度机重启会换 deployment_id，实例名不变。
+  // Resolve parent references by instance name first: a scheduler restart changes the deployment_id, but the instance name stays.
   const parent = s.parent_scheduler_id
     ? db.instances.find(
         (i) =>
@@ -57,12 +57,12 @@ export function SchedulerShow() {
   const parentHost = merged && host?.parent_host_id
     ? db.hosts.find((h) => h.id === host.parent_host_id)
     : undefined;
-  // 同一主机所有调度机，用于显示父调度机名称与端口。
+  // All schedulers on the same host, used to show the parent scheduler's name and port.
   const hostSchedulers = db.instances.filter((i) => i.role === "scheduler" && i.host_id === s.host_id);
   const hostRoot = hostSchedulers.find(
     (i) => (i.scheduler_role ?? "root") === "root",
   );
-  // 按实例名归属；旧数据没有 scheduler_instance_id 时归本机根调度机。
+  // Attribute by instance name; legacy data without scheduler_instance_id falls back to the local root scheduler.
   const owned = db.instances.filter(
     (b) =>
       b.role === "builder" &&
@@ -70,7 +70,7 @@ export function SchedulerShow() {
       (b.scheduler_instance_id ?? hostRoot?.id) === s.id,
   );
   const ownedIds = new Set(owned.map((b) => b.id));
-  // 未指派构建机的任务落在主机入口，也就是本机内部的根调度机。
+  // Tasks without an assigned builder land on the host entry point, i.e. the local root scheduler.
   const tasks = host
     ? tasksForHost(host).filter((t) =>
         t.instance_id ? ownedIds.has(t.instance_id) : internalRole === "root",
@@ -166,8 +166,8 @@ export function SchedulerShow() {
 
       {error && <Callout tone="bad">{error}</Callout>}
 
-      {/* 顶部两块并排：左侧概览，右侧调度 Agent 配置。整页固定高度，
-          高度不够时由卡片自己滚，页面本身不滚。 */}
+      {/* Two blocks side by side at the top: overview on the left, scheduling Agent config on the right. The page has a fixed height;
+          when space runs out the cards scroll themselves and the page does not. */}
       <div className="sched-top">
         <Card>
           <CardTitle>{t("运行信息")}</CardTitle>

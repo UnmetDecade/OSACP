@@ -4,8 +4,8 @@ import { appendEvent } from "../events.js";
 import { newId, newToken } from "../ids.js";
 
 /**
- * 领取：资格过滤 + 准入 + 租约创建，全部在同一个事务里（§3.4）。
- * 不允许“先返回任务、再检查资源”。
+ * Claim: eligibility filtering + admission + lease creation, all in one transaction (§3.4).
+ * Never "return the task first, check resources later".
  */
 
 export interface ClaimInput {
@@ -26,11 +26,11 @@ export interface Assignment {
   payload_schema: string;
   resource_profile_id: string;
   deadline_at: string | null;
-  /** 任务难度；构建机可据此选择执行策略 */
+  /** Task difficulty; builders may use it to choose an execution strategy */
   difficulty: number;
-  /** 任务要求与工作流交接信息（如 upstream_artifacts） */
+  /** Task requirements and workflow handoff info (e.g. upstream_artifacts) */
   requirements: Record<string, unknown>;
-  /** P4：只下发 Profile 引用，不下发实现或密钥 */
+  /** P4: send only Profile references, never implementations or secrets */
   agent: { profile_id: string | null; version: string | null };
   api_profiles: string[];
   started: false;
@@ -43,7 +43,7 @@ async function loadConfig(c: Client) {
   return res.rows[0];
 }
 
-/** 活跃租约计数：只数未释放且未过期的 */
+/** Active lease count: only unreleased, unexpired leases */
 async function countActive(
   c: Client,
   sql: string,
@@ -59,7 +59,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
   return tx(async (c) => {
     const cfg = await loadConfig(c);
 
-    // 实例行加锁：同一实例并发 claim 串行化，避免一个实例拿走多个任务
+    // Lock the instance row: concurrent claims for one instance serialize, so one instance cannot take multiple tasks
     const instRes = await c.query(
       `SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`,
       [input.instance_id],
@@ -73,7 +73,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
       throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", "实例未绑定 Agent Profile");
     }
 
-    // 主机行加锁：同一主机上的并发领取串行化，预算才是可信的
+    // Lock the host row: concurrent claims on one host serialize, making the budget trustworthy
     const hostRes = await c.query(
       `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
       [inst.host_id],
@@ -81,12 +81,12 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
     const host = hostRes.rows[0];
     if (!host) throw new ApiError(409, "HOST_UNKNOWN", `主机未注册: ${inst.host_id}`);
 
-    // 主机状态：只有 NORMAL / WARNING 可派发；THROTTLED / PROTECTING / RECOVERING 一律排除
+    // Host state: only NORMAL / WARNING may receive dispatches; THROTTLED / PROTECTING / RECOVERING are all excluded
     if (host.host_state !== "NORMAL" && host.host_state !== "WARNING") {
       throw new ApiError(409, "HOST_NOT_ELIGIBLE", `主机 ${host.host_id} 状态 ${host.host_state}，暂停派发`);
     }
 
-    // 实例级并发上限
+    // Instance-level concurrency limit
     const instanceActive = await countActive(
       c,
       `SELECT count(*)::int AS n FROM leases
@@ -94,13 +94,13 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
       [inst.instance_id],
     );
     if (instanceActive >= cfg.instance_limit) {
-      return null; // 该实例已满，不创建租约、不写阻塞原因（不是任务的错）
+      return null; // Instance is full: create no lease and record no blocking reason (not the task's fault)
     }
 
     const capabilities = (inst.capabilities?.healthy ?? []) as string[];
     const unhealthy = (inst.capabilities?.unhealthy ?? []) as string[];
     const usable = capabilities.filter((x) => !unhealthy.includes(x));
-    // W=0 表示“未上报工作能力值”（升级前的实例）：不按难度过滤，保持旧行为。
+    // W=0 means "capability score not reported" (pre-upgrade instances): do not filter by difficulty, preserving old behavior.
     const capabilityScore = Number(inst.capability_score ?? 0);
 
     const candidateSql = `
@@ -110,7 +110,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
         FROM tasks t
         JOIN task_definitions td ON td.task_type = t.task_type
        WHERE t.status = 'QUEUED'
-         -- 已下推给子结点的任务留在本机 QUEUED 等结果，但不能再被本机领取。
+         -- Tasks already pushed down to child nodes stay QUEUED locally for results, but must not be claimed locally.
          AND NOT EXISTS (
            SELECT 1 FROM task_relays r
             WHERE r.parent_task_id = t.task_id AND r.state = 'ACTIVE'
@@ -162,7 +162,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
             trace_id: input.trace_id,
           });
         }
-        continue; // 保持 QUEUED，尝试下一个候选
+        continue; // Stay QUEUED; try the next candidate
       }
 
       return assign(c, cfg, inst, host, task, input.trace_id);
@@ -182,7 +182,7 @@ interface Blocked {
   detail: Record<string, unknown>;
 }
 
-/** 准入判定（§6.2）。返回 null 表示通过。 */
+/** Admission check (§6.2). Returns null when it passes. */
 async function admit(
   c: Client,
   cfg: any,
@@ -190,7 +190,7 @@ async function admit(
   host: any,
   task: any,
 ): Promise<Blocked | null> {
-  // 并发上限：全局 / 角色池 / 任务类型
+  // Concurrency limits: global / role pool / task type
   const globalActive = await countActive(
     c,
     `SELECT count(*)::int AS n FROM leases WHERE released_at IS NULL AND expires_at > app_now()`,
@@ -222,7 +222,7 @@ async function admit(
     return { reason: "CONCURRENCY_LIMIT", detail: { scope: "task_type", limit: cfg.task_type_limit } };
   }
 
-  // 宿主机预算：已预留（HELD/ACTIVE）+ 本次申请 ≤ 可用
+  // Host budget: already reserved (HELD/ACTIVE) + this request <= available
   const profile = (
     await c.query(`SELECT * FROM resource_profiles WHERE profile_id = $1`, [task.resource_profile_id])
   ).rows[0];
@@ -264,9 +264,9 @@ async function assign(
   task: any,
   traceId?: string,
 ): Promise<Assignment> {
-  // attempt_number 取已存在 attempt 的最大值 +1，而不是 attempt_count +1。
-  // 准入被拒会把 attempt_count 退回（不消耗重试），但 attempt 行必须留档；
-  // 若按 attempt_count 推算，下一次领取会复用同一个编号并撞唯一约束。
+  // attempt_number is max(existing attempt) + 1, not attempt_count + 1.
+  // A rejected admission rolls attempt_count back (no retry consumed), but the attempt row must be kept;
+  // deriving it from attempt_count would reuse the same number on the next claim and hit the unique constraint.
   const attemptNumber = Number(
     (
       await c.query(
@@ -280,7 +280,7 @@ async function assign(
   const leaseToken = newToken();
   const grantId = newId("rgr");
 
-  // fencing 逐 attempt 递增；task 行已在候选查询里被 FOR UPDATE 锁定
+  // fencing increments per attempt; the task row is already locked FOR UPDATE by the candidate query
   const fencing = Number(
     (
       await c.query(
@@ -341,7 +341,7 @@ async function assign(
     [task.task_id, attemptId],
   );
 
-  // 老化必须留痕，便于解释“为什么它先被领取”（§3.5）
+  // Aging must be recorded to explain "why this one was claimed first" (§3.5)
   if (task.effective_priority < task.priority_class) {
     await appendEvent(c, {
       task_id: task.task_id,
@@ -392,7 +392,7 @@ async function assign(
     deadline_at: t.deadline_at,
     difficulty: Number(t.difficulty ?? 0),
     requirements: t.requirements ?? {},
-    // P4：只下发引用，不下发实现、API 地址或密钥；实例按本地加载的 Profile 校验
+    // P4: send only references, never implementations, API addresses or secrets; the instance validates against its locally loaded Profile
     agent: {
       profile_id: inst.agent_profile_id,
       version: inst.agent_profile_version ?? null,

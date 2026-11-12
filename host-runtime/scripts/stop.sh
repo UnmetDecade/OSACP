@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 优雅停止（SIGTERM → drain）；加 --force 直接 kill -9，模拟崩溃
+# Graceful stop (SIGTERM → drain); add --force to kill -9 directly and simulate a crash
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 force=""

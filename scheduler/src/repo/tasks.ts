@@ -25,8 +25,8 @@ export async function getTask(taskId: string) {
        FROM leases WHERE task_id = $1 AND released_at IS NULL`,
     [taskId],
   );
-  // 下推中的任务在本机没有 attempt，执行现场在子结点；把中继信息一并返回，
-  // 管理页可以显示「由哪个结点执行」以及子结点当前的原始状态。
+  // A pushed-down task has no local attempt; execution happens on the child. Return relay info as well,
+  // so the admin page can show "which node executes it" and the child's current raw state.
   const relay = await q1(
     `SELECT child_node_id, child_url, child_task_id, state, child_state,
             child_result, sync_failures, last_error, created_at, updated_at
@@ -80,10 +80,10 @@ export async function listEvents(taskId: string) {
 }
 
 /**
- * 取消：
- *  - QUEUED / BLOCKED：立即 CANCELLED
- *  - ASSIGNED：回收租约后 CANCELLED
- *  - RUNNING：只登记 cancel_requested_at，等实例 ack 或超时强杀
+ * Cancel:
+ *  - QUEUED / BLOCKED: CANCELLED immediately
+ *  - ASSIGNED: reaped lease, then CANCELLED
+ *  - RUNNING: only record cancel_requested_at; wait for instance ack or force-kill on timeout
  */
 export async function cancelTask(taskId: string, actor = "operator") {
   return tx(async (c) => {
@@ -132,7 +132,7 @@ export async function cancelTask(taskId: string, actor = "operator") {
   });
 }
 
-/** 释放该任务当前未释放的租约，并同步关闭预留 */
+/** Release the task's currently unreleased lease and close the reservation in sync */
 export async function closeActiveLease(
   c: { query: (sql: string, params?: unknown[]) => Promise<any> },
   taskId: string,

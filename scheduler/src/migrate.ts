@@ -6,7 +6,7 @@ import { config } from "./config.js";
 
 const { Client } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
-// 源码布局是 src/migrate.ts + ../sql；打成 bundle 后是 app/migrate.mjs + app/sql。
+// Source layout is src/migrate.ts + ../sql; the bundled layout is app/migrate.mjs + app/sql.
 const sqlDir =
   [path.join(here, "sql"), path.join(here, "..", "sql")].find((d) => fs.existsSync(d)) ??
   path.join(here, "..", "sql");
@@ -47,12 +47,12 @@ await ensureDatabase();
 await runFile("001_init.sql");
 await runFile("003_profiles.sql");
 if (seed) await runFile("002_seed.sql");
-// 004 依赖 002 的实例行；必须放在 seed 之后，才能把已注册实例也补上任务类型。
+// 004 depends on the instance rows from 002; it must run after the seed so registered instances also get their task types.
 await runFile("004_chat_console.sql");
-// 005 是运行必需数据（资源画像 / task.build），不依赖演示种子，每次迁移都执行。
+// 005 is runtime-required data (resource profiles / task.build), independent of the demo seed, and runs on every migration.
 await runFile("005_essentials.sql");
-// 006 工作能力值 W / 任务难度 D / 结点上报。
+// 006 capability score W / task difficulty D / node reporting.
 await runFile("006_capability.sql");
-// 007 跨调度机任务中继：子结点地址/实例名册 + 中继映射表。
+// 007 cross-scheduler task relay: child addresses/instance roster + relay mapping table.
 await runFile("007_relay.sql");
 process.exit(0);

@@ -1,8 +1,8 @@
--- 006：工作能力值（W）与任务难度（D），以及结点调度机上报。
+-- 006: Capability score (W) and task difficulty (D), plus node scheduler reporting.
 --
--- W 由创建构建机的一方按核心数/频率/内存/磁盘/模型/API 六项加权算出 0–1000 的整数，
--- 随注册请求写入 role_instances；调度机领取任务时按 D <= W 过滤。
--- D = 0 表示“不限制”，兼容升级前的历史任务与未上报 W 的实例。
+-- W is computed by whoever creates the builder as an integer 0–1000, weighting six items: cores/frequency/memory/disk/model/API,
+-- and written to role_instances with the registration request; the scheduler filters claims by D <= W.
+-- D = 0 means "unrestricted", compatible with pre-upgrade historical tasks and instances that never reported W.
 
 ALTER TABLE role_instances
   ADD COLUMN IF NOT EXISTS capability_score integer NOT NULL DEFAULT 0;
@@ -15,8 +15,8 @@ ALTER TABLE tasks
 CREATE INDEX IF NOT EXISTS tasks_claim_difficulty_idx
   ON tasks (difficulty) WHERE status = 'QUEUED';
 
--- 子结点调度机上报的聚合能力。每一级只保存直接子结点，树由 parent_node_id 还原；
--- subtree_score 由子结点自己递归算好，父结点直接相加，避免父结点重复遍历整棵树。
+-- Aggregated capability reported by child schedulers. Each level stores only direct children; the tree is reconstructed from parent_node_id;
+-- subtree_score is computed recursively by the child itself and simply summed by the parent, avoiding repeated whole-tree traversal.
 CREATE TABLE IF NOT EXISTS scheduler_nodes (
   node_id text PRIMARY KEY,
   parent_node_id text NULL,

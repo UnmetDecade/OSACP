@@ -6,12 +6,12 @@ import { db } from "../store";
 import type { Host, Instance } from "../types";
 import { Button, Callout, Field, Modal } from "./ui";
 
-/** 只留数字，去掉前导零（"01" → "1"）；空串保留，方便继续输入。 */
+/** Keep digits only and strip leading zeros ("01" → "1"); keep the empty string so typing can continue. */
 function intText(raw: string): string {
   return raw.replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
 }
 
-/** 提交时转数字，空值回落到默认值，并夹到允许区间。 */
+/** Convert to a number on submit, fall back to the default when empty, and clamp to the allowed range. */
 function intValue(raw: string, fallback: number, min: number, max: number): number {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -19,10 +19,10 @@ function intValue(raw: string, fallback: number, min: number, max: number): numb
 }
 
 /**
- * 在一台主机上部署调度机。
+ * Deploy a scheduler on a host.
  *
- * 每台主机最多一个根调度机（对外入口），根下面可以再挂多个结点调度机容器；
- * 结点只选择同一台主机上的父调度机，父的地址与数据库由控制面注入。
+ * Each host has at most one root scheduler (the external entry point), and multiple node scheduler containers can hang under it;
+ * a node selects only a parent scheduler on the same host, and the parent's address and database are injected by the control plane.
  */
 export function DeploySchedulerModal({
   host,
@@ -33,7 +33,7 @@ export function DeploySchedulerModal({
   onDone,
 }: {
   host: Host;
-  /** 本主机现有的调度机（根 + 结点）。 */
+  /** Existing schedulers on this host (root + nodes). */
   schedulers: Instance[];
   initialRole?: "root" | "node";
   initialParentId?: string;
@@ -48,9 +48,9 @@ export function DeploySchedulerModal({
   const [role, setRole] = useState<"root" | "node">(
     initialRole ?? (root ? "node" : "root"),
   );
-  // 父调度机在控制面按 deployment_id 引用，界面上的 id 是实例名，不能直接混用。
+  // The parent scheduler is referenced by deployment_id in the control plane, while the id shown in the UI is the instance name; do not mix them.
   const refOf = (s: Instance | undefined) => s?.deployment_id ?? s?.id ?? "";
-  // 父结点由入口决定（从哪台调度机的「＋」进来就挂哪台），没有入口时挂到根。
+  // The parent is determined by the entry point (whichever scheduler's "+" was used); without an entry point, it hangs under the root.
   const parent =
     (initialParentId
       ? schedulers.find((s) => refOf(s) === initialParentId)
@@ -61,9 +61,9 @@ export function DeploySchedulerModal({
   const [nameTouched, setNameTouched] = useState(false);
   const [agent, setAgent] = useState("");
   const [api, setApi] = useState("");
-  // 数字输入用字符串保存，允许清空后再输入；提交时再转成数字。
-  // 否则清空的一瞬间会被写成 0，接着输入就变成 "01"。
-  // 同一台主机上多台调度机各占一个宿主端口；从现有实例之后顺延。
+  // Numeric inputs are stored as strings so they can be cleared before retyping; convert them on submit.
+  // Otherwise the field is written as 0 the moment it is cleared, and the next input becomes "01".
+  // Multiple schedulers on one host each take a host port, continuing after the existing instances.
   const [port, setPort] = useState(() => {
     const used = schedulers.map((s) => s.port ?? 0).filter((n) => n > 0);
     return String(Math.max(8443, ...used) + (used.length ? 1 : 0));

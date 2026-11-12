@@ -6,9 +6,9 @@ import { errorMessage } from "../live/client";
 import { openTerminal } from "../api";
 
 /**
- * 终端会话放在页面之外：切换页面时只把 xterm 的 DOM 移到隐藏容器里，
- * WebSocket 和 Shell 都不中断；回到终端页直接接回原来的会话，滚动历史还在。
- * 关闭标签页时浏览器会一并断开连接。
+ * Terminal sessions live outside the page: switching pages only moves xterm's DOM into a hidden container,
+ * leaving the WebSocket and shell connected; returning to the terminal page reattaches to the same session with scrollback intact.
+ * Closing the tab makes the browser drop the connection as well.
  */
 
 export type TermStatus = "connecting" | "open" | "closed" | "error";
@@ -61,7 +61,7 @@ export function getTerminalSession(hostId: string, instanceId: string): TermSess
   const existing = sessions.get(key);
   if (existing) return existing;
 
-  // 终端会一直占着一条 SSH/Shell；限制常驻数量，超出时先回收没显示的。
+  // Each terminal holds an SSH/Shell connection; cap the resident count and reclaim hidden ones first when exceeding it.
   if (sessions.size >= MAX_SESSIONS) {
     for (const [otherKey, other] of sessions) {
       if (!other.attached) {
@@ -100,7 +100,7 @@ export function getTerminalSession(hostId: string, instanceId: string): TermSess
     try {
       fit.fit();
     } catch {
-      // 容器还在布局时忽略
+      // Ignore while the container is still laying out
     }
   };
   const scheduleFit = () => {
@@ -133,7 +133,7 @@ export function getTerminalSession(hostId: string, instanceId: string): TermSess
       session.attached = true;
       requestAnimationFrame(() => {
         doFit();
-        // 在隐藏容器里时渲染器不会重绘，接回来要整屏刷新一次。
+        // The renderer does not repaint while in the hidden container, so refresh the whole screen once on reattach.
         session.term.refresh(0, session.term.rows - 1);
         term.focus();
       });
@@ -195,7 +195,7 @@ async function connect(session: Internal): Promise<void> {
   const cols = dims?.cols ?? 80;
   const rows = dims?.rows ?? 24;
 
-  // 重连保留已有输出，不清屏。
+  // Reconnection keeps existing output and does not clear the screen.
   session.setStatus("connecting");
   try {
     const ticket = await openTerminal(session.hostId, session.instanceId, cols, rows);
@@ -206,7 +206,7 @@ async function connect(session: Internal): Promise<void> {
     );
     socket.binaryType = "arraybuffer";
     session.socket = socket;
-    // 重连时旧 socket 的 close 回调可能晚到，只认当前这条。
+    // On reconnect the old socket's close callback may arrive late; accept only the current one.
     const current = () => !session.disposed && session.socket === socket;
     socket.onopen = () => {
       if (!current()) return;
@@ -254,7 +254,7 @@ async function connect(session: Internal): Promise<void> {
   }
 }
 
-/** 把控制面基地址（同源代理或绝对地址）换算成 WebSocket 地址。 */
+/** Convert the control plane base address (same-origin proxy or absolute) into a WebSocket address. */
 function terminalWsUrl(base: string, path: string): string {
   const abs = new URL(base, window.location.href);
   abs.protocol = abs.protocol === "https:" ? "wss:" : "ws:";

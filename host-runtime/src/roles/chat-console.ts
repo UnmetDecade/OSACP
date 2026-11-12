@@ -2,13 +2,13 @@ import { baseEnv, runShell, tail } from "./shell.js";
 import { TaskAborted, TaskFailed, type Executor } from "../exec-types.js";
 
 /**
- * 角色对话与构建机 Shell。
+ * Role chat and builder Shell.
  *
- * 两者都是普通调度任务，不绕过 claim / lease / fencing / 审计：
- *   - task.chat.<role>：把一条消息交给该角色的 Agent。未绑定可对话 Agent 时，
- *     返回确定性的角色说明，并明确标记 mode=deterministic，不假装是模型回复。
- *   - task.console.builder：在构建机容器里执行完整 shell 命令，与 SSH 等价。
- *     v4 取消了白名单；隔离由容器边界、资源限额和网络策略负责。
+ * Both are ordinary scheduled tasks and do not bypass claim / lease / fencing / audit:
+ *   - task.chat.<role>: hand a message to that role's Agent. When no chat-capable Agent is bound,
+ *     return a deterministic role description explicitly marked mode=deterministic, without pretending it is a model reply.
+ *   - task.console.builder: run full shell commands inside the builder container, equivalent to SSH.
+ *     v4 removed the allowlist; isolation is handled by the container boundary, resource limits and network policy.
  */
 
 const ROLE_PERSONA: Record<string, { name: string; duty: string; line: string }> = {
@@ -50,8 +50,8 @@ function chatOf(task: { requirements?: Record<string, unknown> }): {
 }
 
 /**
- * 确定性对话：没有可用的对话 Agent 时也要给出可核对的回答，
- * 但必须让调用方知道这不是模型生成的。答案只使用任务信封里的公开字段。
+ * Deterministic chat: even without a usable chat Agent, give an answer that can be checked,
+ * but make clear to the caller that it was not model-generated. Answers use only public fields from the task envelope.
  */
 export function chatExecutorFor(role: string): Executor {
   const persona = ROLE_PERSONA[role] ?? ROLE_PERSONA.builder;
@@ -101,7 +101,7 @@ export function chatExecutorFor(role: string): Executor {
 }
 
 /* ------------------------------------------------------------------ */
-/* 构建机 Shell（完整权限）                                            */
+/* Builder Shell (full permissions)                                    */
 /* ------------------------------------------------------------------ */
 
 export function consoleExecutorFor(role: string): Executor {
@@ -110,7 +110,7 @@ export function consoleExecutorFor(role: string): Executor {
     const command = typeof raw.command === "string" ? raw.command.slice(0, 4000) : "";
     const operator = typeof raw.operator === "string" ? raw.operator.slice(0, 80) : "unknown";
     if (!command.trim()) throw new TaskFailed("CONSOLE_COMMAND_EMPTY", "命令为空");
-    // 安装/编译类命令要几分钟：允许调用方指定，上限 15 分钟，默认 60 秒。
+    // Install/compile commands take minutes: let the caller specify a timeout, capped at 15 minutes, defaulting to 60 seconds.
     const requestedSeconds = Number(raw.timeout_seconds);
     const timeoutMs =
       Number.isFinite(requestedSeconds) && requestedSeconds > 0
@@ -136,7 +136,7 @@ export function consoleExecutorFor(role: string): Executor {
       throw new TaskAborted(reason === "cancelled" || reason === "shutdown" ? reason : "lease_lost");
     }
 
-    // 审计只记命令与结果元数据，不记录完整输出，避免把业务数据写进日志。
+    // Audit records only the command and result metadata, not full output, to avoid writing business data into logs.
     ctx.log(
       `console ${task.task_id}: role=${role} operator=${operator} command=${command.slice(0, 120)} exit=${result.exitCode} duration_ms=${result.durationMs}`,
     );
@@ -158,8 +158,8 @@ export function consoleExecutorFor(role: string): Executor {
 }
 
 /**
- * 供 Agent 执行器复用：console 任务永远不交给外部 Agent。
- * 返回 true 表示该任务类型必须走确定性执行器。
+ * Reused by the Agent executor: console tasks are never handed to an external Agent.
+ * Returning true means this task type must use the deterministic executor.
  */
 export function mustUseDeterministicExecutor(taskType: string): boolean {
   return taskType.startsWith("task.console.");

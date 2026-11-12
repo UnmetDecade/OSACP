@@ -1,193 +1,196 @@
-# 构建机
+# Builders
 
-> 版本：v4.3 · 2026-11-12
-> 构建机是唯一的工作角色：一台可 SSH 的 Ubuntu 容器，或整台裸机主机。
+> English · [简体中文](builders.zh-CN.md)
+
+> Version: v4.3 · 2026-11-12
+> The builder is the only work role: an SSH-accessible Ubuntu container, or an entire bare-metal host.
 
 ---
 
-## 1. 系统版本
+## 1. OS Versions
 
-| `builder_os` | 基础镜像 | 适用 |
+| `builder_os` | Base image | Suitable for |
 |---|---|---|
-| `ubuntu20.04` | 官方 `ubuntu:20.04` | 老项目、旧 glibc、旧内核头文件 |
-| `ubuntu22.04` | 官方 `ubuntu:22.04` | 兼容性优先 |
-| `ubuntu24.04` | 官方 `ubuntu:24.04` | 默认推荐 |
-| `ubuntu26.04` | 官方 `ubuntu:26.04` | 尝鲜、前瞻验证（以官方发布为准） |
+| `ubuntu20.04` | Official `ubuntu:20.04` | Legacy projects, older glibc, older kernel headers |
+| `ubuntu22.04` | Official `ubuntu:22.04` | Compatibility first |
+| `ubuntu24.04` | Official `ubuntu:24.04` | Default recommendation |
+| `ubuntu26.04` | Official `ubuntu:26.04` | Early adoption and forward-looking validation (subject to the official release) |
 
-规则：
+Rules:
 
-- 镜像按 digest 固定，并且在 PCS 的 `PCS_IMAGE_ALLOWLIST` 内；管理应用展示 digest，不只展示 tag。
-- 镜像是**纯官方 Ubuntu**，不烘焙平台运行时。Node、Agent CLI、openssh deb 从主机缓存
-  （`~/.platform/cache`）只读挂入；实例运行时在部署时写入 `/opt/platform/app`。
-- 一个构建机实例 = 一个容器 = 一个系统版本；同一次任务不跨系统。
-- 允许同一版本多实例，显示名由使用者填（可中文），实例 ID 由控制面派生。
-- `role_mode=builder` 的裸机主机不需要容器：整台主机直接注册为一台构建机。
+- Images are pinned by digest and must be in PCS's `PCS_IMAGE_ALLOWLIST`; the admin app shows the digest, not just the tag.
+- The image is **plain official Ubuntu**, with no platform runtime baked in. Node, Agent CLI, and openssh debs are mounted
+  read-only from the host cache (`~/.platform/cache`); the instance runtime is written to `/opt/platform/app` at deployment time.
+- One builder instance = one container = one OS version; a single task never spans OSes.
+- Multiple instances of the same version are allowed; the display name is entered by the user (Chinese is allowed), and the instance ID is derived by the control plane.
+- A bare-metal host with `role_mode=builder` needs no container: the entire host registers directly as one builder.
 
 ---
 
-## 2. 容器内目录
+## 2. Directories Inside the Container
 
 ```
 /opt/platform/
-├── app/                       # 实例运行时（部署时写入，只读）
+├── app/                       # instance runtime (written at deployment, read-only)
 │   ├── agent-runtime.mjs
 │   └── sshd_config
-├── agents/                    # CLI Agent 适配器（部署时写入）
-├── cache/                     # 主机缓存（只读挂载）
+├── agents/                    # CLI Agent adapters (written at deployment)
+├── cache/                     # host cache (read-only mount)
 │   ├── node/                  # Node 22+
 │   ├── agents/                # claude / codex
-│   └── openssh/*.deb          # 与镜像同版本的 ssh/sshd
-├── tokens/                    # 实例 JWT（0600，部署时写入）
-├── keys/                      # 授权公钥（只读）
-├── workspace/                 # 工作区（卷）
-├── artifacts/                 # 产物暂存（卷）
-├── state/                     # 已装软件包清单（按实例隔离的卷）
-├── apt-cache/                 # 主机共享 deb 缓存（卷）
-├── logs/                      # 本地日志缓冲
-└── audit/                     # 本地审计
+│   └── openssh/*.deb          # same-version ssh/sshd as the image
+├── tokens/                    # instance JWT (0600, written at deployment)
+├── keys/                      # authorized public keys (read-only)
+├── workspace/                 # workspace (volume)
+├── artifacts/                 # artifact staging (volume)
+├── state/                     # installed package list (per-instance isolated volume)
+├── apt-cache/                 # host-shared deb cache (volume)
+├── logs/                      # local log buffer
+└── audit/                     # local audit
 ```
 
-必需系统包由缓存里的 deb 离线安装（`openssh-server`、`bash`、`git`、`curl`、
-`ca-certificates`、`jq`）。构建链（`build-essential`、`cmake`、`python3`、`nodejs` 等）
-不预装，由任务自己在容器里安装；`/opt/platform/state` 记录包清单，重建后可恢复。
+Required system packages are installed offline from the cached debs (`openssh-server`, `bash`, `git`, `curl`,
+`ca-certificates`, `jq`). Build toolchains (`build-essential`, `cmake`, `python3`, `nodejs`, etc.) are not
+preinstalled; each task installs what it needs inside the container, and `/opt/platform/state` records the package list
+so the environment can be restored after a rebuild.
 
-`docker-cli` 只用于「容器内构建镜像」场景，默认不挂 Docker Socket。
+`docker-cli` is only for the "build images inside the container" scenario; the Docker socket is not mounted by default.
 
 ---
 
-## 3. SSH 完整权限
+## 3. Full SSH Access
 
-v4 刻意提供**完全权限的 SSH**，用于研发排障与手工构建。
+v4 deliberately provides **full-permission SSH**, for R&D troubleshooting and manual builds.
 
-| 项 | 默认 |
+| Item | Default |
 |---|---|
-| 用户 | `root` |
-| 认证 | **只允许密钥**；部署时把主机登录公钥写进容器 `authorized_keys` |
-| 端口 | 容器 `22` → 宿主分配的唯一端口，随部署计划下发 |
-| 权限 | 完整 shell、可安装软件、可访问网络 |
-| 会话 | 交互式 PTY，标准 ssh 客户端 |
-| 审计 | 可选：`sshd` 日志、shell 历史、`script` 录制 |
+| User | `root` |
+| Authentication | **Key-only**; the host login public key is written into the container's `authorized_keys` at deployment time |
+| Port | Container `22` → a unique port allocated by the host, delivered with the deployment plan |
+| Permissions | Full shell, can install software, can access the network |
+| Session | Interactive PTY, standard ssh client |
+| Audit | Optional: `sshd` logs, shell history, `script` recording |
 
-管理应用展示：
+The admin app shows:
 
 ```
 ssh root@<host> -p <port>
 ```
 
-并提供「复制命令」与「打开 Web 终端」动作。主机没有可用公钥时，容器仍可通过
-PCS 的 Web 终端进入；`sshd` 不接受密码登录。
+and provides "Copy command" and "Open web terminal" actions. When the host has no usable public key, the container can
+still be entered through PCS's web terminal; `sshd` does not accept password logins.
 
-> 公钥来源是主机自己的 `authorized_keys` 与 `~/.platform/keys/*.pub`。
-> 调度机与 PCS 都不保存构建机 SSH 私钥；SSH 不经过调度机。
+> Public keys come from the host's own `authorized_keys` and `~/.platform/keys/*.pub`.
+> Neither the scheduler nor PCS stores builder SSH private keys; SSH does not go through the scheduler.
 
 ---
 
-## 4. 构建机 Agent
+## 4. Builder Agent
 
-### 4.0 名称与实例 ID
+### 4.0 Names and Instance IDs
 
-界面上填的是**显示名**（`display_name`），可以中文、最长 32 个字符；卡片、列表、详情页都显示它。
-实例 ID（`instance_id`）由控制面按显示名派生，只用于容器名、卷名、调度机 `node_id` 和结点库名，必须是 ASCII：
+What is entered in the UI is the **display name** (`display_name`), which may be Chinese and up to 32 characters; cards, lists, and detail pages all show it.
+The instance ID (`instance_id`) is derived from the display name by the control plane and is used only for container names, volume names, the scheduler's `node_id`, and the child-node database name; it must be ASCII:
 
-- `a-z` / `0-9` 原样保留，空格与 `. _ / -` 转成 `-`；
-- 其余字符（含中文）转成 `-<Unicode 码点>-`，例如「测试构建机」→ `27979-35797-26500-24314-26426`；
-- 合并连续 `-` 并去掉首尾 `-`；超过 48 个字符时截断并追加名称哈希前 8 位；
-- 已经是合法 ASCII id 的 `instance_id` 原样使用，不再二次派生。
+- `a-z` / `0-9` are kept as-is, and spaces and `. _ / -` are converted to `-`;
+- All other characters (including Chinese) are converted to `-<Unicode code point>-`, e.g. "测试构建机" → `27979-35797-26500-24314-26426`;
+- Consecutive `-` are collapsed and leading/trailing `-` are removed; names longer than 48 characters are truncated with the first 8 characters of the name hash appended;
+- An `instance_id` that is already a valid ASCII id is used as-is and is not derived again.
 
-同一台主机内实例 ID 唯一；不同主机可以同名。调度机同样规则，`SCHEDULER_NODE_ID` 为 `<host_id>:<instance_id>`。
+Instance IDs are unique within a host; different hosts may use the same name. Schedulers follow the same rules, with `SCHEDULER_NODE_ID` set to `<host_id>:<instance_id>`.
 
-### 4.1 启动参数
+### 4.1 Startup Parameters
 
-| 环境变量 | 必填 | 说明 |
+| Environment variable | Required | Description |
 |---|---|---|
-| `SCHEDULER_URL` | 是 | 归属调度机地址 |
-| `INSTANCE_ID` | 是 | 实例 ID，例如 `builder-ubuntu22-a` |
-| `INSTANCE_TOKEN_DIR` | 是 | 实例 JWT 所在目录，默认 `/opt/platform/tokens` |
-| `ROLE_ID` | 是 | 固定 `builder` |
-| `BUILDER_OS` | 是 | `ubuntu20.04` / `ubuntu22.04` / `ubuntu24.04` / `ubuntu26.04` |
-| `WORKSPACE_DIR` | 否 | 默认 `/opt/platform/workspace` |
-| `AGENT_PROFILE_ID` | 否 | 绑定的 Agent（Claude Code / Codex / DeepSeek / 自定义）；不填则只跑确定性 Shell |
-| `PLATFORM_AGENT_PASS_ENV` | 否 | 容器环境放行给 Agent 适配器的变量名，逗号分隔 |
-| `MAX_CONCURRENCY` | 否 | 默认 1 |
+| `SCHEDULER_URL` | Yes | Owning scheduler address |
+| `INSTANCE_ID` | Yes | Instance ID, e.g. `builder-ubuntu22-a` |
+| `INSTANCE_TOKEN_DIR` | Yes | Directory containing the instance JWT, default `/opt/platform/tokens` |
+| `ROLE_ID` | Yes | Fixed to `builder` |
+| `BUILDER_OS` | Yes | `ubuntu20.04` / `ubuntu22.04` / `ubuntu24.04` / `ubuntu26.04` |
+| `WORKSPACE_DIR` | No | Default `/opt/platform/workspace` |
+| `AGENT_PROFILE_ID` | No | Bound Agent (Claude Code / Codex / DeepSeek / custom); if empty, only the deterministic Shell runs |
+| `PLATFORM_AGENT_PASS_ENV` | No | Comma-separated names of container environment variables passed through to the Agent adapter |
+| `MAX_CONCURRENCY` | No | Default 1 |
 
-### 4.2 生命周期
+### 4.2 Lifecycle
 
 ```
 STARTING → REGISTERING → ONLINE ⇄ SUSPECT → OFFLINE
                               └── DRAINING
 ```
 
-- `ONLINE`：心跳正常，可领取任务。
-- `SUSPECT`：45s 无心跳，暂停派发；在途任务继续。
-- `DRAINING`：不再领取，等待在途任务结束。
-- `OFFLINE`：手动停止或心跳超时。
+- `ONLINE`: heartbeat is healthy and tasks can be claimed.
+- `SUSPECT`: no heartbeat for 45s, dispatch paused; in-flight tasks continue.
+- `DRAINING`: no longer claims tasks, waiting for in-flight tasks to finish.
+- `OFFLINE`: manually stopped or heartbeat timed out.
 
-### 4.3 执行循环
+### 4.3 Execution Loop
 
-1. `claim` 领取任务（长轮询 25s）。
-2. 校验 fencing token 与租约。
-3. 创建工作区 `workspace/<task_id>/<attempt_id>`。
-4. 选择执行器：
-   - 绑定 Agent → Agent Adapter（stdio JSON-RPC / HTTP；DeepSeek 走 OpenAI 兼容 HTTP）。
-   - 未绑定 → 确定性 Shell 执行器（直接执行 payload 中的命令）。
-5. 持续上报 `progress`。
-6. 上传产物到 `artifacts`，`result` 上报摘要。
-7. 清理工作区（可配置保留）。
+1. `claim` a task (long poll 25s).
+2. Validate the fencing token and the lease.
+3. Create the workspace `workspace/<task_id>/<attempt_id>`.
+4. Select an executor:
+   - Agent bound → Agent Adapter (stdio JSON-RPC / HTTP; DeepSeek uses the OpenAI-compatible HTTP API).
+   - Not bound → deterministic Shell executor (runs the commands in the payload directly).
+5. Continuously report `progress`.
+6. Upload artifacts to `artifacts` and report a summary via `result`.
+7. Clean up the workspace (retention is configurable).
 
 ---
 
-## 5. 资源与限制
+## 5. Resources and Limits
 
-| 项 | 默认 | 说明 |
+| Item | Default | Description |
 |---|---|---|
-| CPU | 2 core | 可按实例配置 |
-| 内存 | 4 GiB | 编译大项目时调高 |
-| 磁盘 | 20 GiB | 工作区 + 产物；由宿主配额与卷约束 |
-| PIDs | 512 / 1024 | 4 GiB 以下 512，以上 1024 |
-| 超时 | 1 小时 | 任务级 `deadline_at` |
-| 网络 | 允许出站 | 研发需要；可按 `network_policy` 收紧 |
+| CPU | 2 cores | Configurable per instance |
+| Memory | 4 GiB | Raise it when compiling large projects |
+| Disk | 20 GiB | Workspace + artifacts; constrained by host quotas and volumes |
+| PIDs | 512 / 1024 | 512 below 4 GiB, 1024 above |
+| Timeout | 1 hour | Task-level `deadline_at` |
+| Network | Outbound allowed | Needed for R&D; can be tightened via `network_policy` |
 
-限制由 host-runtime 创建容器时写入，容器内不能自行放宽。
+Limits are written by host-runtime when creating the container and cannot be relaxed from inside.
 
 ---
 
-## 6. 卷
+## 6. Volumes
 
-| 卷 | 挂载点 | 说明 |
+| Volume | Mount point | Description |
 |---|---|---|
-| `state`（按实例隔离） | `/opt/platform/state` | 已装软件包清单，重建后恢复环境 |
-| `shared-apt-cache`（主机共享） | `/opt/platform/apt-cache` | 复用下载过的 deb，不共享已装环境 |
-| `workspace` | `/opt/platform/workspace` | 跨任务保留，便于复现 |
-| `artifacts` | `/opt/platform/artifacts` | 产物暂存 |
-| `keys`（只读） | `/opt/platform/keys` | 授权公钥 |
+| `state` (per-instance isolated) | `/opt/platform/state` | Installed package list; environment restored after a rebuild |
+| `shared-apt-cache` (host-shared) | `/opt/platform/apt-cache` | Reuses downloaded debs without sharing the installed environment |
+| `workspace` | `/opt/platform/workspace` | Retained across tasks for reproducibility |
+| `artifacts` | `/opt/platform/artifacts` | Artifact staging |
+| `keys` (read-only) | `/opt/platform/keys` | Authorized public keys |
 
 ---
 
-## 7. 健康检查
+## 7. Health Checks
 
-| 检查 | 命令 | 失败处理 |
+| Check | Command | Failure handling |
 |---|---|---|
-| 实例心跳 | 调度机 45s 未收到 | 标记 SUSPECT，暂停派发 |
-| sshd | `nc -z localhost 22` | host-runtime 重启容器 |
-| 磁盘 | 实例上报工作区可用空间 | 调度机暂停派发 |
-| 容器退出 | host-runtime 对账 | 按期望态重建 |
+| Instance heartbeat | Scheduler receives nothing for 45s | Mark SUSPECT and pause dispatch |
+| sshd | `nc -z localhost 22` | host-runtime restarts the container |
+| Disk | Instance reports workspace free space | Scheduler pauses dispatch |
+| Container exit | host-runtime reconciliation | Recreate according to desired state |
 
 ---
 
-## 8. 安全说明（明确取舍）
+## 8. Security Notes (Explicit Trade-offs)
 
-- 默认 root + 完全 SSH 是**有意为之**，不是遗漏。
-- 建议只在可信内网使用；公网暴露必须加防火墙/VPN。
-- 容器只接受密钥登录；主机登录公钥在部署时注入。
-- 构建机 token 与 SSH 私钥分离：token 用于调度，私钥只给使用者。
-- 不在镜像里放业务密钥；需要时通过环境变量或 Secret Store 注入。
-- 如果未来需要收紧：把 `root` 改为 `builder` 用户 + sudo，或启用 `AllowUsers`/`ForceCommand`。
+- Default root + full SSH is **deliberate**, not an oversight.
+- Use only on a trusted internal network; public exposure requires a firewall/VPN.
+- Containers accept key-only logins; host login public keys are injected at deployment time.
+- Builder tokens and SSH private keys are separate: the token is used for scheduling, and the private key is only for users.
+- Do not put business secrets in the image; inject them through environment variables or the Secret Store when needed.
+- If you need to tighten this in the future: change `root` to a `builder` user + sudo, or enable `AllowUsers`/`ForceCommand`.
 
 ---
 
-## 9. 参考 Compose 片段
+## 9. Reference Compose Snippet
 
-单机 Compose 是参考部署，控制面部署走 PCS 部署计划。
+Single-machine Compose is a reference deployment; control plane deployments go through PCS deployment plans.
 
 ```yaml
 services:

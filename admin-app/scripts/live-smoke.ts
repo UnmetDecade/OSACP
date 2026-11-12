@@ -1,11 +1,11 @@
 /**
- * 实时管理应用数据层冒烟测试（不进浏览器，直接调用 live/*）。
+ * Live admin app data-layer smoke test (no browser; calls live/* directly).
  *
- * 用法（测试机）：
+ * Usage (test machine):
  *   PCS_URL=http://127.0.0.1:7901 SCHEDULER_URL=http://127.0.0.1:7801 \
  *   PCS_ADMIN_TOKEN=$(cat admin.jwt) MFA_CODE=246810 tsx live-smoke.ts
  *
- * 注意：令牌只从环境变量读取，不打印、不落盘。
+ * Note: tokens are read from environment variables only; never printed or persisted.
  */
 import assert from "node:assert/strict";
 import {

@@ -30,28 +30,28 @@ export interface AgentTuning {
   leaseRenewSeconds: number;
   progressSeconds: number;
   configSyncSeconds: number;
-  /** Host Runtime 的本机准入 socket；未设置时退回进程内 LocalAdmission */
+  /** Host Runtime's local admission socket; when unset, falls back to in-process LocalAdmission */
   hostAdmissionSocket?: string;
-  /** 每个 attempt 的工作目录根；默认 data/workspace */
+  /** Per-attempt workspace root; defaults to data/workspace */
   workspaceDir: string;
-  /** 调试用：任务结束后保留工作目录 */
+  /** For debugging: keep the workspace after the task ends */
   keepWorkspace?: boolean;
-  /** 本实例已加载的 Agent/API Profile；缺省时只用确定性执行器 */
+  /** Agent/API Profiles loaded for this instance; when absent, only the deterministic executor is used */
   profiles?: RuntimeProfiles;
-  /** Secret Store 地址与实例身份令牌（只用于换取短期凭据） */
+  /** Secret Store URL and instance identity token (used only to exchange for short-lived credentials) */
   secretStoreUrl?: string;
   instanceToken?: string | (() => string | undefined);
   egressPolicies?: Record<string, string[]>;
   allowLoopbackEgress?: boolean;
-  /** 工具/API 审计目录 */
+  /** Tool/API audit directory */
   auditDir?: string;
 }
 
 /**
- * 一个角色实例（role-agent）的生命周期。
+ * Lifecycle of one role instance (role-agent).
  *
- * 这个进程里没有“调度”判断：领什么任务由调度机决定，它只负责
- * 「问 → 本地再判一次 → 执行 → 报结果」，以及把一切都带上 fencing。
+ * There is no "scheduling" judgement in this process: the scheduler decides which task to claim; this only
+ * "asks → re-checks locally → executes → reports the result", with fencing carried through everything.
  */
 export class Agent {
   private readonly id: string;
@@ -78,8 +78,8 @@ export class Agent {
   }
 
   /**
-   * 启动对账：上次进程被 kill 时没有机会 release，本实例名下的残留 TASK grant
-   * 会一直占着内存直到 TTL。重启后先按 instance_id 清掉，恢复真实余量。
+   * Startup reconciliation: if the previous process was killed without a chance to release, residual TASK grants
+   * under this instance name keep holding memory until the TTL. After a restart, clear them by instance_id first to restore the real headroom.
    */
   private async reconcileHostGrants(): Promise<void> {
     const socket = this.tuning.hostAdmissionSocket;
@@ -90,12 +90,12 @@ export class Agent {
       for (const g of mine) await releaseHostAdmission(socket, g.grant_id);
       if (mine.length) this.log(`启动对账：释放 ${mine.length} 个残留 task grant`);
     } catch (e) {
-      // Runtime 可能还没起来；准入时仍会失败关闭，不阻塞启动
+      // The Runtime may not be up yet; admission still fails closed and does not block startup
       this.log(`启动对账跳过：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
-  /** 准入被拒或不可用：按 claim 间隔退避，避免原地刷 attempt */
+  /** Admission rejected or unavailable: back off by the claim interval, avoiding repeated attempts in place */
   private backOffAfterAdmission(): void {
     this.admissionBackoffUntil = Date.now() + this.tuning.claimIntervalSeconds * 1000;
   }
@@ -105,7 +105,7 @@ export class Agent {
     console.log(`${t} [${this.id}] ${msg}`);
   }
 
-  /** 工具/API 审计：只落摘要，不含密钥、请求体与完整响应。 */
+  /** Tool/API audit: records only a digest, with no secrets, request bodies or full responses. */
   private audit(file: string, record: unknown): void {
     try {
       const dir = path.resolve(this.tuning.auditDir ?? "data/audit");
@@ -153,8 +153,8 @@ export class Agent {
   }
 
   /**
-   * 配置同步（§7.11）：定期拉版本，版本没变调度机回 304。
-   * 骨架只做“看到变化就记下来”；执行中任务继续用旧的本地配置。
+   * Configuration sync (§7.11): pull the version periodically; the scheduler returns 304 when it is unchanged.
+   * The skeleton only "records a change when it sees one"; running tasks keep using the old local config.
    */
   private async configLoop(): Promise<void> {
     while (!this.draining) {
@@ -178,7 +178,7 @@ export class Agent {
     }
   }
 
-  /** 注册失败就一直退避重试；调度机没起来也不退出进程 */
+  /** Keep backing off and retrying when registration fails; if the scheduler is not up, do not exit the process */
   private async registerLoop(): Promise<void> {
     let attempt = 0;
     while (!this.draining) {
@@ -221,7 +221,7 @@ export class Agent {
         capabilities: this.cfg.capabilities,
       });
     } catch (e) {
-      // 心跳失败不停止在途任务（§11：与 PCS 断连时已运行容器继续运行）
+      // A heartbeat failure does not stop in-flight tasks (§11: running containers keep running when disconnected from PCS)
       this.log(`心跳失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -232,7 +232,7 @@ export class Agent {
         await sleep(200);
         continue;
       }
-      // 准入被拒后退避，否则同一任务会被原地反复领取，每秒刷出多条 attempt
+      // Back off after admission is rejected; otherwise the same task is repeatedly claimed in place, emitting many attempts per second
       if (Date.now() < this.admissionBackoffUntil) {
         await sleep(Math.min(500, this.admissionBackoffUntil - Date.now()));
         continue;
@@ -242,7 +242,7 @@ export class Agent {
         assignment = await this.client.claim(this.cfg.instance_id);
       } catch (e) {
         if (e instanceof SchedulerError && e.code === "INSTANCE_NOT_ELIGIBLE") {
-          // SUSPECT / DRAINING / 未 ONLINE：等心跳把它拉回来
+          // SUSPECT / DRAINING / not ONLINE: wait for the heartbeat to bring it back
           await sleep(3000);
           continue;
         }
@@ -269,7 +269,7 @@ export class Agent {
     const socket = this.tuning.hostAdmissionSocket;
 
     try {
-      // 0. Profile 匹配：只看信封里的引用。不匹配就回队，不消耗重试
+      // 0. Profile match: only look at the references in the envelope. On mismatch, requeue without consuming a retry
       if (this.tuning.profiles) {
         try {
           assertEnvelopeAllowed(this.tuning.profiles, a);
@@ -293,7 +293,7 @@ export class Agent {
         }
       }
 
-      // 1a. Host Runtime 本机准入：跨进程、用实时余量，grant 来自调度机领取事务
+      // 1a. Host Runtime local admission: cross-process, uses live headroom; the grant comes from the scheduler's claim transaction
       if (socket) {
         try {
           const ha = await checkHostAdmission(socket, {
@@ -320,7 +320,7 @@ export class Agent {
           }
           hostGrant = a.grant_id;
         } catch (e) {
-          // 本机准入接口不可用时失败关闭：宁可拒绝，也不绕过实时余量检查
+          // Fail closed when the local admission endpoint is unavailable: rather reject than bypass the live headroom check
           this.log(
             `${a.task_id} Host Runtime 准入接口不可用（${e instanceof Error ? e.message : String(e)}），` +
               `按失败关闭拒绝该 assignment`,
@@ -335,7 +335,7 @@ export class Agent {
         }
       }
 
-      // 1b. 进程内兜底（没有 Host Runtime socket 时的本地开发模式）
+      // 1b. In-process fallback (local development mode without a Host Runtime socket)
       const adm = await this.admission.tryAcquire();
       if (!adm.allowed) {
         this.log(
@@ -352,7 +352,7 @@ export class Agent {
       }
       acquired = true;
 
-      // 2. start-ack：从这里开始才拥有这个 attempt
+      // 2. start-ack: ownership of this attempt begins here
       await this.client.startAck(a.attempt_id, {
         ...proof,
         instance_id: this.id,
@@ -360,18 +360,18 @@ export class Agent {
       });
       this.log(`开始 ${a.task_id}（attempt ${a.attempt_number}，fencing ${a.fencing_token}）`);
 
-      // 3. 续租
+      // 3. Lease renewal
       const renewTimer = setInterval(() => void this.renew(a, proof, controller), this.tuning.leaseRenewSeconds * 1000);
 
-      // 4. 取消观察 + 进度
+      // 4. Cancellation watch + progress
       const watchTimer = setInterval(() => void this.watch(a, proof, controller), this.tuning.progressSeconds * 1000);
 
-      // 每个 attempt 一个独立工作目录；不跨任务复用，避免前一个任务的残留文件被读到
+      // One independent workspace per attempt; not reused across tasks, so leftover files from a previous task cannot be read
       workspaceDir = path.join(this.tuning.workspaceDir, a.attempt_id);
       fs.mkdirSync(workspaceDir, { recursive: true });
 
       const profiles = this.tuning.profiles;
-      // 容器诊断永远走白名单确定性执行器，即使 Profile 声明了该任务类型也不外派。
+      // Container diagnostics always go through the allowlisted deterministic executor, even if a Profile declares that task type
       const useAgent = profiles
         ? supportsTask(profiles.agent, a.task_type) && !a.task_type.startsWith("task.console.")
         : false;
@@ -435,7 +435,7 @@ export class Agent {
       this.log(`完成 ${a.task_id}：${outcome.summary}${describeResult(r)}`);
     } catch (e) {
       if (e instanceof SchedulerError && e.isFencingLost) {
-        // 租约已被回收或转给别的实例：不要上报任何结果，让它自然过期
+        // The lease was reclaimed or transferred to another instance: report no result, let it expire naturally
         this.log(`${a.task_id} 租约已失效（${e.code}），放弃本 attempt`);
       } else {
         this.log(`${a.task_id} 执行异常：${e instanceof Error ? e.message : String(e)}`);
@@ -451,7 +451,7 @@ export class Agent {
       if (acquired) this.admission.release();
       if (hostGrant && socket) {
         void releaseHostAdmission(socket, hostGrant).catch(() => {
-          // 释放失败会由租约结束/TTL 兜底，不阻塞任务收尾
+          // A failed release is covered by lease end/TTL and does not block task teardown
         });
       }
       this.running.delete(a.attempt_id);
@@ -489,7 +489,7 @@ export class Agent {
       if (e instanceof SchedulerError && e.isFencingLost) {
         controller.abort("lease_lost");
       } else {
-        // 网络抖动：不立刻停手，租约还有余量，下一轮会再试
+        // Network blip: do not stop immediately; the lease still has headroom, and the next round retries
         this.log(`${a.task_id} 续租失败：${e instanceof Error ? e.message : String(e)}`);
       }
     }
@@ -502,12 +502,12 @@ export class Agent {
         controller.abort("cancelled");
       }
     } catch {
-      // 查询失败不影响执行，取消请求会在下一轮再看到
+      // A failed query does not affect execution; the cancel request will be seen again next round
     }
     void proof;
   }
 
-  /** 优雅停止：先不再领取，等在途任务完成；超时则放弃，交给调度机回收 */
+  /** Graceful stop: stop claiming first and wait for in-flight tasks; on timeout, abandon them for the scheduler to reclaim */
   async stop(waitMs = 15000): Promise<void> {
     this.draining = true;
     if (this.hbTimer) clearInterval(this.hbTimer);
@@ -523,7 +523,7 @@ export class Agent {
       for (const { controller } of this.running.values()) controller.abort("shutdown");
     }
 
-    // 注销（§7.12）：还有在途任务时只能 force；调度机不可达也不能卡住退出
+    // Deregister (§7.12): with in-flight tasks only force is possible; an unreachable scheduler must not block exit
     try {
       const out = await this.client.deregister(this.cfg.instance_id, {
         reason: "shutdown",

@@ -1,34 +1,34 @@
 #!/usr/bin/env node
 /**
- * 把 Claude Code / Codex 的 CLI Agent Profile 注册到 PCS。
+ * Register the Claude Code / Codex CLI Agent Profiles with PCS.
  *
- * 前提：
- *   - PCS 已启动，且 PCS_IMAGE_ALLOWLIST 允许 AGENT_IMAGE 的仓库；
- *   - Agent 执行主机上已安装对应 CLI（claude / codex），否则任务会以
- *     AGENT_NOT_READY / CLI_NOT_INSTALLED 失败，而不是静默改用别的执行器；
- *   - PCS 返回的运行时视图只含 secret_ref，不含密钥值。
+ * Prerequisites:
+ *   - PCS is running, and PCS_IMAGE_ALLOWLIST permits the AGENT_IMAGE repository;
+ *   - The corresponding CLI (claude / codex) is installed on the Agent execution host; otherwise tasks fail with
+ *     AGENT_NOT_READY / CLI_NOT_INSTALLED, rather than silently switching to another executor;
+ *   - The runtime view returned by PCS contains only secret_ref, not key values.
  *
- * 用法：
+ * Usage:
  *   ADMIN_TOKEN=... AGENT_IMAGE=registry.example/agents/claude@sha256:<64hex> \
  *     node scripts/seed-cli-agents.mjs
  *
- * 可选：
- *   PCS_URL             默认 http://127.0.0.1:7901
- *   PLATFORM_DIR        Agents 代码所在目录（默认当前工作目录）
- *   AGENT_NODE          Agent 进程可执行文件（默认 node）
- *   AGENT_PROVIDERS     claude,codex（默认两者）
- *   AGENT_PASS_ENV      逗号分隔的环境变量名，显式传给外部 CLI。不设置时按
- *                       provider 取默认值（claude: ANTHROPIC_API_KEY,
- *                       ANTHROPIC_BASE_URL；codex: DEEPSEEK_API_KEY, CODEX_HOME）。
+ * Optional:
+ *   PCS_URL             defaults to http://127.0.0.1:7901
+ *   PLATFORM_DIR        Directory containing the Agents code (defaults to the current working directory)
+ *   AGENT_NODE          Agent process executable (defaults to node)
+ *   AGENT_PROVIDERS     claude,codex (both by default)
+ *   AGENT_PASS_ENV      Comma-separated environment variable names, explicitly passed to the external CLI. When unset, defaults are chosen per
+ *                       provider (claude: ANTHROPIC_API_KEY,
+ *                       ANTHROPIC_BASE_URL; codex: DEEPSEEK_API_KEY, CODEX_HOME).
  *   AGENT_CLAUDE_VERSION / AGENT_CODEX_VERSION
- *                       Profile 版本；默认取本机 `<cli> --version` 的版本号，
- *                       取不到时报错（可在这里显式指定，例如 2.1.322）。
- *   --dry-run           只打印将要创建的 Profile，不发请求
- *   --bind <instance:provider>  创建后把实例绑定到对应 Profile（可重复）
+ *                       Profile version; by default takes the version from the local `<cli> --version`,
+ *                       and errors if it cannot be obtained (you can specify it explicitly here, e.g. 2.1.322).
+ *   --dry-run           Only print the Profiles that would be created, without sending requests
+ *   --bind <instance:provider>  After creation, bind the instance to the corresponding Profile (repeatable)
  *   --bind <host/instance:provider>
- *                       同名实例出现在多台主机时必须带主机（host_id 或主机名）
+ *                       When a same-name instance appears on multiple hosts, the host must be given (host_id or hostname)
  *
- * 例：
+ * Example:
  *   node scripts/seed-cli-agents.mjs --bind builder-ubuntu22-a:claude --bind builder-ubuntu24-a:codex
  *   node scripts/seed-cli-agents.mjs --bind host-a/builder-a:claude
  */
@@ -58,13 +58,13 @@ const ROLE_CAPS = {
   scheduler: ["queue", "lease", "shell", "chat"],
 };
 const PROVIDER_NAME = { claude: "Claude Code", codex: "Codex" };
-// 容器内是一次性构建环境，CLI 要能无人值守地读写工作区、执行命令。
-// extra-arg 追加在 provider 默认参数之后，不覆盖 -p / exec。
+// Inside the container is a one-off build environment; the CLI must be able to read/write the workspace and run commands unattended.
+// extra-arg is appended after the provider's default arguments and does not override -p / exec.
 const CLI_FLAGS = {
   claude: ["--dangerously-skip-permissions"],
   codex: ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"],
 };
-// 没有显式设置 AGENT_PASS_ENV 时，按 provider 放行模型凭据相关变量。
+// When AGENT_PASS_ENV is not explicitly set, allow model-credential-related variables per provider.
 const DEFAULT_PASS_ENV = {
   claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
   codex: ["DEEPSEEK_API_KEY", "CODEX_HOME"],
@@ -74,10 +74,10 @@ function passEnvFor(provider) {
 }
 
 /**
- * Profile 版本就是 CLI 的真实版本：UI 上「Claude Code · builder · v2.1.322」
- * 应该能和镜像里 `claude --version` 对上，而不是一个和 CLI 无关的 1.0.0。
- * 优先读环境变量（种子上游机器没装 CLI 时用），否则本地探测，都没有就直接
- * 报错——静默写一个假版本会让排障时对不上号。
+ * The Profile version is the CLI's real version: in the UI, "Claude Code · builder · v2.1.322"
+ * should match `claude --version` inside the image, not an unrelated 1.0.0.
+ * Prefer the environment variable (used when the seeding upstream machine has no CLI installed); otherwise probe locally; if neither is available,
+ * error out—silently writing a fake version would cause mismatches during troubleshooting.
  */
 const VERSION_CACHE = new Map();
 function cliVersion(provider) {
@@ -138,8 +138,8 @@ function profileFor(role, provider) {
   return {
     agent_profile_id: id,
     role_id: role,
-    // 名称只写 CLI 产品名：角色由页面/绑定上下文体现，UI 会拼成
-    // 「Claude Code · v2.1.322」，而不是「Claude Code · builder · v2.1.322」。
+    // The name contains only the CLI product name: the role is conveyed by the page/binding context, and the UI composes
+    // "Claude Code · v2.1.322", not "Claude Code · builder · v2.1.322".
     name: PROVIDER_NAME[provider],
     version: cliVersion(provider),
     adapter: "stdio-jsonrpc",
@@ -150,7 +150,7 @@ function profileFor(role, provider) {
       provider,
       ...(CLI_FLAGS[provider] ?? []).flatMap((a) => ["--extra-arg", a]),
       ...passEnvFor(provider).flatMap((name) => ["--pass-env", name]),
-      // 调度机要能指挥构建机：挂上 builders 工具（list/exec/ask/status）。
+      // The scheduler must be able to command builders: attach the builders tool (list/exec/ask/status).
       ...(role === "scheduler" ? ["--mcp-config", "/opt/platform/app/mcp.json"] : []),
     ],
     limits: { max_wall_seconds: 600, max_turns: 40 },
@@ -164,8 +164,8 @@ function profileFor(role, provider) {
 const existing = dryRun ? [] : ((await api("GET", "/api/v1/platform/agent-profiles"))?.agent_profiles ?? []);
 const existingIds = new Set(existing.map((p) => p.agent_profile_id));
 
-// 角色从 PCS 部署记录读取，不在脚本里写死实例映射。
-// 实例名只在主机内唯一，所以按 host_id + instance_id 记录；同名实例带主机才能消歧。
+// Roles are read from the PCS deployment records; instance mappings are not hardcoded in this script.
+// Instance names are unique only within a host, so record by host_id + instance_id; a same-name instance needs the host to disambiguate.
 const instancesByName = new Map();
 const hostNames = new Map();
 if (!dryRun && binds.length) {
@@ -184,7 +184,7 @@ if (!dryRun && binds.length) {
   }
 }
 
-/** 解析 `<instance>` 或 `<host>/<instance>`；同名实例必须给出主机。 */
+/** Parse `<instance>` or `<host>/<instance>`; a same-name instance must specify the host. */
 function findInstance(target) {
   const slash = target.indexOf("/");
   const wantedHost = slash >= 0 ? target.slice(0, slash) : "";
@@ -241,7 +241,7 @@ for (const spec of binds) {
       role_id: hit.role,
     });
   }
-  // host_id 以 hst_ 开头且很长，日志里用主机名更好认。
+  // host_id starts with hst_ and is long; using the hostname in logs is easier to recognize.
   console.log(`bind ${hostNames.get(hit.hostId) || hit.hostId}/${hit.instanceId} -> ${profileId}`);
 }
 

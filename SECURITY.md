@@ -1,37 +1,37 @@
-# 安全策略
+# Security Policy
 
-## 报告漏洞
+> English · [简体中文](SECURITY.zh-CN.md)
 
-请使用 GitHub 的 **Security Advisories**（仓库 → Security → Report a vulnerability）私下报告。
-不要在公开 issue 里贴凭据、私钥、主机地址或完整利用细节。
+## Reporting vulnerabilities
 
-报告时请附：受影响组件、复现步骤、影响范围、建议修复方向（如有）。
+Please report privately through GitHub **Security Advisories** (repository → Security → Report a vulnerability).
+Do not post credentials, private keys, host addresses or full exploit details in public issues.
 
-## 支持范围
+When reporting, include: affected components, reproduction steps, impact, and a suggested fix direction (if any).
 
-项目处于 v4.x 阶段，安全修复只针对当前主分支。
+## Supported scope
 
-## 设计上的明确取舍
+The project is at v4.x; security fixes target the current main branch only.
 
-这套平台面向**可信内网里的研发团队**，以下行为是有意为之，不是漏洞：
+## Deliberate design trade-offs
 
-- 构建机默认 `root`，SSH 完整权限，可安装软件、访问外网。
-- 平台不做 RBAC、审批门与权限矩阵；能访问管理应用即可执行所有操作。
-- 对话与容器终端是普通任务，终端没有命令白名单（等价于 SSH）。
+This platform is intended for **R&D teams on a trusted internal network**. The following behaviors are intentional, not vulnerabilities:
 
-因此部署时至少要做到：
+- Builders run as `root` by default, with full SSH access, and can install software and reach the external network.
+- The platform has no RBAC, approval gates or permission matrix; anyone who can access the admin app can perform every operation.
+- Chat and container terminals are ordinary tasks; the terminal has no command allowlist (it is equivalent to SSH).
 
-- 不要把 7901（PCS）、8443（调度机 API）、2200 / 2222–2231（SSH）直接暴露到公网。
-- 公网访问管理应用时，前面加反向代理 TLS，并叠加 VPN 或基础认证。
-- 定期轮换 PCS 管理员令牌与主机注册令牌。
+Deployments should therefore, at minimum:
 
-## 凭据处理
+- Never expose 7901 (PCS), 8443 (scheduler API), 2200 / 2222–2231 (SSH) directly to the public internet.
+- When the admin app is publicly reachable, put a TLS reverse proxy in front of it and add VPN or basic auth on top.
+- Rotate the PCS admin token and host enrollment tokens regularly.
 
-- 私钥、`.env`、`*.local`、实例 JWT 都不进仓库（见 `.gitignore`）。
-- PCS 保存的 SSH 私钥用 AES-256-GCM 加密，接口只返回指纹。
-- Agent/API Profile 只保存 `secret://` 引用；Secret Store 按实例身份解析短期凭据，
-  审计不记录凭据值。
-- 模型凭据只在运行时注入容器环境，并且要经过 `PLATFORM_AGENT_PASS_ENV` 与
-  Profile 的 `--pass-env` 两层显式放行。
+## Credential handling
 
-如果发现仓库里有误提交的凭据，请立即吊销并在报告里说明，不要只提 PR 删除文件。
+- Private keys, `.env`, `*.local` and instance JWTs never enter the repository (see `.gitignore`).
+- SSH private keys stored by PCS are encrypted with AES-256-GCM; the API only returns a fingerprint.
+- Agent/API profiles store only `secret://` references; the Secret Store resolves short-lived credentials per instance identity, and audit records never contain credential values.
+- Model credentials are injected into the container environment only at run time, and must pass two explicit gates: `PLATFORM_AGENT_PASS_ENV` and the profile's `--pass-env`.
+
+If you find a credential that was committed by mistake, revoke it immediately and explain it in the report — do not just open a PR that deletes the file.

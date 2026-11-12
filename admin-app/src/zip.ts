@@ -1,13 +1,13 @@
 /**
- * 极简 ZIP 打包器（浏览器端）。
+ * Minimal ZIP packer (browser side).
  *
- * 用户可以直接选一个代码文件夹；把目录打成一个 zip 再上传，任务里只带一个
- * 附件地址。文本文件优先用 deflate-raw 压缩，浏览器不支持或压缩不划算时按
- * store 原样写入。
+ * Users can select a code folder directly; the directory is packed into one zip and uploaded, and the task carries a single
+ * attachment URL. Text files are compressed with deflate-raw when possible; if the browser does not support it or compression is
+ * not worthwhile, they are written as-is with store.
  */
 
 export interface ZipEntryInput {
-  /** 相对于所选文件夹根目录的路径，例如 src/main.ts。 */
+  /** Path relative to the selected folder root, e.g. src/main.ts. */
   path: string;
   file: File;
 }
@@ -55,7 +55,7 @@ async function deflateRaw(data: Uint8Array): Promise<Uint8Array | null> {
   }
 }
 
-/** 把文件列表打成 zip；返回可直接作为附件上传的 File。 */
+/** Pack the file list into a zip; returns a File usable directly as an attachment upload. */
 export async function zipFiles(
   rootName: string,
   entries: ZipEntryInput[],
@@ -83,7 +83,7 @@ export async function zipFiles(
     const lv = new DataView(local.buffer);
     lv.setUint32(0, 0x04034b50, true);
     lv.setUint16(4, 20, true);
-    lv.setUint16(6, 0x0800, true); // UTF-8 文件名
+    lv.setUint16(6, 0x0800, true); // UTF-8 filename
     lv.setUint16(8, method, true);
     lv.setUint16(10, stamp.time, true);
     lv.setUint16(12, stamp.date, true);

@@ -1,5 +1,5 @@
--- PCS 管理面（Host Runtime ↔ 平台控制服务）。对应 docs/host-runtime-spec.md §5–§9、§13。
--- 调度机的 hosts / role_instances 是调度视图；这里是 PCS 持有的期望态与命令队列。
+-- PCS management plane (Host Runtime ↔ platform control service). See docs/host-runtime-spec.md §5–§9, §13.
+-- The scheduler's hosts / role_instances are its scheduling view; this is the desired state and command queue owned by the PCS.
 
 CREATE TABLE IF NOT EXISTS pcs_hosts (
   host_id        TEXT PRIMARY KEY,
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS pcs_hosts (
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 一次性注册令牌只存哈希；原文只在创建时返回一次。
+-- One-time enrollment tokens are stored only as hashes; the plaintext is returned once at creation.
 CREATE TABLE IF NOT EXISTS pcs_enrollment_tokens (
   token_hash     TEXT PRIMARY KEY,
   host_id        TEXT NOT NULL REFERENCES pcs_hosts(host_id) ON DELETE CASCADE,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS pcs_deployments (
 CREATE INDEX IF NOT EXISTS pcs_deployments_host_idx ON pcs_deployments (host_id, status);
 CREATE INDEX IF NOT EXISTS pcs_deployments_instance_idx ON pcs_deployments (instance_id);
 
--- Host Runtime 只领取本主机的命令；签名在 payload 里，PCS 不保存任何明文凭据。
+-- Host Runtime only pulls commands for its own host; signatures live in the payload, and the PCS stores no plaintext credentials.
 CREATE TABLE IF NOT EXISTS pcs_commands (
   command_id      TEXT PRIMARY KEY,
   host_id         TEXT NOT NULL REFERENCES pcs_hosts(host_id),

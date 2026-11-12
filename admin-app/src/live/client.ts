@@ -58,7 +58,7 @@ async function request(
   }
   if (!res.ok) {
     const err = data?.error ?? {};
-    // 代理/网关断开时响应体可能为空或是一段 HTML，兜底成可读的状态码。
+    // When the proxy/gateway drops, the response body may be empty or HTML; fall back to a readable status code.
     const bodyText =
       typeof data === "string" && !data.trim().startsWith("<")
         ? data.trim().slice(0, 300)
@@ -89,11 +89,11 @@ export function scheduler(
 }
 
 /**
- * 把请求发给指定调度机部署（根或结点）。
+ * Send a request to a specific scheduler deployment (root or node).
  *
- * 每台调度机各自一套库，而且结点地址只在控制面里；所以这里走控制面的
- * /schedulers/:dep/proxy 转发，而不是让浏览器直接连内网地址。没有部署 id
- * 时退回默认调度机（兼容只有根调度机的旧环境）。
+ * Each scheduler has its own database, and node addresses exist only in the control plane; so this goes through the control plane's
+ * /schedulers/:dep/proxy rather than having the browser connect to internal addresses directly. Without a deployment id,
+ * it falls back to the default scheduler (compatible with legacy setups that have only a root scheduler).
  */
 export function schedulerFor(
   connection: LiveConnection,
@@ -112,14 +112,14 @@ export function schedulerFor(
 
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) {
-    // 部署前校验把失败项放在 detail.checks 里；直接把失败原因带出来。
+    // Pre-deployment validation puts failures in detail.checks; surface the failure reason directly.
     const checks = (e.detail as { checks?: Array<{ ok?: boolean; detail?: string }> } | null)
       ?.checks;
     if (Array.isArray(checks)) {
       const failed = checks.filter((c) => c && c.ok === false).map((c) => c.detail).filter(Boolean);
       if (failed.length) return `${e.code}：${failed.join("；")}`;
     }
-    // HTTP_ERROR 只是没拿到结构化错误，直接展示状态码信息即可。
+    // HTTP_ERROR simply means no structured error was received; just show the status code information.
     if (!e.code || e.code === "HTTP_ERROR") return e.message;
     return `${e.code}：${e.message}`;
   }

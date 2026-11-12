@@ -7,7 +7,7 @@ import { startAck, submitResult } from "../src/core/attempts.js";
 import { createArtifact, completeArtifact, putArtifactContent } from "../src/core/artifacts.js";
 import { createTask, type CreateTaskInput } from "../src/repo/tasks.js";
 
-// 测试制品落在临时目录，避免污染工作目录
+// Test artifacts land in a temp directory to avoid polluting the working directory
 process.env.ARTIFACT_DIR ??= path.join(os.tmpdir(), "scheduler-test-artifacts");
 
 const TABLES = [
@@ -33,7 +33,7 @@ const TABLES = [
 export async function reset(): Promise<void> {
   await pool.query(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);
   await pool.query(`UPDATE _clock SET offset_ms = 0`);
-  // 每个用例都从同一套调度参数出发，避免用例之间互相影响
+  // Every test starts from the same scheduler parameters so cases do not affect each other
   await pool.query(
     `UPDATE scheduler_config SET global_limit = 100, role_pool_limit = 20, instance_limit = 1,
             task_type_limit = 10, aging_after_seconds = 600, lease_seconds = 300,
@@ -81,7 +81,7 @@ export async function reset(): Promise<void> {
   );
 }
 
-/** 时间旅行：advance(31) 让启动窗口过期，advance(301) 让租约过期 */
+/** Time travel: advance(31) expires the start window, advance(301) expires the lease */
 export async function advance(seconds: number): Promise<void> {
   await pool.query(`UPDATE _clock SET offset_ms = offset_ms + $1`, [seconds * 1000]);
 }
@@ -101,7 +101,7 @@ export async function claimOrFail(instanceId: string): Promise<Assignment> {
   return a;
 }
 
-/** 走完整制品通道：声明摘要 → 上传 → 服务端重算 → COMPLETE。返回服务端确认的摘要。 */
+/** Walk the full artifact channel: declare digest → upload → server recompute → COMPLETE. Returns the server-confirmed digest. */
 export async function uploadArtifactFor(
   taskId: string,
   content: string,

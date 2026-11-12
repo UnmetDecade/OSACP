@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 
 /**
- * 构建机内执行命令的唯一入口。
+ * The only entry point for running commands inside the builder.
  *
- * v4 的构建机是专用研发容器，SSH 和 task.console.builder 都是完整权限：
- * 不设白名单，命令通过 `/bin/sh -lc` 执行。安全边界是容器本身
- * （独立 rootfs、不挂 Docker Socket、资源限额、网络策略），不是命令过滤。
+ * In v4 the builder is a dedicated development container; SSH and task.console.builder both have full permissions:
+ * no allowlist, commands run via `/bin/sh -lc`. The security boundary is the container itself
+ * (isolated rootfs, no Docker Socket mount, resource limits, network policy), not command filtering.
  */
 export interface ShellResult {
   stdout: string;
@@ -17,7 +17,7 @@ export interface ShellResult {
 
 const MAX_CAPTURE = 256 * 1024;
 
-/** 只继承运行所需的最小环境；平台令牌不进入构建进程。 */
+/** Inherit only the minimal environment needed to run; platform tokens do not enter the build process. */
 export function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -40,11 +40,11 @@ function appendCapped(target: string[], chunk: Buffer, state: { bytes: number })
 }
 
 /**
- * 执行一条 shell 命令。
+ * Run a shell command.
  *
- * - `cwd` 由调用方保证在 workspace 内；
- * - 超时或 abort 时杀掉整个进程组，避免子进程继续跑；
- * - stdout/stderr 各截断到 256 KiB，完整日志由调用方决定是否落制品。
+ * - `cwd` is guaranteed by the caller to be inside the workspace;
+ * - on timeout or abort, kill the whole process group so child processes do not keep running;
+ * - stdout/stderr are each truncated to 256 KiB; whether to persist the full log as an artifact is up to the caller.
  */
 export function runShell(input: {
   command: string;
@@ -75,7 +75,7 @@ export function runShell(input: {
         if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
         else child.kill("SIGKILL");
       } catch {
-        // 进程可能已经退出
+        // The process may have already exited
       }
     };
 

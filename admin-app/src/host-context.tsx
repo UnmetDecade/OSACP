@@ -5,8 +5,8 @@ import { useLive } from "./live/context";
 import type { Host } from "./types";
 
 /**
- * 当前主机：侧栏底部切换，页面按它过滤调度机与构建机。
- * 选择只保存在当前标签页；主机消失时自动回退到本地主机或第一台。
+ * Current host: switched at the bottom of the sidebar; pages filter schedulers and builders by it.
+ * The selection is kept only in the current tab; when the host disappears, fall back to the local host or the first one.
  */
 type HostScopeValue = {
   hosts: Host[];
@@ -22,17 +22,17 @@ function fallbackHost(): Host | undefined {
 }
 
 export function HostScopeProvider({ children }: { children: ReactNode }) {
-  // 实时同步会替换 db.hosts；订阅一下，主机列表变化时重新计算当前主机。
+  // Live sync replaces db.hosts; subscribe so the current host is recomputed when the host list changes.
   const live = useLive();
-  // 首屏时 db.hosts 还没同步回来，不能拿它校验保存的选择：先信保存值，
-  // 等主机列表到达后再由下面的 effect 校验或回退。否则刷新一次就跳回默认主机。
+  // On first paint db.hosts has not synced back yet, so it cannot validate the saved selection: trust the saved value first,
+  // and let the effect below validate or fall back once the host list arrives. Otherwise one refresh jumps back to the default host.
   const [hostId, setId] = useState(
     () => sessionStorage.getItem(STORAGE_KEY) ?? fallbackHost()?.id ?? "",
   );
 
   const hostIds = db.hosts.map((h) => h.id).join(",");
   useEffect(() => {
-    // 主机列表还没同步回来时先不动，否则会把保存的选择覆盖成空。
+    // Do nothing until the host list syncs back, or the saved selection would be overwritten with empty.
     if (!db.hosts.length) return;
     if (db.hosts.some((h) => h.id === hostId)) return;
     const next = fallbackHost()?.id ?? "";

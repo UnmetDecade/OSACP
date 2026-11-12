@@ -48,9 +48,9 @@ export interface EnrollRequest {
 }
 
 export interface PcsTlsOptions {
-  /** 内部 CA；用于校验 PCS 服务端证书 */
+  /** Internal CA; used to verify the PCS server certificate */
   caFile?: string;
-  /** P6 mTLS：本机主机证书与私钥（0600，不进备份） */
+  /** P6 mTLS: this host's certificate and key (0600, excluded from backups) */
   certFile?: string;
   keyFile?: string;
 }

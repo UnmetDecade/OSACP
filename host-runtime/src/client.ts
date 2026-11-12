@@ -1,4 +1,4 @@
-/** 调度机 HTTP 客户端。只做传输与错误归一化，不含任何调度判断。 */
+/** Scheduler HTTP client. Only handles transport and error normalization; contains no scheduling decisions. */
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -15,7 +15,7 @@ export class SchedulerError extends Error {
     this.name = "SchedulerError";
   }
 
-  /** 写入被旧 attempt 顶掉：必须立刻放弃这个任务，不要重试 */
+  /** Write was overridden by a stale attempt: abandon this task immediately, do not retry */
   get isFencingLost(): boolean {
     return this.code === "FENCING_STALE" || this.code === "LEASE_EXPIRED" || this.code === "LEASE_MISMATCH";
   }
@@ -38,9 +38,9 @@ export interface Assignment {
   payload_schema: string;
   resource_profile_id: string;
   deadline_at: string | null;
-  /** 任务要求与工作流交接（upstream_artifacts 等），由调度机下发 */
+  /** Task requirements and workflow handoff (upstream_artifacts, etc.), issued by the scheduler */
   requirements: Record<string, unknown>;
-  /** P4：Agent/API Profile 引用；实现与密钥不在信封里 */
+  /** P4: Agent/API Profile references; implementations and secrets are not in the envelope */
   agent: { profile_id: string | null; version: string | null };
   api_profiles: string[];
 }
@@ -56,9 +56,9 @@ interface RequestOpts {
 }
 
 export interface SchedulerTlsOptions {
-  /** 内部 CA；用于校验调度机服务端证书 */
+  /** Internal CA; used to verify the scheduler's server certificate */
   caFile?: string;
-  /** 可选 mTLS：客户端证书与私钥 */
+  /** Optional mTLS: client certificate and key */
   certFile?: string;
   keyFile?: string;
 }
@@ -69,7 +69,7 @@ export class SchedulerClient {
   constructor(
     private readonly baseUrl: string,
     private readonly defaultTimeoutMs = 5000,
-    /** 实例 JWT（PCS 签发，从挂载文件读取）；旧的共享令牌也走这里 */
+    /** Instance JWT (issued by PCS, read from the mounted file); the legacy shared token also goes here */
     private readonly token?: string | (() => string | undefined),
     tlsOptions: SchedulerTlsOptions = {},
   ) {
@@ -80,7 +80,7 @@ export class SchedulerClient {
     };
   }
 
-  /** 每次请求都取一次：令牌文件轮换后无需重启进程 */
+  /** Read on every request: token file rotation requires no process restart */
   private currentToken(): string | undefined {
     return typeof this.token === "function" ? this.token() : this.token;
   }
@@ -155,12 +155,12 @@ export class SchedulerClient {
         }
       }
     }
-    // 网络层失败统一成 status 0，调用方据此区分“调度机不可达”和业务错误
+    // Normalize network-layer failures to status 0, so the caller can distinguish "scheduler unreachable" from business errors
     if (lastErr instanceof SchedulerError) throw lastErr;
     throw new SchedulerError(0, "SCHEDULER_UNREACHABLE", String((lastErr as Error)?.message ?? lastErr));
   }
 
-  /** 原始字节请求（制品上传/下载）：同样走 HTTPS / mTLS，不经过 JSON 解析。 */
+  /** Raw byte request (artifact upload/download): also over HTTPS / mTLS, without JSON parsing. */
   private async rawRequest(
     method: string,
     path: string,
@@ -216,7 +216,7 @@ export class SchedulerClient {
     allowed_task_types: string[];
     capabilities: { healthy: string[]; unhealthy?: string[] };
     config_version: number;
-    /** 工作能力值 W 与明细；旧调度机不认识这两个字段时会忽略。 */
+    /** Work capability score W and detail; an old scheduler that does not recognize these two fields ignores them. */
     capability_score?: number;
     capability_detail?: InstanceConfig["capability_detail"];
   }) {
@@ -232,7 +232,7 @@ export class SchedulerClient {
     return this.request<{ instance_id: string; state: string }>("POST", "/v1/instances/heartbeat", input);
   }
 
-  /** 领取。没有候选返回 null（204）。网络失败不自动重试，交给调用方的循环节奏。 */
+  /** Claim. Returns null (204) when there are no candidates. Network failures are not auto-retried; that is left to the caller's loop cadence. */
   claim(instanceId: string): Promise<Assignment | null> {
     return this.request<Assignment>("POST", "/v1/claim", { instance_id: instanceId }, { retries: 0 });
   }
@@ -268,7 +268,7 @@ export class SchedulerClient {
     );
   }
 
-  /** 配置同步。版本未变时调度机回 304，这里归一化成 null。 */
+  /** Config sync. When the version is unchanged the scheduler returns 304, normalized to null here. */
   config(instanceId: string, version?: number) {
     const qs = version === undefined ? "" : `?version=${encodeURIComponent(version)}`;
     return this.request<{
@@ -282,7 +282,7 @@ export class SchedulerClient {
     }>("GET", `/v1/instances/${instanceId}/config${qs}`);
   }
 
-  /** 注销。有在途任务且 force=false 时调度机回 409。 */
+  /** Deregister. With in-flight tasks and force=false, the scheduler returns 409. */
   deregister(instanceId: string, input: { reason?: string; force?: boolean } = {}) {
     return this.request<{ instance_id: string; state: string; active_attempts: number }>(
       "POST",
@@ -291,7 +291,7 @@ export class SchedulerClient {
     );
   }
 
-  // ---------------- 制品（§7.8）
+  // ---------------- Artifacts (§7.8)
 
   createArtifact(input: {
     task_id: string;
@@ -307,7 +307,7 @@ export class SchedulerClient {
     }>("POST", "/v1/artifacts", input);
   }
 
-  /** 原始字节上传，不走 JSON */
+  /** Raw byte upload, not JSON */
   async uploadArtifactContent(artifactId: string, content: Buffer): Promise<void> {
     const res = await this.rawRequest(
       "PUT",
@@ -329,11 +329,11 @@ export class SchedulerClient {
   }
 
   /**
-   * 下载制品原始字节。
+   * Download artifact raw bytes.
    *
-   * 调度机只授权两类读取：本实例自己的制品，或调度机在任务
-   * `requirements.upstream_artifacts` 里显式交接的上游制品。调用方仍要
-   * 自己按交接单里的 sha256 复核，不能信任传输层。
+   * The scheduler authorizes only two kinds of reads: this instance's own artifacts, or upstream artifacts the scheduler
+   * explicitly handed over in the task's `requirements.upstream_artifacts`. The caller must still
+   * re-verify against the sha256 in the handoff record; the transport layer cannot be trusted.
    */
   async downloadArtifactContent(
     artifactId: string,

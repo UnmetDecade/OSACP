@@ -11,13 +11,13 @@ export interface RegisterInput {
   role_id: string;
   host_id: string;
   agent_profile_id: string;
-  /** Agent Profile 的实际加载版本；任务信封按它匹配（§2.2） */
+  /** Actually loaded version of the Agent Profile; task envelopes are matched by it (§2.2) */
   agent_profile_version?: string;
-  /** 实例绑定的 API Profile 引用；任务只能使用这个集合的子集 */
+  /** API Profile references bound to the instance; a task may only use a subset of this set */
   api_profile_ids?: string[];
   allowed_task_types: string[];
   capabilities: { healthy: string[]; unhealthy?: string[] };
-  /** 工作能力值 0–1000；不传则由 capability_detail 计算，两者都不传则沿用旧值 */
+  /** Capability score 0–1000; omitted means compute from capability_detail, and omitting both keeps the old value */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
   config_version: number;
@@ -26,8 +26,8 @@ export interface RegisterInput {
 }
 
 /**
- * 注册。Host Runtime 只会为“已下发并被本机准入”的实例调用它；
- * 调度机不信任声明本身，注册只建“候选”记录，必须 ONLINE 才可领取。
+ * Registration. Host Runtime only calls it for instances "dispatched and locally admitted";
+ * the scheduler does not trust the declaration itself: registration only creates a "candidate" record, and it must be ONLINE to claim.
  */
 export async function register(input: RegisterInput) {
   if (!input.instance_id || !input.role_id || !input.host_id) {
@@ -36,11 +36,11 @@ export async function register(input: RegisterInput) {
   const host = await q1("SELECT host_id FROM hosts WHERE host_id = $1", [input.host_id]);
   if (!host) throw new ApiError(409, "HOST_UNKNOWN", `主机未注册: ${input.host_id}`);
 
-  // 首次注册时把声明的能力固化成上限；重复注册不放大上限（§7.3 只能收窄）
+  // On first registration, freeze the declared capabilities as a ceiling; re-registration does not raise it (§7.3: only narrow)
   const declared = input.capabilities ?? { healthy: [] };
   const ceiling = [...new Set([...(declared.healthy ?? []), ...(declared.unhealthy ?? [])])];
 
-  // 工作能力值：优先用创建方算好的 score；只给了明细就本地算；都没有则不覆盖旧值。
+  // Capability score: prefer the score computed by the creator; if only the detail is given, compute locally; if neither, do not overwrite the old value.
   const detail =
     input.capability_detail === undefined ? null : normalizeCapabilityDetail(input.capability_detail);
   const score =
@@ -73,8 +73,8 @@ export async function register(input: RegisterInput) {
          payload_schemas = EXCLUDED.payload_schemas,
          capability_score = COALESCE($13, role_instances.capability_score),
          capability_detail = COALESCE($14::jsonb, role_instances.capability_detail),
-         -- 注册代表“新进程起来了”：上一进程的 drain / 心跳超时状态全部作废。
-         -- 否则上一个进程退出时发的 DRAINING 心跳会把这个实例永久卡住。
+         -- Registration means "a new process has started": the previous process's drain / heartbeat-timeout state is discarded.
+         -- Otherwise the DRAINING heartbeat sent when the previous process exits would leave this instance stuck forever.
          state = CASE WHEN role_instances.state IN ('OFFLINE','FAILED','DRAINING','SUSPECT')
                       THEN 'STARTING' ELSE role_instances.state END,
          drain_deadline_at = NULL,
@@ -115,7 +115,7 @@ export async function heartbeat(input: HeartbeatInput) {
     `UPDATE role_instances
         SET last_heartbeat_at = app_now(),
             updated_at = app_now(),
-            -- 心跳不能把管理员下发的 DRAINING 覆盖回 ONLINE；恢复只能走 resume
+            -- Heartbeats must not overwrite an admin-issued DRAINING back to ONLINE; recovery only goes through resume.
             state = CASE
                       WHEN $2::text IS NULL THEN state
                       WHEN state = 'DRAINING' AND $2::text = 'ONLINE' THEN 'DRAINING'
@@ -137,7 +137,7 @@ export async function heartbeat(input: HeartbeatInput) {
   if (!rows.length) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${input.instance_id}`);
   const row = rows[0];
 
-  // 心跳响应带上宿主状态与配置版本（§7.2），实例据此自我限流、按需拉配置
+  // The heartbeat response carries host state and config version (§7.2), so the instance can self-throttle and pull config on demand
   const host = await q1<{ host_state: string }>(
     `SELECT host_state FROM hosts WHERE host_id = $1`,
     [row.host_id],
@@ -165,9 +165,9 @@ export async function listInstances() {
 }
 
 /**
- * 心跳扫描：45s 无心跳 → SUSPECT（不参与新领取，在途租约继续）
- *            90s 无心跳 → OFFLINE
- * 只做状态标注，不回收租约——回收由租约清理负责，两者互不越界。
+ * Heartbeat sweep: 45s without heartbeat → SUSPECT (excluded from new claims; in-flight leases continue)
+ *            90s without heartbeat → OFFLINE
+ * Only marks state, never reaps leases — reaping belongs to lease cleanup; the two stay out of each other's way.
  */
 export async function sweepHeartbeats(opts: {
   suspectAfter: number;
@@ -197,7 +197,7 @@ export async function sweepHeartbeats(opts: {
   };
 }
 
-// ---------------------------------------------------------------- 实例生命周期（§7.3 / §7.10–7.12）
+// ---------------------------------------------------------------- Instance lifecycle (§7.3 / §7.10–7.12)
 
 export interface CapabilitiesInput {
   declared?: {
@@ -210,10 +210,10 @@ export interface CapabilitiesInput {
 }
 
 /**
- * 能力声明（§7.3）。只能收窄：
- *   - task_types 必须是 allowed_task_types 的子集
- *   - capabilities 必须是注册时固化下来的 capability_ceiling 的子集
- * 扩大一律 403 CAPABILITY_MISMATCH，要扩必须在 PCS 改配置后重新注册。
+ * Capability declaration (§7.3). Narrow-only:
+ *   - task_types must be a subset of allowed_task_types
+ *   - capabilities must be a subset of the capability_ceiling frozen at registration
+ * Any widening is 403 CAPABILITY_MISMATCH; to widen, change config in PCS and re-register.
  */
 export async function setCapabilities(instanceId: string, input: CapabilitiesInput) {
   return tx(async (c) => {
@@ -274,8 +274,8 @@ export async function setCapabilities(instanceId: string, input: CapabilitiesInp
 }
 
 /**
- * drain（§7.10）：不再派发新任务，在途任务继续；超时未完成 → OFFLINE。
- * claim 只认 ONLINE，所以改状态就等于停派。
+ * drain (§7.10): stop dispatching new tasks while in-flight tasks continue; timeout without completion → OFFLINE.
+ * claim only accepts ONLINE, so changing state is equivalent to stopping dispatch.
  */
 export async function drain(
   instanceId: string,
@@ -295,7 +295,7 @@ export async function drain(
       throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `实例状态 ${inst.state}，不能 drain`);
     }
 
-    // 幂等：已经在 drain 就沿用原截止时间，不因重复调用而延长
+    // Idempotent: if already draining, keep the original deadline; repeated calls do not extend it
     const row = (
       await c.query(
         `UPDATE role_instances
@@ -325,7 +325,7 @@ export async function drain(
   });
 }
 
-/** 取消 drain：只有 DRAINING 需要恢复；已 ONLINE 幂等返回 */
+/** Cancel drain: only DRAINING needs recovery; already ONLINE returns idempotently */
 export async function resume(instanceId: string) {
   return tx(async (c) => {
     const inst = (
@@ -350,8 +350,8 @@ export async function resume(instanceId: string) {
 }
 
 /**
- * 注销（§7.12）。force=false 且有在途租约 → 409。
- * 注销只把实例置为 OFFLINE；在途租约到期后由 reaper 回收，不在这里抢跑。
+ * Deregister (§7.12). force=false with an in-flight lease → 409.
+ * Deregistration only sets the instance OFFLINE; in-flight leases are reaped by the reaper on expiry, not raced here.
  */
 export async function deregister(
   instanceId: string,
@@ -392,9 +392,9 @@ export async function deregister(
 }
 
 /**
- * 配置同步（§7.11）。版本没变返回 null，由 HTTP 层回 304。
- * 只同步引用（Agent Profile id/version、API Profile id 列表）与白名单/策略；
- * Profile 的实现、地址与密钥由 PCS 与本地 Secret Store 管理，永远不进配置或信封。
+ * Config sync (§7.11). Returns null when the version is unchanged; the HTTP layer responds 304.
+ * Only sync references (Agent Profile id/version, API Profile id list) and allowlists/policy;
+ * Profile implementations, addresses and secrets are managed by PCS and the local Secret Store and never enter config or envelopes.
  */
 export async function syncConfig(instanceId: string, version?: number | null) {
   const inst = await q1<any>(`SELECT * FROM role_instances WHERE instance_id = $1`, [instanceId]);
@@ -428,7 +428,7 @@ export async function syncConfig(instanceId: string, version?: number | null) {
   };
 }
 
-/** drain 超时：DRAINING 且过了截止时间 → OFFLINE；在途租约交给 reaper */
+/** Drain timeout: DRAINING past the deadline → OFFLINE; in-flight leases go to the reaper */
 export async function sweepDrainTimeouts(): Promise<string[]> {
   const rows = await q(
     `UPDATE role_instances

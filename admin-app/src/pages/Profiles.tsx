@@ -17,8 +17,8 @@ import { Icon } from "../components/Icon";
 type Tab = "agent" | "api";
 
 /**
- * Profile 维护：Agent Profile 与 API Profile。
- * 部署构建机 / 调度机时从这里选，不用再改环境变量。
+ * Profile management: Agent Profile and API Profile.
+ * Pick from here when deploying builders / schedulers instead of editing environment variables.
  */
 export function ProfilesPage() {
   const live = useLive();
@@ -299,7 +299,7 @@ function agentKindOf(value: AgentProfile): AgentKind {
   return provider === "claude" || provider === "codex" ? provider : "custom";
 }
 
-/** Profile 版本就是 Agent 的真实版本：取库里同类型已注册的最高版本。 */
+/** The Profile version is the Agent's real version: take the highest registered version of the same type from the database. */
 function agentVersion(kind: AgentKind): string {
   if (kind === "custom") return "latest";
   const hit = db.agents
@@ -368,7 +368,7 @@ function AgentProfileModal({
   );
   const [description, setDescription] = useState(value?.description ?? "");
   const [systemPrompt, setSystemPrompt] = useState(value?.system_prompt ?? "");
-  // 空字符串表示默认全部权限；运行时把空 allowed_tools 视为不限制。
+  // An empty string means all permissions by default; the runtime treats an empty allowed_tools as unrestricted.
   const [permissions, setPermissions] = useState((value?.allowed_tools ?? []).join(", "));
   const [maxTurns, setMaxTurns] = useState(value?.limits?.max_turns?.toString() ?? "");
   const [maxWall, setMaxWall] = useState(value?.limits?.max_wall_seconds?.toString() ?? "");
@@ -421,7 +421,7 @@ function AgentProfileModal({
           capabilities: splitList(capabilities),
           description: description.trim(),
           system_prompt: systemPrompt.trim(),
-          // 人设 / 语气 / 目标已从面板移除；保存时清空，避免留下看不见的旧配置。
+          // Persona / tone / goals were removed from the panel; clear them on save so invisible stale config is not left behind.
           persona: "",
           tone: "",
           goals: "",
@@ -643,7 +643,7 @@ function ApiProfileModal({
         onSaved,
       );
       if (apiKey.trim()) {
-        // 密钥只写进 Secret Store；失败时保留弹窗与已建好的 Profile，重试不会再建一份。
+        // The key is written only to the Secret Store; on failure keep the dialog and the already-created Profile so a retry does not create another one.
         setCreatedId(id);
         await writeApiKey(id, apiKey.trim());
         setApiKey("");

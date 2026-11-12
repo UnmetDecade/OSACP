@@ -9,8 +9,8 @@ export interface InstanceClaims {
 }
 
 /**
- * 最小 ES256 JWT 验签：只验证签名、受众与时间。
- * 令牌由 PCS 签发，私钥不在 Secret Store。
+ * Minimal ES256 JWT verification: only checks the signature, audience, and time.
+ * Tokens are issued by the PCS; the private key is not in the Secret Store.
  */
 export function verifyInstanceToken(
   token: string,

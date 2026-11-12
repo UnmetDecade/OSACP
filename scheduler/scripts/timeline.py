@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 /v1/tasks/{id}/events 的输出打印成时间线。"""
+"""Print the /v1/tasks/{id}/events output as a timeline."""
 import json
 import sys
 

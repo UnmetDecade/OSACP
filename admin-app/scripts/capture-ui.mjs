@@ -1,11 +1,11 @@
 /**
- * 用本机 Chrome 截图管理应用全部路由。
+ * Capture all admin app routes with local Chrome.
  *
- *   node scripts/capture-ui.mjs            # 全路由截图
- *   ADMIN_TOKEN=... node scripts/capture-ui.mjs            # 带令牌截图
+ *   node scripts/capture-ui.mjs            # capture all routes
+ *   ADMIN_TOKEN=... node scripts/capture-ui.mjs            # capture with a token
  *
- * 令牌只写进当前标签页的 sessionStorage，不落盘、不打印。
- * 输出到 admin-app/.screenshots/。
+ * The token is written only into the current tab's sessionStorage; never persisted or printed.
+ * Output goes to admin-app/.screenshots/.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -166,13 +166,13 @@ try {
     await shot(`${name}${SUFFIX}`);
   }
 
-  // 实时模式下确认「创建任务」弹窗能列出可接任务的构建机。
+  // In live mode, confirm the "Create task" dialog lists builders that can take tasks.
   if (LIVE) {
     await send("Page.navigate", { url: `${BASE}/tasks?new=1` });
     await sleep(6000);
     await shot(`create-task${SUFFIX}`);
 
-    // 主机删除弹窗：只打开，不点确认，避免真的删数据。
+    // Host deletion dialog: open it only, do not confirm, to avoid actually deleting data.
     await send("Page.navigate", { url: `${BASE}/hosts` });
     await sleep(3000);
     await evalJs(`(() => {
@@ -183,7 +183,7 @@ try {
     })()`);
     await sleep(800);
     await shot(`delete-host${SUFFIX}`);
-    // 勾选「同时删除容器并清除数据」，确认按钮切换成彻底删除。
+    // Check "also delete containers and wipe data"; the confirm button switches to a full delete.
     await evalJs(`(() => {
       const rows = document.querySelectorAll('.check-row input');
       const last = rows[rows.length - 1];
@@ -195,7 +195,7 @@ try {
     await shot(`delete-host-clear${SUFFIX}`);
   }
 
-  // 详情页交互。
+  // Detail page interactions.
   if (!LIVE) {
     await send("Page.navigate", { url: `${BASE}/tasks` });
     await sleep(1200);
@@ -235,7 +235,7 @@ try {
     await sleep(1200);
     await shot(`terminal-help${SUFFIX}`);
 
-    // 切换主机后，左上方页面应跟着换到另一台主机的组件。
+    // After switching hosts, the page in the upper left should switch to the other host's components.
     await send("Page.navigate", { url: `${BASE}/` });
     await sleep(1200);
     await evalJs("document.querySelector('.host-switch')?.click()");

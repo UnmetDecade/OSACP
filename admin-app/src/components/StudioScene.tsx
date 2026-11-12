@@ -9,34 +9,34 @@ import { osLabel } from "../api";
 import type { Host, Instance } from "../types";
 
 /**
- * AI Agent 工作室的场景树。
+ * Scene tree for the AI Agent studio.
  *
- * 结构跟架构图一致：本机根调度机在上，下面挂它名下的构建机和结点调度机；
- * 结点调度机继续递归挂自己的构建机与下一层调度机。并入本机的主机，其根调度机
- * 对外就是本机根下的一个结点，同样递归展开。
+ * The structure matches the architecture diagram: the local root scheduler on top, with its builders and node schedulers below;
+ * node schedulers recursively hold their own builders and next-level schedulers. For hosts folded into this one, their root schedulers
+ * appear externally as nodes under the local root and expand recursively in the same way.
  *
- * 连线不再用固定宽度的 CSS 伪元素拼总线，而是按卡片的实际位置画一层 SVG：
- * 每张子卡片一条从父卡片底部中线出发、圆角拐到自己中线的路径。子卡片宽度
- * 不一致时线也能准确落在卡片中线，不会出现「竖线差几像素」的错位。
+ * Connections no longer use fixed-width CSS pseudo-elements to build a bus; instead an SVG layer is drawn from the cards' actual positions:
+ * each child card gets a path from the parent's bottom center, rounding a corner to its own center line. Even when child cards have
+ * different widths the lines land exactly on the center line, with no "vertical line off by a few pixels" misalignment.
  */
 
-/** 控制面引用（parent_scheduler_id / scheduler_id）用 deployment_id，实例名只用于显示。 */
+/** Control plane references (parent_scheduler_id / scheduler_id) use deployment_id; instance names are for display only. */
 const refOf = (i: Instance | undefined) => i?.deployment_id ?? i?.id ?? "";
 
 type TreeNode = {
   scheduler: Instance;
   host: Host | undefined;
-  /** 对外角色：本机根 or 结点（含并入主机的根）。 */
+  /** External role: local root or node (including the root of a folded host). */
   role: "root" | "node";
   children: TreeNode[];
   builders: Instance[];
   score: number;
 };
 
-/** 一条连线：目标卡片、路径、是否在线（在线才跑信号）。 */
+/** One connection: target card, path, and whether it is online (signals run only when online). */
 type Edge = { id: string; d: string; online: boolean; delay: number };
 
-/** 挂到场景里的卡片元素；parent 为空表示它是本机根。 */
+/** Card element mounted in the scene; an empty parent means it is the local root. */
 type NodeRef = { el: HTMLElement; parent?: string; online: boolean };
 
 function schedulersOn(hostId: string): Instance[] {
@@ -48,8 +48,8 @@ function rootOn(hostId: string): Instance | undefined {
 }
 
 /**
- * 某台调度机名下的构建机。
- * 构建机的 scheduler_id 是 deployment_id；旧数据没有时归本机根调度机。
+ * Builders owned by a scheduler.
+ * A builder's scheduler_id is a deployment_id; legacy data without one falls back to the local root scheduler.
  */
 function buildersOwnedBy(s: Instance, hostRoot: Instance | undefined): Instance[] {
   const own = s.id;
@@ -62,7 +62,7 @@ function buildersOwnedBy(s: Instance, hostRoot: Instance | undefined): Instance[
   );
 }
 
-/** 同主机、以这台调度机为父的结点调度机。 */
+/** Node schedulers on the same host whose parent is this scheduler. */
 function nodeSchedulersUnder(parent: Instance): Instance[] {
   const ref = refOf(parent);
   return schedulersOn(parent.host_id).filter(
@@ -74,7 +74,7 @@ function nodeSchedulersUnder(parent: Instance): Instance[] {
   );
 }
 
-/** 并入这台主机的主机：它们的根调度机在本机视角里是结点。 */
+/** Hosts folded into this host: their root schedulers appear as nodes from this host's perspective. */
 function mergedChildHosts(hostId: string): Host[] {
   return db.hosts.filter((h) => h.parent_host_id === hostId);
 }
@@ -87,8 +87,8 @@ function buildNode(
   visited.add(scheduler.key);
   const hostRoot = rootOn(scheduler.host_id);
   const builders = buildersOwnedBy(scheduler, hostRoot);
-  // 并入的主机如果只有裸机构建机、没有自己的调度机，就没有结点可挂，
-  // 直接挂到本机根调度机下面，接入后能立刻在树里看到。
+  // A folded host with only bare-metal builders and no scheduler of its own has no node to attach to, so
+  // it is attached directly under the local root scheduler, and appears in the tree immediately after onboarding.
   if ((scheduler.scheduler_role ?? "root") === "root") {
     for (const childHost of mergedChildHosts(scheduler.host_id)) {
       if (rootOn(childHost.id)) continue;
@@ -103,7 +103,7 @@ function buildNode(
     if (visited.has(child.key)) continue;
     children.push(buildNode(child, "node", visited));
   }
-  // 只有本机的根会承载并入主机；结点调度机不跨主机。
+  // Only the local root carries folded hosts; node schedulers never span hosts.
   if ((scheduler.scheduler_role ?? "root") === "root") {
     for (const childHost of mergedChildHosts(scheduler.host_id)) {
       const childRoot = rootOn(childHost.id);
@@ -127,7 +127,7 @@ function buildNode(
   };
 }
 
-/** 本机这一棵子树；父链中断的结点调度机也挂回根，避免部署后「看不见」。 */
+/** This host's subtree; node schedulers with a broken parent chain also fall back to the root so they are not "invisible" after deployment. */
 function buildTree(host: Host): TreeNode | undefined {
   const root = rootOn(host.id);
   if (!root) return undefined;
@@ -143,7 +143,7 @@ function buildTree(host: Host): TreeNode | undefined {
   return tree;
 }
 
-/** 父卡片底部中线 → 子卡片顶部中线，中间一次圆角拐弯。 */
+/** From the parent's bottom center to the child's top center, with one rounded corner in between. */
 function elbow(x0: number, y0: number, x1: number, y1: number): string {
   const dy = y1 - y0;
   const dx = Math.abs(x1 - x0);
@@ -161,7 +161,7 @@ function elbow(x0: number, y0: number, x1: number, y1: number): string {
   ].join(" ");
 }
 
-/** 卡片注册器：记录元素、父节点和在线状态，布局结束后统一算路径。 */
+/** Card registry: records elements, parents and online state, then computes paths after layout. */
 type Register = (key: string, parent: string | undefined, online: boolean) => (el: HTMLElement | null) => void;
 
 export function StudioScene({
@@ -171,10 +171,10 @@ export function StudioScene({
   onDeployBuilder,
 }: {
   host: Host | undefined;
-  /** 在指定调度机下新增角色；不传表示本机入口（根调度机）。 */
+  /** Add a character under a given scheduler; omitting it means the local entry point (root scheduler). */
   onAdd: (parent?: Instance) => void;
   onDeployScheduler: () => void;
-  /** 工作室还没有调度树时，从构建机卡片进入部署说明。 */
+  /** When the studio has no scheduling tree yet, go from the builder card to the deployment instructions. */
   onDeployBuilder: () => void;
 }) {
   const treeRef = useRef<HTMLDivElement>(null);
@@ -189,7 +189,7 @@ export function StudioScene({
     [],
   );
 
-  // 按真实布局算连线：父卡片底边中点 → 子卡片顶边中点。
+  // Compute connections from the real layout: parent's bottom center → child's top center.
   const measure = useCallback(() => {
     const tree = treeRef.current;
     if (!tree) return;
@@ -211,23 +211,23 @@ export function StudioScene({
       next.push({
         id: key,
         d: elbow(x0, y0, x1, y1),
-        // 只要链路一端活着就出信号：调度机在线时，刚拉起的「启动中」构建机
-        // 也能看到派发动画，而不是等它 ONLINE 才有动静。
-        // 「＋」占位卡不是真实结点，不跑信号。
+        // Emit a signal when either end of the link is alive: while the scheduler is online, a just-started builder
+        // also shows the dispatch animation instead of waiting until it is ONLINE.
+        // The "+" placeholder card is not a real node and runs no signal.
         online: !key.startsWith("add:") && (node.online || parent.online),
-        // 同一排每条线的节拍错开一点，不要整齐地一起闪。
+        // Stagger the timing of lines in the same row slightly so they do not all flash in unison.
         delay: -((keys.indexOf(key) % 4) * 0.6),
       });
     }
     setEdges((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
   }, []);
 
-  // 每次渲染后重算，卡片增减或文案变化都能跟上。
+  // Recompute after every render so added/removed cards or copy changes are picked up.
   useLayoutEffect(() => {
     measure();
   });
 
-  // 窗口缩放、字体晚到、侧栏展开都会改变卡片位置。
+  // Window resize, late-loading fonts and sidebar expansion all change card positions.
   useEffect(() => {
     const tree = treeRef.current;
     if (!tree) return;
@@ -251,8 +251,8 @@ export function StudioScene({
   }
 
   const tree = buildTree(host);
-  // 没有调度树不代表没有构建机：裸机构建机可以独立于调度机存在，
-  // 这时要展示已经在跑的构建机，而不是再让用户部署一次。
+  // No scheduling tree does not mean no builders: a bare-metal builder can exist independently of a scheduler,
+  // so show the builders already running instead of asking the user to deploy again.
   const builders = db.instances.filter((i) => i.role === "builder" && i.host_id === host.id);
   return (
     <div className="scene">
@@ -275,7 +275,7 @@ export function StudioScene({
   );
 }
 
-/** 连线层：先画静态线，再画沿同一条路径往返的信号。 */
+/** Connection layer: draw static lines first, then signals traveling back and forth along the same paths. */
 function SceneEdges({ edges }: { edges: Edge[] }) {
   return (
     <svg className="scene-edges" width="100%" height="100%" aria-hidden>
@@ -297,7 +297,7 @@ function SceneEdges({ edges }: { edges: Edge[] }) {
   );
 }
 
-/** 还没部署角色时的入口卡片：调度机 + 构建机。 */
+/** Entry cards before any role is deployed: scheduler + builder. */
 function EmptyRoleCard({
   role,
   onDeploy,
@@ -305,7 +305,7 @@ function EmptyRoleCard({
 }: {
   role: "scheduler" | "builder";
   onDeploy?: () => void;
-  /** 已经有构建机时展示它的真实状态，不再提示部署。 */
+  /** When a builder already exists show its real state instead of prompting to deploy. */
   builder?: Instance;
 }) {
   const isScheduler = role === "scheduler";
@@ -388,7 +388,7 @@ function Subtree({
   const s = node.scheduler;
   const online = s.state === "ONLINE";
   const merged = node.host !== undefined && node.host.id !== scopeHostId;
-  // 并入主机的角色要去那台主机上建；本机自己的根和结点都能直接加角色。
+  // Roles for a folded host must be created on that host; the local root and its nodes can add roles directly.
   const canAddHere = !merged;
   const hasBranch =
     isRoot || node.children.length > 0 || node.builders.length > 0 || canAddHere;
@@ -456,7 +456,7 @@ function Subtree({
   );
 }
 
-/** 构建机给人看的状态：工作中 / 休息 / 离线 / 故障，而不是实例生命周期。 */
+/** Builder state as people see it: working / idle / offline / failed, not the instance lifecycle. */
 function builderStatus(builder: Instance, runningTask: ReturnType<typeof db.tasks.find>) {
   if (runningTask) return { value: "RUNNING", text: t("工作") };
   switch (builder.state) {
@@ -488,7 +488,7 @@ function BuilderLeaf({
   );
   const online = builder.state === "ONLINE";
   const status = builderStatus(builder, runningTask);
-  // 每张卡片底部都标自己的主机名，和调度机卡片一致。
+  // Every card labels its own host name at the bottom, matching the scheduler cards.
   const host = db.hosts.find((h) => h.id === builder.host_id);
   return (
     <div className="scene-subtree">

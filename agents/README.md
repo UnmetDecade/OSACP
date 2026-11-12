@@ -1,25 +1,26 @@
-# CLI Agent 适配器
+# CLI Agent Adapter
 
-把 Claude Code / Codex 等命令行 Agent 接到平台的 stdio JSON-RPC 2.0 边界上。
+> English · [简体中文](README.zh-CN.md)
 
-| 文件 | 作用 |
+Connects command-line agents such as Claude Code and Codex to the platform's stdio JSON-RPC 2.0 boundary.
+
+| File | Purpose |
 |---|---|
-| `cli-agent.mjs` | 生产适配器：把任务与工作区交给外部 CLI，把 stdout 映射为 `agent.result` |
-| `demo-agent.mjs` | 最小参考实现，用于理解协议边界 |
-| `test-cli-agent.mjs` | 协议级冒烟测试（stub CLI，不需要真实模型或凭据） |
-| `fixtures/` | 测试用的 stub CLI |
+| `cli-agent.mjs` | Production adapter: hands the task and workspace to an external CLI and maps stdout to `agent.result` |
+| `demo-agent.mjs` | Minimal reference implementation for understanding the protocol boundary |
+| `test-cli-agent.mjs` | Protocol-level smoke test (stub CLI; no real model or credentials needed) |
+| `fixtures/` | Stub CLIs used by the tests |
 
-## 边界
+## Boundary
 
-- 适配器只拿到任务、工作区和工具句柄，拿不到实例令牌、Secret Store 或宿主机目录。
-- 外部 CLI 的 stdout/stderr 被捕获，只有适配器自己的 stdout 是协议通道。
-- 不把 `PLATFORM_TOOL_TOKEN` / `PLATFORM_API_PROXY` / `PLATFORM_API_PROFILES`
-  传给外部 CLI；其余变量由 `--pass-env` 逐项放行。
-- 每次执行使用平台分配的工作目录；取消时杀进程组，不留孤儿。
+- The adapter only receives the task, workspace and tool handle; it cannot see the instance token, Secret Store, or host directories.
+- The external CLI's stdout/stderr is captured; only the adapter's own stdout is the protocol channel.
+- `PLATFORM_TOOL_TOKEN` / `PLATFORM_API_PROXY` / `PLATFORM_API_PROFILES` are not passed to the external CLI; all other variables are allowed through one by one via `--pass-env`.
+- Each run uses the working directory assigned by the platform; cancellation kills the process group and leaves no orphans.
 
-## 用法
+## Usage
 
-Profile 的 `entrypoint` / `args` 示例：
+Example Profile `entrypoint` / `args`:
 
 ```json
 {
@@ -28,11 +29,11 @@ Profile 的 `entrypoint` / `args` 示例：
 }
 ```
 
-支持的 provider：`claude`、`codex`、`custom`（配合 `--command`）。
-常用参数：`--cli-arg`、`--extra-arg`、`--prompt-stdin`、`--max-wall`、
-`--no-result-file`、`--pass-env`。
+Supported providers: `claude`, `codex`, `custom` (together with `--command`).
+Common flags: `--cli-arg`, `--extra-arg`, `--prompt-stdin`, `--max-wall`,
+`--no-result-file`, `--pass-env`.
 
-## 测试
+## Tests
 
 ```bash
 node agents/test-cli-agent.mjs

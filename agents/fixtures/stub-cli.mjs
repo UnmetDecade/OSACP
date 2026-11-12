@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * 测试夹具：模拟一个接受 prompt 参数的外部 CLI Agent。
- * 只用于验证 agents/cli-agent.mjs 的协议、工作区和环境隔离，不参与生产。
+ * Test fixture: simulates an external CLI Agent that accepts a prompt argument.
+ * Used only to verify the protocol, workspace and environment isolation of agents/cli-agent.mjs; not used in production.
  */
 import fs from "node:fs";
 

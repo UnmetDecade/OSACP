@@ -219,18 +219,18 @@ describe("M3 fencing 与重复执行", () => {
       instance_id: "worker-a",
     });
 
-    // 实例“失联”：租约过期
+    // Instance "lost": lease expires
     await advance(301);
     const swept = await sweepLeases();
     assert.equal(swept.reclaimed.length, 1);
     assert.equal(swept.reclaimed[0].cause, "LEASE_EXPIRED");
 
-    // 退避结束后新实例接手，fencing 变为 2
+    // After backoff a new instance takes over; fencing becomes 2
     await advance(301);
     const second = await claimOrFail("worker-b");
     assert.equal(second.fencing_token, 2);
 
-    // 旧 attempt 这时才回写结果 —— 必须被拒绝
+    // Only now does the old attempt write back its result — it must be rejected
     await expectApiError(
       () =>
         submitResult(first.attempt_id, {
@@ -242,7 +242,7 @@ describe("M3 fencing 与重复执行", () => {
       "FENCING_STALE",
     );
 
-    // 新 attempt 正常完成
+    // The new attempt completes normally
     await startAck(second.attempt_id, {
       lease_token: second.lease_token,
       fencing_token: second.fencing_token,
@@ -285,7 +285,7 @@ describe("M3 fencing 与重复执行", () => {
     assert.equal(task.status, "QUEUED");
     assert.equal(task.attempt_count, 0);
 
-    // 再次领取必须成功：attempt_number 不能因为 attempt_count 回退而复用
+    // The next claim must succeed: attempt_number must not be reused because attempt_count rolled back
     const b = await claimOrFail("worker-b");
     assert.equal(b.attempt_number, 2);
     const rows = await q1<{ n: string }>(
@@ -316,7 +316,7 @@ describe("M4 重试与死信", () => {
     const task = await getTask(t.task_id);
     assert.equal(task.status, "QUEUED");
 
-    // 退避期内领不到
+    // Not claimable during backoff
     assert.equal(await claim({ instance_id: "worker-a" }), null);
     await advance(301);
     assert.ok(await claim({ instance_id: "worker-a" }));
@@ -393,7 +393,7 @@ describe("预留核对与孤儿 grant", () => {
     );
     assert.equal(orphan?.n, "0");
 
-    // 退避结束后由另一个实例接管，必须拿到新的 grant_id
+    // After backoff another instance takes over and must get a new grant_id
     await advance(300);
     const b = await claimOrFail("worker-b");
     assert.notEqual(b.grant_id, a.grant_id);
@@ -438,7 +438,7 @@ describe("M2 心跳与健康", () => {
 
     await expectApiError(() => claim({ instance_id: "worker-a" }), "INSTANCE_NOT_ELIGIBLE");
 
-    await advance(45); // 累计 91s
+    await advance(45); // 91s total
     const hb2 = await sweepHeartbeats({ suspectAfter: 45, offlineAfter: 90 });
     assert.deepEqual(hb2.offline.filter((id) => id.startsWith("worker-")).sort(), [
       "worker-a",
@@ -456,7 +456,7 @@ describe("M2 心跳与健康", () => {
     });
     await advance(46);
     await sweepHeartbeats({ suspectAfter: 45, offlineAfter: 90 });
-    // 租约仍在
+    // Lease still present
     const lease = await q1<{ n: number }>(
       `SELECT count(*)::int AS n FROM leases WHERE task_id = $1 AND released_at IS NULL`,
       [a.task_id],
@@ -477,7 +477,7 @@ describe("排序与准入", () => {
     const events = await listEvents(older.task_id);
     assert.ok(events.some((e) => e.event_type === "TASK_AGED"));
 
-    // 新任务仍在排队
+    // The new task is still queued
     assert.equal((await getTask(newer.task_id)).status, "QUEUED");
   });
 
@@ -504,7 +504,7 @@ describe("排序与准入", () => {
     assert.equal(task.resource_block_reason, "INSUFFICIENT_MEMORY");
     assert.ok(task.resource_evaluated_at);
 
-    // 资源恢复后可以领取
+    // Claimable once resources recover
     await q(`UPDATE hosts SET mem_available_bytes = 12884901888 WHERE host_id = 'host-a'`);
     await claimOrFail("worker-a");
   });
@@ -552,12 +552,12 @@ describe("M5 实例生命周期", () => {
     });
     assert.deepEqual((ok as any).capabilities.healthy, ["code.edit"]);
 
-    // 能力不能扩到声明之外
+    // Capabilities cannot exceed the declaration
     await expectApiError(
       () => setCapabilities("worker-a", { declared: { capabilities: ["code.edit", "gpu"] } }),
       "CAPABILITY_MISMATCH",
     );
-    // 任务类型不能越过白名单
+    // Task types cannot cross the allowlist
     await expectApiError(
       () => setCapabilities("worker-a", { declared: { task_types: ["task.commit"] } }),
       "CAPABILITY_MISMATCH",
@@ -578,10 +578,10 @@ describe("M5 实例生命周期", () => {
     assert.equal((d as any).state, "DRAINING");
     assert.equal((d as any).active_attempts, 1);
 
-    // 不再派发新任务
+    // No new tasks are dispatched
     await expectApiError(() => claim({ instance_id: "worker-a" }), "INSTANCE_NOT_ELIGIBLE");
 
-    // 在途任务可以正常结束
+    // In-flight tasks can finish normally
     await submitResult(a.attempt_id, {
       lease_token: a.lease_token,
       fencing_token: a.fencing_token,
@@ -589,7 +589,7 @@ describe("M5 实例生命周期", () => {
       summary: "ok",
     });
 
-    // 心跳上报 ONLINE 不能把管理员下发的 DRAINING 覆盖掉
+    // An ONLINE heartbeat must not overwrite an admin-issued DRAINING
     await heartbeat({ instance_id: "worker-a", state: "ONLINE" });
     const inst = await q1<{ state: string }>(
       `SELECT state FROM role_instances WHERE instance_id = 'worker-a'`,
@@ -663,7 +663,7 @@ describe("M5 实例生命周期", () => {
     assert.deepEqual(a.agent, { profile_id: "agp_worker_alpha", version: "1.0.0" });
     assert.deepEqual(a.api_profiles, ["api_mock", "api_meta"]);
 
-    // 信封里没有实现、地址或密钥值，只有引用
+    // The envelope has no implementation, address or secret values, only references
     const envelope = JSON.stringify({
       task_id: a.task_id,
       requirements: a.requirements,
@@ -682,7 +682,7 @@ describe("M5 实例生命周期", () => {
     });
     assert.deepEqual((cfg as any).api_profiles, ["api_mock", "api_meta"]);
 
-    // 换 Agent：只改引用，信封随之变化；任务定义与代码不动
+    // Switch Agent: only the reference changes and the envelope follows; task definitions and code stay put
     await register({
       instance_id: "worker-a",
       role_id: "worker",
@@ -751,7 +751,7 @@ describe("M6 Outbox 与事件推送", () => {
     assert.equal(payload.payload.fencing_token, a.fencing_token);
     assert.equal(assigned.aggregate_version, "2", "assign 后 version 应为 2");
 
-    // 游标：after 只拿更新的事件
+    // Cursor: after only returns newer events
     const firstId = Number(all[0].event_id);
     const rest = await listOutbox(firstId);
     assert.ok(rest.length < all.length);
@@ -801,7 +801,7 @@ describe("并发压力", () => {
 });
 
 describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
-  // 每个测试进程生成一次性 ES256 密钥对，私钥只在测试内存里
+  // Each test process generates a one-off ES256 key pair; the private key lives only in test memory
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const PUBLIC_PEM = publicKey.export({ type: "spki", format: "pem" }).toString();
   const PRIVATE_PEM = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -866,7 +866,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
   }
 
-  /** 起一个 wft_test 工作流，把 EXECUTE / REVIEW 跑成功，并走完制品通道 */
+  /** Start a wft_test workflow, run EXECUTE / REVIEW to success, and walk the artifact channel */
   async function reachApproval() {
     const { run, task } = await createWorkflowRun({
       workflow_template_id: "wft_test",
@@ -881,7 +881,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       fencing_token: review.fencing_token,
       instance_id: "reviewer-a",
     });
-    // 制品内容 → 服务端重算的摘要，这才是审批绑定的对象
+    // Artifact content → server-recomputed digest; this is what approval binds to
     const digest = await uploadArtifactFor(
       review.task_id,
       `review diff for ${review.task_id}`,
@@ -891,7 +891,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       fencing_token: review.fencing_token,
       instance_id: "reviewer-a",
       status: "SUCCEEDED",
-      // 故意上报一个假的摘要：审批必须采用制品通道确认的值
+      // Deliberately report a fake digest: approval must use the value confirmed by the artifact channel
       outputs: { subject_digest: "sha256:spoofed-by-executor" },
     });
 
@@ -916,7 +916,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
         approved_action_scope: ["svn.commit"],
       } as any,
     });
-    // 交接与审批字段只能由调度机在阶段推进 / 审批时写入
+    // Handoff and approval fields may only be written by the scheduler during phase advance / approval
     assert.deepEqual((task as any).requirements, { capabilities: ["code.edit"] });
   });
 
@@ -929,7 +929,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(waiting.approval_requests.length, 1);
     assert.equal(waiting.approval_requests[0].status, "PENDING");
 
-    // 管理应用审批中心的数据源：带任务 / 工作流上下文，管理应用不需要拼 SQL。
+    // Data source for the admin app approval center: includes task / workflow context, so the admin app need not write SQL.
     const listed = (await listApprovalRequests({ status: "PENDING" })) as any[];
     const row = listed.find((x) => x.approval_request_id === requestId);
     assert.ok(row, "待审批列表应包含当前请求");
@@ -938,11 +938,11 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(row.workflow_status, "WAITING_APPROVAL");
     assert.deepEqual(row.action_scope, ["svn.commit"]);
     assert.ok(row.evidence?.some((e: string) => e.startsWith("text/plain:")));
-    // 摘要来自服务端校验过的制品，不是执行器 outputs 里那个 spoofed 值
+    // The digest comes from the server-verified artifact, not the spoofed value in the executor's outputs
     assert.equal(waiting.approval_requests[0].subject_digest, digest);
     assert.notEqual(waiting.approval_requests[0].subject_digest, "sha256:spoofed-by-executor");
 
-    // 令牌绑定的摘要不对 → 拒绝
+    // Digest bound to the token is wrong → reject
     await expectApiError(
       () =>
         decideApproval({
@@ -957,7 +957,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       "APPROVAL_SUBJECT_CHANGED",
     );
 
-    // 令牌不是为这条请求签发的 → 拒绝
+    // Token was not issued for this request → reject
     await expectApiError(
       () =>
         decideApproval({
@@ -1046,8 +1046,8 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       approval_token: token,
     });
 
-    // 人为把请求改回 PENDING，模拟“请求被重新打开”；
-    // 此时令牌本身仍有效，只能靠 jti 唯一拦下重放
+    // Manually set the request back to PENDING to simulate "request reopened";
+    // the token itself is still valid, so only the unique jti can block the replay
     await q(
       `UPDATE approval_requests SET status = 'PENDING', decided_at = NULL
         WHERE approval_request_id = $1`,
@@ -1081,7 +1081,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
 
   it("无 PCS 公钥时审批 fail closed；实例令牌签名、受众、scope、自证都校验", async () => {
     const saved = process.env.PCS_PUBLIC_KEY;
-    // 1) 没配置公钥：审批直接 503
+    // 1) No public key configured: approval returns 503 directly
     delete process.env.PCS_PUBLIC_KEY;
     try {
       await assert.rejects(
@@ -1094,13 +1094,13 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
           }),
         (e: any) => e.code === "APPROVAL_NOT_CONFIGURED",
       );
-      // 实例鉴权退回共享令牌模式（未配置 AUTH_TOKEN 则放行）
+      // Instance auth falls back to shared-token mode (allow if AUTH_TOKEN is unset)
       assert.equal(requireInstanceAuth({ headers: {} } as any), null);
     } finally {
       process.env.PCS_PUBLIC_KEY = saved;
     }
 
-    // 2) 配了公钥后，实例接口必须拿到合法 JWT
+    // 2) With a public key configured, instance endpoints must receive a valid JWT
     const call = (token?: string) =>
       requireInstanceAuth({ headers: token ? { authorization: `Bearer ${token}` } : {} } as any);
 
@@ -1118,7 +1118,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(auth?.kind, "jwt");
     assert.equal(auth?.instance_id, "worker-a");
 
-    // 伪造签名（用另一把私钥重签）被拒
+    // A forged signature (re-signed with another private key) is rejected
     const other = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const forged = signJwt(
       { iss: "platform-control", aud: "scheduler", sub: "worker-b", exp: now() + 600 },
@@ -1126,11 +1126,11 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
     assert.throws(() => call(forged), (e: any) => e.code === "TOKEN_INVALID");
 
-    // 令牌主体不能冒充别的 instance
+    // The token subject cannot impersonate another instance
     assert.throws(() => assertSelf(auth!, "worker-b"), (e: any) => e.code === "ROLE_NOT_ALLOWED");
     assert.doesNotThrow(() => assertSelf(auth!, "worker-a"));
 
-    // scope 是硬边界
+    // Scope is a hard boundary
     const limited = call(instanceToken({ sub: "worker-a", scopes: ["instance:claim"] }));
     assert.throws(
       () => requireScope(limited!.claims!, "task:report"),
@@ -1172,12 +1172,12 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(own.sha256, sha);
     assert.equal(own.media_type, "text/plain");
 
-    // 同主机、同工作流的另一个角色也不行：只认属主或显式交接
+    // Another role on the same host and workflow is still denied: only the owner or an explicit handoff counts
     await expectApiError(
       () => readArtifactContent(art!.artifact_id, "reviewer-a"),
       "ROLE_NOT_ALLOWED",
     );
-    // 未配置鉴权的本地开发模式（instanceId 为空）才放行
+    // Only local development without auth (instanceId empty) is allowed
     assert.equal((await readArtifactContent(art!.artifact_id)).data.toString("utf8"), "build output");
 
     const verifyTask = await newTask({
@@ -1206,7 +1206,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       status: "SUCCEEDED",
       summary: "ok",
     });
-    // attempt 结束即收回交接授权，过期 attempt 不能继续拉制品
+    // Ending the attempt revokes the handoff authorization; an expired attempt cannot keep pulling artifacts
     await expectApiError(
       () => readArtifactContent(art!.artifact_id, "tester-a"),
       "ROLE_NOT_ALLOWED",
@@ -1274,7 +1274,7 @@ describe("工作能力值 W 与任务难度 D", () => {
     await q(`UPDATE role_instances SET capability_score = 600 WHERE instance_id = 'worker-b'`);
 
     const hard = await newTask({ difficulty: 300 });
-    // worker-a 的 W 不够：候选被过滤，返回 null，任务保持 QUEUED
+    // worker-a's W is insufficient: the candidate is filtered out, null is returned, and the task stays QUEUED
     assert.equal(await claim({ instance_id: "worker-a" }), null);
     assert.equal((await getTask(hard.task_id)).status, "QUEUED");
 
@@ -1295,14 +1295,14 @@ describe("工作能力值 W 与任务难度 D", () => {
   });
 
   it("结点上报的 ΣW 逐级相加，根节点不重复计算孙结点", async () => {
-    // 本机有一台 W=320 的构建机
+    // This machine has one builder with W=320
     await q(
       `INSERT INTO role_instances (instance_id, role_id, host_id, state, agent_profile_id,
                                    allowed_task_types, capabilities, capability_score, last_heartbeat_at)
        VALUES ('builder-w','builder','host-a','ONLINE','agent-b1',
                ARRAY['task.build'], '{"healthy":["code.edit"]}', 320, app_now())`,
     );
-    // child-b 子树 = 本地 200 + 孙结点 50 = 250；它只把 250 上报给 root-a
+    // child-b subtree = local 200 + grandchild 50 = 250; it reports only 250 to root-a
     await upsertNodeReport({
       node_id: "root-a",
       host_id: "host-a",
@@ -1328,7 +1328,7 @@ describe("工作能力值 W 与任务难度 D", () => {
     assert.equal(snap.subtree_score, 570);
     assert.equal(snap.children.length, 1);
 
-    // 孙结点不直接挂到 root-a，因此不会重复相加
+    // The grandchild is not attached directly to root-a, so it is not double-counted
     const nodes = await listNodes();
     assert.equal(nodes.length, 2);
   });
@@ -1342,7 +1342,7 @@ describe("跨调度机中继", () => {
        VALUES ($1, 'node-a', 'http://127.0.0.1:9', 'task_child', 'ACTIVE')`,
       [t.task_id],
     );
-    // 候选查询排除 ACTIVE 中继：本机有在线构建机也领不到
+    // The candidate query excludes ACTIVE relays: even with an online local builder, it cannot be claimed
     assert.equal(await claim({ instance_id: "worker-a" }), null);
     assert.equal((await getTask(t.task_id)).status, "QUEUED");
   });
@@ -1393,7 +1393,7 @@ describe("跨调度机中继", () => {
       task_id: "task_grandchild_holder",
       status: "SUCCEEDED",
       result_summary: "孙结点完成",
-      // 中间结点自己没执行，attempts 为空，输出挂在它的中继结果里
+      // The intermediate node did not execute; attempts is empty and outputs hang off its relay result
       attempts: [],
       relay: {
         state: "DONE",

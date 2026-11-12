@@ -3,15 +3,15 @@ import fs from "node:fs";
 import { PcsError } from "./errors.js";
 
 /**
- * SSH 私钥的静态加密。
+ * Static encryption of SSH private keys.
  *
- * PCS 需要长期持有远程主机的 SSH 私钥，才能重连、探测和滚动升级。私钥不能
- * 明文落库，也不能出现在接口返回值里：
- *   - 落库：AES-256-GCM，每条记录独立随机 IV；
- *   - 密钥：PCS_CREDENTIAL_KEY_FILE 指向的 32 字节文件（0600），与数据库分离；
- *   - 接口：只返回 fingerprint，私钥值永不回显。
+ * The PCS must hold remote hosts' SSH private keys long-term in order to reconnect, probe, and rolling-upgrade.
+ * Private keys must not be stored in plaintext or appear in API responses:
+ *   - at rest: AES-256-GCM, with an independent random IV per record;
+ *   - key: the 32-byte file (0600) pointed to by PCS_CREDENTIAL_KEY_FILE, kept separate from the database;
+ *   - API: returns only the fingerprint; the private key value is never echoed.
  *
- * 没配置密钥文件时，SSH 主机功能直接拒绝，而不是退回明文存储。
+ * When no key file is configured, SSH host features are rejected outright rather than falling back to plaintext storage.
  */
 export type SealedSecret = {
   ciphertext: string;
@@ -32,7 +32,7 @@ export function loadCredentialKey(file: string | null): Buffer | null {
   return key;
 }
 
-/** 允许原始 32 字节，或 64 位 hex / base64 文本，方便用 openssl 生成。 */
+/** Accepts raw 32 bytes, or 64-char hex / base64 text, so it is easy to generate with openssl. */
 function parseKey(raw: Buffer): Buffer {
   if (raw.length === 32) return raw;
   const text = raw.toString("utf8").trim();
@@ -64,19 +64,19 @@ export function openSecret(key: Buffer, sealed: SealedSecret): string {
   ]).toString("utf8");
 }
 
-/** 只用于界面辨认，不能反推私钥。 */
+/** Used only for UI identification; it cannot be reversed to the private key. */
 export function secretFingerprint(plaintext: string): string {
   return `sha256:${createHash("sha256").update(plaintext).digest("hex").slice(0, 32)}`;
 }
 
-/** 私钥格式的粗校验：真正能不能用由 SSH 探测说了算。 */
+/** Rough validation of the private key format: whether it actually works is decided by SSH probing. */
 export function looksLikePrivateKey(value: string): boolean {
   return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(value) && /-----END [A-Z0-9 ]*PRIVATE KEY-----/.test(value);
 }
 
 /**
- * 决定这台 SSH 主机用私钥还是密码登录。
- * 两个都没填时：新增主机直接报错；改主机则返回 null 表示沿用原凭据。
+ * Decide whether this SSH host logs in with a private key or a password.
+ * When neither is provided: adding a new host fails; updating a host returns null to keep the existing credential.
  */
 export function resolveAuthType(privateKey: string, password: string): "key" | "password";
 export function resolveAuthType(

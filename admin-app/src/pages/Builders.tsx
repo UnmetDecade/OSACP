@@ -17,7 +17,7 @@ export function Builders() {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("ALL");
 
-  // 和调度台一样按主机子树看：并入本机的主机上的构建机也一起列出来。
+  // Like the scheduler page, scope to the host subtree: builders on hosts folded into this one are listed too.
   const scopedHostIds = hostTreeIds(host?.id);
   const builders = db.instances.filter(
     (i) => i.role === "builder" && (!host || scopedHostIds.has(i.host_id)),
@@ -27,7 +27,7 @@ export function Builders() {
     const q = query.trim().toLowerCase();
     return !q || b.name.toLowerCase().includes(q) || (b.os ?? "").includes(q);
   });
-  // 每台主机一组、按主机名折叠；本机默认展开，并入主机默认收起。
+  // One group per host, collapsed by host name; the local host is expanded by default and folded hosts are collapsed.
   const groups = groupByHost(shown, host?.id);
   const filtering = query.trim() !== "" || state !== "ALL";
 
@@ -82,7 +82,7 @@ export function Builders() {
                 </HostFold>
               ))
             ) : (
-              // 只有一台主机（没有并入主机）时不用折叠，列表直接铺开。
+              // With only one host (no folded hosts), no collapsing is needed; the list is laid out flat.
               groups[0]?.items.map((b) => <BuilderRow key={b.key} builder={b} />)
             )}
           </div>
@@ -95,14 +95,14 @@ export function Builders() {
 function BuilderRow({ builder }: { builder: Instance }) {
   const running = db.tasks.find((t) => t.instance_id === builder.id && t.state === "RUNNING");
   const agent = db.agents.find((a) => a.id === builder.agent_profile_id);
-  // 构建机注册到指定调度机；旧数据没有 scheduler_id 时归本机根调度机。
+  // The builder registers with a specific scheduler; legacy data without scheduler_id falls back to the local root scheduler.
   const hostRoot = db.instances.find(
     (i) =>
       i.role === "scheduler" &&
       i.host_id === builder.host_id &&
       (i.scheduler_role ?? "root") === "root",
   );
-  // 按实例名归属；调度机重启换了 deployment_id 也能对上。
+  // Attribute by instance name, so it still matches when a scheduler restart changes the deployment_id.
   const scheduler = db.instances.find(
     (i) =>
       i.role === "scheduler" &&

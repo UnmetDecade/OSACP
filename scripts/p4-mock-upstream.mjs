@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * P4 验收用的外部 API 替身。
+ * External API stand-in for P4 acceptance.
  *
- * - 只接受 API Adapter 注入的 Bearer 凭据；Agent 直连会得到 401。
- * - 日志只写“认证是否通过”，不写凭据原文。
+ * - Only accepts the Bearer credential injected by the API Adapter; direct Agent connections get 401.
+ * - Logs only "whether authentication passed", never the raw credential.
  */
 import fs from "node:fs";
 import http from "node:http";

@@ -60,10 +60,10 @@ export class AdmissionError extends Error {
 }
 
 /**
- * 本机二次准入。校验 + 占用在同一个 promise 链里串行执行，
- * 两个任务不可能同时看到同一份可用内存。
+ * Local second-stage admission. Check + reserve run serially on the same promise chain,
+ * so two tasks can never see the same available memory at once.
  *
- * 这是防超卖，不是第二调度器：不选任务、不改任务状态，只回答「现在放不放得下」。
+ * This prevents oversubscription; it is not a second scheduler: it does not pick tasks or change task state, only answers "does it fit right now".
  */
 export class AdmissionBroker {
   private readonly taskGrants = new Map<string, Grant>();
@@ -93,8 +93,8 @@ export class AdmissionBroker {
   }
 
   /**
-   * replaceInstance：重新部署同一个实例时，旧的容器占用会被新容器接管，
-   * 不能拿它来挡住新部署，否则同实例滚动部署永远过不了准入。
+   * replaceInstance: when redeploying the same instance, the old container's reservation is taken over by the new container,
+   * so it must not block the new deployment, or a rolling redeploy of the same instance would never pass admission.
    */
   private sums(replaceInstance?: string): { deployment: number; task: number } {
     let deployment = 0;
@@ -169,8 +169,8 @@ export class AdmissionBroker {
         return existing.result;
       }
 
-      // 任务跑在实例自己的预算里：这个实例的 DEPLOYMENT grant 是上限，
-      // 不能再当成另一份额外占用重复扣，否则裸机构建机的第一个任务永远放不下。
+      // Tasks run within the instance's own budget: this instance's DEPLOYMENT grant is the ceiling,
+      // so it must not be deducted again as another separate reservation, or a native builder's first task would never fit.
       const observed = this.observed(memory, req.instance_id);
       const available = this.availableBytes(observed);
       const allowed = available >= memory;
@@ -202,7 +202,7 @@ export class AdmissionBroker {
     });
   }
 
-  /** 启动容器前的 DEPLOYMENT grant：长驻占用，容器停止/移除后从列表里消失。 */
+  /** DEPLOYMENT grant before starting a container: a long-lived reservation that disappears from the list once the container stops/is removed. */
   checkDeployment(grantId: string, instanceId: string, memoryBytes: number): Promise<AdmissionResult> {
     return this.serialize(() => {
       if (!grantId.startsWith("rgr_")) {
@@ -211,7 +211,7 @@ export class AdmissionBroker {
       const now = this.now();
       this.reap(now);
       const existing = this.deploymentGrants.get(grantId);
-      // 同实例重新部署：旧容器的占用不算数，它会被这次部署替换掉。
+      // Redeploy of the same instance: the old container's reservation does not count, since this deployment replaces it.
       const observed = this.observed(memoryBytes, instanceId);
       if (existing) {
         return { allowed: true, grant_id: grantId, observed };
@@ -228,7 +228,7 @@ export class AdmissionBroker {
     });
   }
 
-  /** reconciler 用实际运行中的容器重建部署占用，避免重复记账或泄漏。 */
+  /** The reconciler rebuilds deployment reservations from actually running containers, avoiding double-counting or leaks. */
   setDeploymentGrants(grants: Array<{ grant_id: string; instance_id: string; memory_bytes: number }>): void {
     this.deploymentGrants.clear();
     for (const g of grants) this.deploymentGrants.set(g.grant_id, {
@@ -237,7 +237,7 @@ export class AdmissionBroker {
     });
   }
 
-  /** 列出 ACTIVE task grant：崩溃后由角色实例按 instance_id 对账释放。 */
+  /** List ACTIVE task grants: after a crash, role instances reconcile and release them by instance_id. */
   grants(): TaskGrantInfo[] {
     this.reap(this.now());
     return [...this.taskGrants.values()]
@@ -296,7 +296,7 @@ function send(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-/** 只在 unix socket 上监听（0600），不监听任何网络地址。 */
+/** Listens only on a unix socket (0600), never on any network address. */
 export function startAdmissionServer(
   broker: AdmissionBroker,
   socketPath: string,
@@ -306,7 +306,7 @@ export function startAdmissionServer(
     const st = fs.lstatSync(socketPath);
     if (st.isSocket()) fs.unlinkSync(socketPath);
   } catch {
-    // 不存在
+    // Does not exist
   }
 
   const server = http.createServer(async (req, res) => {
@@ -316,7 +316,7 @@ export function startAdmissionServer(
         return send(res, 200, { ok: true, ...broker.summary() });
       }
       if (req.method === "GET" && url.pathname === "/grants") {
-        // items 用于崩溃后按 instance_id 对账；聚合值保持原字段不变
+        // items is used to reconcile by instance_id after a crash; the aggregate values keep their original fields unchanged
         return send(res, 200, { ...broker.summary(), items: broker.grants() });
       }
       if (req.method === "POST" && url.pathname === "/admission/check") {

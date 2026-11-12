@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * 调度机 Agent 的「构建机」工具（MCP stdio server）。
+ * "Builder" tools for the scheduler Agent (MCP stdio server).
  *
- * 调度机只通过调度协议和构建机打交道：这里的每个工具都翻译成一条普通任务
- * （task.console.builder / task.chat.builder），走 claim / lease / fencing / 审计，
- * 不直接连构建机、不持有 SSH 私钥。
+ * The scheduler talks to builders only through the scheduling protocol: every tool here maps to an ordinary task
+ * (task.console.builder / task.chat.builder) going through claim / lease / fencing / audit,
+ * never connecting to builders directly and never holding SSH private keys.
  *
- * 由 cli-agent 通过 --mcp-config 挂给 Claude Code，工具名形如
+ * Mounted into Claude Code by cli-agent via --mcp-config; tool names look like
  * mcp__builders__builder_exec。
  *
- * 环境：
- *   SCHEDULER_URL  默认 http://127.0.0.1:8443（调度机容器内自己）
+ * Environment:
+ *   SCHEDULER_URL  defaults to http://127.0.0.1:8443 (the scheduler itself inside its container)
  */
 import readline from "node:readline";
 
@@ -213,7 +213,7 @@ function send(msg) {
 }
 
 async function handle(msg) {
-  // 通知没有 id，不能回复。
+  // Notifications have no id and cannot be replied to.
   if (msg?.id === undefined || msg?.id === null) return;
   const { id, method, params } = msg;
   try {
@@ -265,8 +265,8 @@ async function handle(msg) {
 }
 
 const rl = readline.createInterface({ input: process.stdin });
-// 工具调用要打完一条任务才返回：stdin 关闭时等工作中的调用把结果写完再退出，
-// 否则管道式调用（echo 请求 | node tools.mjs）会丢响应。
+// A tool call returns only after finishing a whole task: when stdin closes, wait for in-flight calls to finish writing their results before exiting,
+// otherwise piped calls (echo request | node tools.mjs) lose their responses.
 let inflight = 0;
 let closed = false;
 function maybeExit() {

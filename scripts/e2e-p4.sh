@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# P4 验收：Agent/API 接入（Profile、Secret、API Adapter、Tool Policy Guard、默认拒绝出站）。
+# P4 acceptance: Agent/API integration (Profile, Secret, API Adapter, Tool Policy Guard, default-deny egress).
 #
-# 覆盖：
-#   A. 同一角色换 Agent：PCS 绑定 agp_worker_alpha → agp_worker_beta，只改配置并滚动重启实例，
-#      调度机与角色代码不变；两次产物 marker 不同。
-#   B. 任务信封只带 Profile 引用；Agent 只拿到本地代理句柄，日志/信封/制品里没有密钥。
-#   C. 越权 tool call（demo.forbidden）被 Policy Guard 拒绝；API 只能经本地代理。
-#   D. 默认拒绝出站：云元数据地址（169.254.169.254）被 EGRESS_IP_BLOCKED 挡住。
-#   E. Secret Store 实例隔离：Worker A 解析不了 Worker B 的 secret_ref；吊销即时生效。
-#   F. 配额 rpm=2：超过后本地代理返回 429。
-#   G. Agent 崩溃：role-agent 保持 ONLINE，任务按可重试失败上报。
+# Covers:
+#   A. Swap the Agent for the same role: PCS binds agp_worker_alpha → agp_worker_beta, changing only configuration and rolling-restarting instances,
+#      with no changes to the scheduler or role code; the two artifact markers differ.
+#   B. The task envelope carries only a Profile reference; the Agent gets only a local proxy handle, and logs/envelopes/artifacts contain no keys.
+#   C. A privilege-escalating tool call (demo.forbidden) is rejected by the Policy Guard; APIs can only go through the local proxy.
+#   D. Default-deny egress: the cloud metadata address (169.254.169.254) is blocked by EGRESS_IP_BLOCKED.
+#   E. Secret Store instance isolation: Worker A cannot resolve Worker B's secret_ref; revocation takes effect immediately.
+#   F. Quota rpm=2: beyond that the local proxy returns 429.
+#   G. Agent crash: role-agent stays ONLINE, and the task is reported as a retryable failure.
 #
-# 副作用：重置 scheduler / platform_control 演示库，重启调度机、Host Runtime、角色实例、
-#         PCS、Secret Store 与 mock upstream。仅用于测试环境。
+# Side effects: resets the scheduler / platform_control demo databases, and restarts the scheduler, Host Runtime, role instances,
+#         PCS, Secret Store and mock upstream. For test environments only.
 #
-# 用法：scripts/e2e-p4.sh
+# Usage: scripts/e2e-p4.sh
 set -euo pipefail
 
-# 远程测试机的 Node 22 不在非交互 PATH 里；子进程（node/npm/tsx）都依赖它
+# Node 22 on the remote test machine is not in the non-interactive PATH; child processes (node/npm/tsx) all depend on it
 export PATH="${NODE_BIN_DIR:-$HOME/opt/node-v22.20.0-linux-x64/bin}:$PATH"
 
 SCHEDULER_URL=${SCHEDULER_URL:-http://127.0.0.1:7801}
@@ -97,7 +97,7 @@ kill_port() { # port
   return 0
 }
 
-# ---- 前置检查 -------------------------------------------------------------
+# ---- Preflight checks -----------------------------------------------------
 say "前置检查"
 for f in "$PCS_PUBLIC_KEY_FILE" "$PCS_ISSUER_DIR/keys/private.pem" \
          "$PLATFORM_DIR/agents/demo-agent.mjs" "$SECRET_STORE_DIR/src/main.ts"; do
@@ -106,11 +106,11 @@ done
 [[ -x "$NODE_BIN" ]] || fail "缺少 Node 22：$NODE_BIN"
 ok "公钥、私钥、Agent、Secret Store 源码齐备"
 
-# ---- 重置与基础设施 --------------------------------------------------------
+# ---- Reset and infrastructure ---------------------------------------------
 say "重置数据库并启动 PCS / Secret Store / mock upstream"
 (cd "$RUNTIME_DIR" && ./scripts/stop.sh "${AGENTS[@]}" >/dev/null 2>&1 || true)
 sleep 2
-# P4 新增 role_instances.agent_profile_version / api_profile_ids（sql/003_profiles.sql）
+# P4 adds role_instances.agent_profile_version / api_profile_ids (sql/003_profiles.sql)
 (cd "$SCHEDULER_DIR" && "$NPM_BIN" run --silent migrate >/dev/null)
 "$SCHEDULER_DIR/scripts/reset.sh" >/dev/null
 (cd "$PCS_ISSUER_DIR" && "$NPM_BIN" run --silent migrate >/dev/null)
@@ -122,7 +122,7 @@ kill_port 7901
 for i in $(seq 1 40); do curl -sf "$PCS_URL/healthz" >/dev/null && break; sleep 0.5; done
 curl -sf "$PCS_URL/healthz" >/dev/null || fail "PCS 没有起来"
 
-# secrets / policy：0600，值不写入任何 Profile 或信封
+# secrets / policy: 0600, values are not written into any Profile or envelope
 mkdir -p "$P4_DIR/secret-store"
 python3 - "$P4_DIR/secret-store/secrets.json" "$SECRET_REF" "$SECRET_VALUE" "$SECRET_REF_B" "mock-worker-b-$RUN_ID" <<'PY'
 import json, os, sys
@@ -158,7 +158,7 @@ rm -f "$P4_DIR/mock-api.log"
 for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:18090/whoami" && break; sleep 0.5; done
 ok "PCS :7901 / Secret Store :7902 / mock upstream :18090 已启动"
 
-# ---- PCS Profile 与绑定 ----------------------------------------------------
+# ---- PCS Profile and bindings ---------------------------------------------
 say "创建 Agent / API Profile 并绑定 worker-a"
 ADMIN_TOKEN=$(cd "$PCS_ISSUER_DIR" && "$NPM_BIN" run --silent pcs -- admin-token --operator "$OPERATOR")
 export PCS_ADMIN_TOKEN="$ADMIN_TOKEN"
@@ -240,7 +240,7 @@ profiles = {
       "api_profile_ids": [p["api_profile_id"] for p in d["api_profiles"]],
   }},
 }
-# 防回归：运行时可视图绝不能包含 secret 值（只允许 secret:// 引用）
+# Regression guard: the runtime view must never contain secret values (only secret:// references).
 blob = json.dumps(profiles)
 assert "secret://" in blob
 json.dump(profiles, open(out, "w"), indent=2)
@@ -248,7 +248,7 @@ PY
 }
 export_profiles "$RUNTIME_DIR/profiles.p4.json"
 
-# 运行配置：只给 worker-a 加载 Profile
+# Runtime config: only load Profiles for worker-a
 python3 - "$RUNTIME_DIR/runtime.config.json" "$RUNTIME_DIR/profiles.p4.json" \
   "$SECRET_STORE_URL" "$RUNTIME_DIR/run-live/audit" <<'PY'
 import json, sys
@@ -276,7 +276,7 @@ for i in d["instances"]:
 json.dump(d, open(cfg_path, "w"), indent=2)
 PY
 
-# ---- 重启调度机 / Runtime / 角色 -------------------------------------------
+# ---- Restart scheduler / Runtime / roles ----------------------------------
 say "重启调度机 / Host Runtime / 角色实例"
 (cd "$RUNTIME_DIR" && ./scripts/runtime.sh stop >/dev/null 2>&1 || true)
 (cd "$RUNTIME_DIR" && ./scripts/runtime.sh start | sed 's/^/  /')
@@ -298,7 +298,7 @@ issue_instance_token after-a after_sales host-b
 wait_online worker-a 30 || fail "worker-a 没有 ONLINE；见 $RUNTIME_DIR/run/worker-a.log"
 ok "worker-a 以 Agent 模式 ONLINE"
 
-# ---- A. Agent 执行 + 工具/出站策略 ----------------------------------------
+# ---- A. Agent execution + tool/egress policy ------------------------------
 say "A. alpha Agent 执行探针（越权工具、出站默认拒绝、API 经本地代理）"
 REQ_A=$(python3 -c 'import json;print(json.dumps({
   "message":"hello-p4-alpha",
@@ -330,14 +330,14 @@ grep -q '"auth_ok": *true' "$P4_DIR/mock-api.log" || fail "mock upstream 没有�
   fail "Agent 绕开代理直连本应 401"
 ok "upstream 只接受 API Adapter 注入的认证；直连 401"
 
-# 审计：tool audit 里有 ALLOW demo.echo 与 DENY demo.forbidden
+# Audit: tool audit contains ALLOW demo.echo and DENY demo.forbidden
 grep -q '"tool_id":"demo.echo".*"decision":"ALLOW"' "$RUNTIME_DIR/run-live/audit/tool-audit.jsonl" ||
   fail "缺少 demo.echo 的 ALLOW 审计"
 grep -q '"tool_id":"demo.forbidden".*"decision":"DENY"' "$RUNTIME_DIR/run-live/audit/tool-audit.jsonl" ||
   fail "缺少 demo.forbidden 的 DENY 审计"
 ok "工具审计含 ALLOW/Deny，且不含参数正文"
 
-# ---- B. 配额与 Secret 隔离 -------------------------------------------------
+# ---- B. Quota and Secret isolation ----------------------------------------
 say "B. 配额 429 与 Secret 实例隔离"
 ADAPTER_URL=$(grep -o 'API Adapter 已启动：http://127.0.0.1:[0-9]*' "$RUNTIME_DIR/run/worker-a.log" |
   tail -1 | sed 's/.*：//')
@@ -366,7 +366,7 @@ curl -sf -X POST "$SECRET_STORE_URL/v1/secrets/revoke" \
 grep -q "INSTANCE_REVOKED" "$TMP/secret.out" || fail "吊销后应返回 INSTANCE_REVOKED"
 ok "Worker A 无法解析 Worker B 的 secret_ref；吊销即时生效"
 
-# ---- C. 换 Agent 不改代码 ---------------------------------------------------
+# ---- C. Swap Agent without changing code ----------------------------------
 say "C. 同角色换 Agent：alpha → beta（只改 PCS 绑定与实例配置）"
 bind_agent worker-a agp_worker_beta worker
 export_profiles "$RUNTIME_DIR/profiles.p4.json"
@@ -395,7 +395,7 @@ registered_agent=$(sqls "SELECT agent_profile_id FROM role_instances WHERE insta
 [[ "$registered_agent" == "agp_worker_beta" ]] || fail "调度机记录的 Agent 仍是 $registered_agent"
 ok "beta Agent 已接管；调度机只更新 Profile 引用，没有改代码"
 
-# ---- D. Agent 崩溃 ---------------------------------------------------------
+# ---- D. Agent crash -------------------------------------------------------
 say "D. Agent 崩溃：role-agent 不退出，任务按可重试失败上报"
 REQ_C='{"message":"crash","crash":true}'
 RUN_C=$(create_workflow wft_agent_probe "svn://e2e-p4/$RUN_ID/crash" "$REQ_C")
@@ -417,7 +417,7 @@ curl -sf -X POST "$SCHEDULER_URL/v1/tasks/$CRASH_TASK/cancel" -H 'content-type: 
   -d '{"actor":"e2e-p4"}' >/dev/null || true
 ok "AGENT_CRASHED 已上报，role-agent 仍 ONLINE（pid $PID_A）"
 
-# ---- E. 密钥与信封扫描 -----------------------------------------------------
+# ---- E. Key and envelope scan ---------------------------------------------
 say "E. 密钥不出现在信封、日志、制品、审计"
 if grep -R -- "$SECRET_VALUE" "$RUNTIME_DIR/run" "$RUNTIME_DIR/run-live/audit" \
      "$P4_DIR/scheduler.log" "$P4_DIR/pcs.log" "$P4_DIR/secret-store.log" \
@@ -434,7 +434,7 @@ if grep -q -- "$SECRET_VALUE" "$TMP/result-alpha.json" "$TMP/result-beta.json"; 
 fi
 ok "扫描通过：密钥只存在于 Secret Store 数据文件与 API Adapter 内存"
 
-# ---- F. PCS 审计 -----------------------------------------------------------
+# ---- F. PCS audit ---------------------------------------------------------
 say "F. Profile 绑定与密钥访问有审计"
 audit_rows=$(sqlp "SELECT count(*) FROM pcs_audit_logs")
 [[ "$audit_rows" -ge 2 ]] || fail "PCS 审计记录不足：$audit_rows"

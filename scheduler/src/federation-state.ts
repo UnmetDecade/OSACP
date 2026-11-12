@@ -1,8 +1,8 @@
 import { config } from "./config.js";
 
 /**
- * 联邦上级地址可以在运行时调整：主机并入 / 脱离只改 PCS 里的一行引用，
- * 不重启容器。部署时的 SCHEDULER_PARENT_URL 只是初始值。
+ * The federation parent URL can change at runtime: joining/leaving changes only a single reference in PCS,
+ * without restarting the container. SCHEDULER_PARENT_URL at deploy time is only the initial value.
  */
 let parentUrl = config.parentUrl;
 

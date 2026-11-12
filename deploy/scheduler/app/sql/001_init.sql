@@ -1,12 +1,12 @@
--- 调度机骨架 · 初始 schema
--- 对应 docs/scheduler-spec.md §9；标注 [增补] 的是实现所需、规范未列出的字段/表。
+-- Scheduler skeleton · initial schema
+-- Corresponds to docs/scheduler-spec.md §9; fields/tables marked [supplemental] are required by the implementation but not listed in the spec.
 
 BEGIN;
 
--- ---------------------------------------------------------------- 时钟
--- 所有时间戳都取 app_now()，而不是进程时钟，也不是 now() 字面量。
--- 生产环境 offset_ms 恒为 0，app_now() 与 now() 等价；
--- 测试用它可以“时间旅行”，不必真的 sleep 45 秒来等 SUSPECT。
+-- ---------------------------------------------------------------- Clock
+-- All timestamps come from app_now(), not the process clock and not the now() literal.
+-- In production offset_ms is always 0, so app_now() is equivalent to now();
+-- Tests use it to "time travel" instead of actually sleeping 45 seconds waiting for SUSPECT.
 CREATE TABLE IF NOT EXISTS _clock (
   id        BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
   offset_ms BIGINT  NOT NULL DEFAULT 0
@@ -18,8 +18,8 @@ LANGUAGE sql STABLE AS $$
   SELECT now() + make_interval(secs => (SELECT offset_ms / 1000.0 FROM _clock LIMIT 1))
 $$;
 
--- 老化后的有效优先级：数字越小优先级越高（P0 最高）。
--- P0 不参与老化；其余每满 aging_after_seconds 提升一级，封顶 P1。
+-- Effective priority after aging: lower numbers are higher priority (P0 is highest).
+-- P0 does not age; everything else gains one level per full aging_after_seconds, capped at P1.
 CREATE OR REPLACE FUNCTION effective_priority(
   p_priority SMALLINT, p_enqueued TIMESTAMPTZ, p_aging INTEGER DEFAULT 600
 ) RETURNS INTEGER
@@ -30,7 +30,7 @@ LANGUAGE sql STABLE AS $$
   END
 $$;
 
--- ---------------------------------------------------------------- 配置表（PCS 所有，调度机只读）
+-- ---------------------------------------------------------------- Config tables (owned by PCS, read-only to the scheduler)
 CREATE TABLE IF NOT EXISTS task_definitions (
   task_type        TEXT PRIMARY KEY,
   task_version     TEXT NOT NULL,
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS task_definitions (
   output_schema    JSONB,
   default_profile  TEXT,
   max_attempts     SMALLINT NOT NULL DEFAULT 3,
-  retryable_errors TEXT[] NOT NULL DEFAULT '{}'   -- [增补] 空表示“除不可重试错误外都可重试”
+  retryable_errors TEXT[] NOT NULL DEFAULT '{}'   -- [supplemental] Empty means "everything is retryable except non-retryable errors"
 );
 
 CREATE TABLE IF NOT EXISTS resource_profiles (
@@ -78,9 +78,9 @@ CREATE TABLE IF NOT EXISTS role_instances (
   payload_schemas    TEXT[] NOT NULL DEFAULT ARRAY['1.0'],
   last_heartbeat_at  TIMESTAMPTZ,
   load               JSONB NOT NULL DEFAULT '{}',
-  -- [增补] drain 截止时间：超时未完成 → OFFLINE（§7.10）
+  -- [supplemental] drain deadline: not finished in time → OFFLINE (§7.10)
   drain_deadline_at  TIMESTAMPTZ,
-  -- [增补] PCS 配置的能力上限：capabilities 接口只能收窄，不能扩大（§7.3）
+  -- [supplemental] Capability ceiling configured in PCS: the capabilities endpoint can only narrow, not widen (§7.3)
   capability_ceiling TEXT[],
   registered_at      TIMESTAMPTZ NOT NULL DEFAULT app_now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT app_now()
@@ -102,15 +102,15 @@ CREATE TABLE IF NOT EXISTS scheduler_config (
 );
 INSERT INTO scheduler_config (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 
--- 幂等补列：这个骨架不用迁移工具，重跑 001 就能把老库补齐
+-- Idempotent column additions: this skeleton has no migration tool, so re-running 001 patches an old database
 ALTER TABLE scheduler_config
   ADD COLUMN IF NOT EXISTS retry_backoff_seconds INTEGER[] NOT NULL DEFAULT ARRAY[300, 900, 2700];
 ALTER TABLE role_instances
   ADD COLUMN IF NOT EXISTS drain_deadline_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS capability_ceiling TEXT[];
 
--- ---------------------------------------------------------------- 工作流
--- 模板由 PCS 维护，调度机只读（§7.1）
+-- ---------------------------------------------------------------- Workflows
+-- Templates are maintained by PCS; the scheduler is read-only (§7.1)
 CREATE TABLE IF NOT EXISTS workflow_templates (
   workflow_template_id TEXT PRIMARY KEY,
   name                 TEXT NOT NULL,
@@ -127,9 +127,9 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   status               TEXT NOT NULL,
   current_phase        TEXT,
   root_task_id         TEXT,
-  -- [增补] 当前阶段任务；APPROVE 阶段没有任务，保持上一阶段任务用于绑定审批对象
+  -- [supplemental] Task for the current phase; the APPROVE phase has no task, so the previous phase task is kept for binding the approval subject
   current_task_id      TEXT,
-  -- [增补] 跨阶段上下文（优先级、资源画像等），推进时复制给下一阶段任务
+  -- [supplemental] Cross-phase context (priority, resource profile, etc.), copied to the next phase task on advance
   context              JSONB NOT NULL DEFAULT '{}',
   created_at           TIMESTAMPTZ NOT NULL DEFAULT app_now(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT app_now()
@@ -139,10 +139,10 @@ ALTER TABLE workflow_runs
   ADD COLUMN IF NOT EXISTS current_task_id TEXT,
   ADD COLUMN IF NOT EXISTS context JSONB NOT NULL DEFAULT '{}';
 
--- 待决审批（§7.3）：approvals 只在决定后写入，这里记录“等谁批、批什么”。
--- 建在 tasks 之后，因为 task_id 有外键。
+-- Pending approvals (§7.3): approvals is written only after the decision; this records "who must approve what".
+-- Created after tasks because task_id has a foreign key.
 
--- ---------------------------------------------------------------- 任务
+-- ---------------------------------------------------------------- Tasks
 CREATE TABLE IF NOT EXISTS tasks (
   task_id               TEXT PRIMARY KEY,
   task_type             TEXT NOT NULL,
@@ -165,9 +165,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   enqueued_at           TIMESTAMPTZ NOT NULL DEFAULT app_now(),
   deadline_at           TIMESTAMPTZ,
   cancel_requested_at   TIMESTAMPTZ,
-  -- [增补] 退避窗口：非空且未到点则不可领取
+  -- [supplemental] Backoff window: non-null and not yet elapsed means not claimable
   next_attempt_at       TIMESTAMPTZ,
-  -- [增补] 死信标记
+  -- [supplemental] Dead-letter marker
   dead_letter           BOOLEAN NOT NULL DEFAULT FALSE,
   version               BIGINT NOT NULL DEFAULT 1,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT app_now(),
@@ -232,8 +232,8 @@ CREATE TABLE IF NOT EXISTS task_events (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT app_now()
 );
 
--- 可靠事件源（protocol §8.1）：与状态迁移同事务写入，只追加。
--- SSE / 轮询通知都从这里读；通知允许丢，事实只认这张表。
+-- Reliable event source (protocol §8.1): written in the same transaction as state transitions, append-only.
+-- SSE / polling notifications both read from here; notifications may be lost, but only this table is source of truth.
 CREATE TABLE IF NOT EXISTS outbox_events (
   event_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   event_type        TEXT NOT NULL,
@@ -263,15 +263,15 @@ CREATE TABLE IF NOT EXISTS approvals (
   decided_at        TIMESTAMPTZ NOT NULL DEFAULT app_now()
 );
 
--- 审批令牌的 jti：一个令牌只能落一次库
+-- jti of the approval token: a token can be persisted only once
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS token_jti TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS approvals_token_jti
   ON approvals (token_jti) WHERE token_jti IS NOT NULL;
--- 没有绑定摘要的审批（例如没有制品的流程）允许为空
+-- Approvals with no bound digest (e.g. workflows without artifacts) may be null
 ALTER TABLE approvals ALTER COLUMN subject_digest DROP NOT NULL;
 
--- 制品（§7.8）：调度机只记录元数据与落盘引用，不解析内容。
--- declared_sha256 由上传方声明，complete 时服务端重算 actual_sha256 并比对。
+-- Artifacts (§7.8): the scheduler records only metadata and storage references, never parses content.
+-- declared_sha256 is declared by the uploader; on complete the server recomputes actual_sha256 and compares.
 CREATE TABLE IF NOT EXISTS artifacts (
   artifact_id     TEXT PRIMARY KEY,
   task_id         TEXT NOT NULL REFERENCES tasks(task_id),
@@ -308,8 +308,8 @@ CREATE TABLE IF NOT EXISTS resource_reservations (
   CHECK (kind <> 'TASK' OR (task_id IS NOT NULL AND attempt_id IS NOT NULL))
 );
 
--- ---------------------------------------------------------------- 不变量
--- 事件只追加：任何 UPDATE/DELETE 直接抛错（§4.4）
+-- ---------------------------------------------------------------- Invariants
+-- Events are append-only: any UPDATE/DELETE raises an error (§4.4)
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -327,11 +327,11 @@ CREATE TRIGGER outbox_events_append_only
   BEFORE UPDATE OR DELETE ON outbox_events
   FOR EACH ROW EXECUTE FUNCTION append_only();
 
--- 同一任务同一时刻最多一条未释放租约（多实例重复领取的最后一道闸）
+-- At most one unreleased lease per task at any moment (the last gate against duplicate claims by multiple instances)
 CREATE UNIQUE INDEX IF NOT EXISTS leases_one_active_per_task
   ON leases (task_id) WHERE released_at IS NULL;
 
--- ---------------------------------------------------------------- 索引
+-- ---------------------------------------------------------------- Indexes
 CREATE INDEX IF NOT EXISTS tasks_claim_idx
   ON tasks (status, priority_class, enqueued_at, task_id);
 CREATE INDEX IF NOT EXISTS tasks_workflow_idx ON tasks (workflow_run_id);

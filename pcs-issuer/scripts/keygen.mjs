@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * 生成 PCS 的两套密钥：
- *   - ES256（P-256）：签发实例 / 审批 / 主机 / 管理员 JWT
- *   - Ed25519：签发部署意图（命令），Host Runtime 用公钥验签
+ * Generate the two key pairs for the PCS:
+ *   - ES256 (P-256): issues instance / approval / host / admin JWTs
+ *   - Ed25519: issues deployment intents (commands); Host Runtime verifies with the public key
  *
- * 已存在的密钥默认保留（不破坏在线令牌）；`--force` 才覆盖。
+ * Existing keys are kept by default (so online tokens keep working); only `--force` overwrites them.
  */
 import { generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
@@ -30,7 +30,7 @@ function writePair(name, { publicKey, privateKey }) {
   console.log(`已生成：\n  ${privatePath}\n  ${publicPath}`);
 }
 
-// 兼容旧文件名：private.pem / public.pem 就是 JWT 密钥。
+// Backward-compatible with legacy filenames: private.pem / public.pem are the JWT keys.
 const jwtPrivate = path.join(dir, "private.pem");
 const jwtPublic = path.join(dir, "public.pem");
 if ((fs.existsSync(jwtPrivate) || fs.existsSync(jwtPublic)) && !force) {

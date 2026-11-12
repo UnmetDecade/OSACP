@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 后台启动 N 个角色实例（每个实例一个进程，方便单独 kill 掉模拟崩溃）
-# 用法：./scripts/start.sh builder-ubuntu22-a builder-ubuntu24-a
+# Start N role instances in the background (one process per instance, so each can be killed individually to simulate a crash)
+# Usage: ./scripts/start.sh builder-ubuntu22-a builder-ubuntu24-a
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$DIR/run"

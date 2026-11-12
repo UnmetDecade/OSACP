@@ -7,7 +7,7 @@ import { handleTerminalUpgrade } from "./terminal.js";
 const cfg = loadConfig();
 const service = new PcsService(cfg);
 const server = createPcsServer(service, cfg);
-// 交互式终端：WebSocket upgrade 不经过普通 HTTP handler，单独挂载。
+// Interactive terminal: WebSocket upgrades bypass the normal HTTP handler and are mounted separately.
 server.on("upgrade", handleTerminalUpgrade);
 
 let sweepTimer: NodeJS.Timeout | undefined;

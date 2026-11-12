@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * 通过系统 ssh 客户端探测远程主机。
+ * Probe remote hosts through the system ssh client.
  *
- * 用系统 ssh 而不是引入 Node SSH 库：PCS 本来就跑在 Linux/macOS 管理机上，
- * ssh 一定存在；私钥只写进 0700 临时目录里的 0600 文件，探测结束立即删除，
- * 不进入命令行参数、日志或返回值。
+ * Use the system ssh instead of pulling in a Node SSH library: the PCS already runs on a Linux/macOS management
+ * machine, where ssh is always present; the private key is written only to a 0600 file in a 0700 temp directory and
+ * deleted as soon as probing finishes, never entering command-line arguments, logs, or return values.
  */
 export type SshProbe = {
   ok: boolean;
@@ -26,17 +26,18 @@ export type SshTarget = {
   address: string;
   port: number;
   user: string;
-  /** 私钥认证；与 password 二选一。 */
+  /** Private-key auth; choose one of this and password. */
   privateKey?: string;
-  /** 密码认证；通过 SSH_ASKPASS 传递，不进入命令行参数。 */
+  /** Password auth; passed via SSH_ASKPASS and never enters command-line arguments. */
   password?: string;
 };
 
 export type SshResult = { code: number; stdout: string; stderr: string };
 
 /**
- * 在远程主机执行一段 shell。脚本通过 stdin 传入时不会出现在进程列表里；
- * 引导脚本里的私钥/令牌都用单引号包裹，调用方负责保证内容来自平台而非用户输入。
+ * Run a shell snippet on a remote host. When the script is passed via stdin it does not appear in the process list;
+ * private keys/tokens in bootstrap scripts are wrapped in single quotes, and the caller is responsible for ensuring
+ * the content comes from the platform rather than user input.
  */
 export async function execSsh(
   target: SshTarget,
@@ -58,8 +59,8 @@ export async function execSsh(
 }
 
 /**
- * 把一段字节流送到远程命令的 stdin（用于 `docker save | docker load`）。
- * 与 execSsh 共用凭据处理；stdout/stderr 只收摘要，不回传镜像数据。
+ * Send a byte stream to a remote command's stdin (for `docker save | docker load`).
+ * Shares credential handling with execSsh; stdout/stderr only collect a summary, and image data is never sent back.
  */
 export async function pipeToSsh(
   target: SshTarget,
@@ -83,7 +84,7 @@ export async function pipeToSsh(
       }, timeoutMs);
       source.pipe(child.stdin);
       child.stdin.on("error", () => {
-        /* 远端提前退出时忽略 EPIPE，由 close 事件给出结果 */
+        /* Ignore EPIPE when the remote end exits early; the close event provides the result */
       });
       child.stdout.on("data", (d: Buffer) => {
         stdout += d.toString("utf8");
@@ -106,9 +107,9 @@ export async function pipeToSsh(
 }
 
 /**
- * 交互式登录：`ssh -tt` 申请远端 PTY，stdin/stdout 直接连容器里的 shell。
- * 临时目录（私钥、askpass）在会话结束时由 cleanup 删除，因此不能像
- * execSsh 那样在函数返回前清掉。
+ * Interactive login: `ssh -tt` requests a remote PTY, and stdin/stdout connect directly to the shell in the container.
+ * The temp directory (private key, askpass) is deleted by cleanup when the session ends, so it cannot be cleaned up
+ * before the function returns the way execSsh does.
  */
 export function spawnSshPty(
   target: SshTarget,
@@ -116,7 +117,7 @@ export function spawnSshPty(
   env: Record<string, string | undefined> = {},
 ): { child: ChildProcess; cleanup: () => void } {
   const prepared = prepareSsh(target);
-  // LogLevel=ERROR：交互式会话里不要把 known_hosts 提示写进终端。
+  // LogLevel=ERROR: do not write known_hosts notices into the terminal during an interactive session.
   const child = spawn("ssh", ["-tt", "-o", "LogLevel=ERROR", ...prepared.args, command], {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...env, ...prepared.env },
@@ -154,8 +155,8 @@ function prepareSsh(target: SshTarget): {
     fs.writeFileSync(keyFile, target.privateKey, { mode: 0o600 });
     args.push("-i", keyFile, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes");
   } else {
-    // 密码不写进命令行与脚本：askpass 从 0600 文件里读。标准输入不是终端时
-    // ssh 才会走 askpass，我们的 spawn 用管道，正好没有 tty。
+    // The password never goes into the command line or scripts: askpass reads it from a 0600 file. ssh only uses
+    // askpass when stdin is not a terminal, and our spawn uses pipes, so there is no tty.
     const passwordFile = path.join(dir, "askpass.txt");
     const askpass = path.join(dir, "askpass.sh");
     fs.writeFileSync(passwordFile, target.password ?? "", { mode: 0o600 });
@@ -228,7 +229,7 @@ export async function probeSsh(target: SshTarget, timeoutMs = PROBE_TIMEOUT_MS):
   }
 }
 
-/** 本地主机（PCS 所在机器）不需要 SSH，直接跑同一条探测脚本。 */
+/** The local host (the machine running the PCS) needs no SSH; run the same probe script directly. */
 export async function probeLocal(timeoutMs = PROBE_TIMEOUT_MS): Promise<SshProbe> {
   const checkedAt = new Date().toISOString();
   try {
@@ -261,7 +262,7 @@ function parseKeyValues(stdout: string): Record<string, string> {
   return out;
 }
 
-/** 只保留最后一行有意义的错误，避免把整段 known_hosts 提示带回界面。 */
+/** Keep only the last meaningful error line, to avoid bringing the whole known_hosts notice back into the UI. */
 function conciseError(stderr: string): string {
   const lines = stderr
     .split(/\r?\n/)

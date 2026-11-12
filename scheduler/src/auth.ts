@@ -4,18 +4,18 @@ import { ApiError } from "./errors.js";
 import { jwtEnabled, verifyJwt, type TokenClaims } from "./jwt.js";
 
 /**
- * 实例侧鉴权（规范 §3.2）。
+ * Instance-side authentication (spec §3.2).
  *
- * 首选：PCS 签发的实例 JWT（ES256）。`sub` 就是 instance_id，scope 决定能做什么。
- * 过渡：未配置 PCS 公钥时退回 AUTH_TOKEN 共享令牌，仅限本地开发；启动时告警。
+ * Preferred: instance JWT issued by PCS (ES256). `sub` is the instance_id; scope decides what it can do.
+ * Transitional: without a PCS public key, fall back to the shared AUTH_TOKEN, local development only; warn at startup.
  *
- * 验签只回答「你是谁、你有什么 scope」；「这个 instance_id 和你请求里的
- * instance_id 是否一致」由路由层用 `assertSelf` 检查。
+ * Verification only answers "who you are and what scope you have"; "whether this instance_id matches the one in your request"
+ * is checked by the routing layer with `assertSelf`.
  */
 
 export interface AuthContext {
   kind: "jwt" | "shared";
-  /** JWT 模式下为令牌 sub；共享令牌模式为 null */
+  /** Token sub in JWT mode; null in shared-token mode */
   instance_id: string | null;
   scopes: string[];
   claims?: TokenClaims;
@@ -29,7 +29,7 @@ export function authEnabled(): boolean {
   return jwtEnabled() || !!authToken();
 }
 
-/** 常量时间比较；长度不同直接拒绝，避免 timingSafeEqual 抛错 */
+/** Constant-time comparison; reject differing lengths up front to avoid timingSafeEqual throwing */
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
@@ -63,7 +63,7 @@ export function requireInstanceAuth(req: http.IncomingMessage): AuthContext | nu
   return { kind: "shared", instance_id: null, scopes: [] };
 }
 
-/** JWT 模式下，令牌主体必须等于请求里的 instance_id */
+/** In JWT mode the token subject must equal the instance_id in the request */
 export function assertSelf(auth: AuthContext | null, instanceId: string | undefined): void {
   if (auth?.kind !== "jwt") return;
   if (!instanceId || instanceId !== auth.instance_id) {
@@ -74,7 +74,7 @@ export function assertSelf(auth: AuthContext | null, instanceId: string | undefi
   }
 }
 
-/** 审批不再接受共享管理员令牌：要么有 PCS 公钥能验签，要么拒绝（fail closed）。 */
+/** Approvals no longer accept shared admin tokens: either a PCS public key is available for verification, or reject (fail closed). */
 export function requireApprovalConfigured(): void {
   if (!jwtEnabled()) {
     throw new ApiError(503, "APPROVAL_NOT_CONFIGURED", "未配置 PCS 公钥，审批接口不可用");

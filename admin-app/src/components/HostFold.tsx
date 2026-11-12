@@ -2,8 +2,8 @@ import { useState, type ReactNode } from "react";
 import { Icon } from "./Icon";
 
 /**
- * 并入主机在列表里的折叠分组：按主机名收起，默认折叠。
- * 主机多了以后，一眼只看当前主机的资源；要看某台并入主机再展开。
+ * Collapsible group for folded hosts in the list: collapsed by host name, closed by default.
+ * With many hosts, this shows only the current host's resources at a glance; expand a folded host when needed.
  */
 
 const FOLD_KEY = "platform.host-fold.v1";
@@ -26,7 +26,7 @@ function writeFold(key: string, open: boolean) {
     all[key] = open;
     localStorage.setItem(FOLD_KEY, JSON.stringify(all));
   } catch {
-    // 存储不可用：只保留当前页面内的状态。
+    // Storage unavailable: keep state within the current page only.
   }
 }
 
@@ -40,7 +40,7 @@ export function HostFold({
 }: {
   name: string;
   label: string;
-  /** 每台主机、每个页面一个键，折叠状态记在本机，切页面回来还是原样。 */
+  /** One key per host and page; the collapsed state is stored locally, so switching pages and back preserves it. */
   foldKey: string;
   defaultOpen?: boolean;
   forceOpen?: boolean;
@@ -48,7 +48,7 @@ export function HostFold({
 }) {
   const [open, setOpen] = useState(() => {
     const stored = readFolds()[foldKey];
-    // 用户折叠过就听用户的；第一次出现时，当前主机（或选中项所在主机）默认展开。
+    // If the user has toggled it, honor that; the first time it appears, expand the current host (or the host of the selected item) by default.
     return typeof stored === "boolean" ? stored : defaultOpen || forceOpen;
   });
 

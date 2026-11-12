@@ -1,9 +1,9 @@
 import type { CapabilityDetail } from "./types";
 
 /**
- * 工作能力值 W（0–1000），与调度机 / PCS 同一套公式：
- *   核心 30% · 主频 15% · 内存 20% · 磁盘 10% · 模型 15% · API 10%
- * 上限代表“单机当前一代满配”，超过按满分计。
+ * Work capability value W (0–1000), using the same formula as the scheduler / PCS:
+ *   cores 30% · clock speed 15% · memory 20% · disk 10% · model 15% · API 10%
+ * The upper bound represents "a fully spec'd current-generation single machine"; values above it count as full marks.
  */
 const WEIGHTS = {
   cores: 0.3,
@@ -41,7 +41,7 @@ export function computeCapabilityScore(detail: CapabilityDetail | null | undefin
   return Math.max(0, Math.min(1000, Math.round(raw * 1000)));
 }
 
-/** 资源档位已经给了核数/内存/磁盘；主频与模型/API 能力由用户补，未填按 0 计。 */
+/** The resource tier already provides cores/memory/disk; the user supplies clock speed and model/API capability, which count as 0 if left empty. */
 export function capabilityFromResources(input: {
   cpus: number;
   mem_mb: number;

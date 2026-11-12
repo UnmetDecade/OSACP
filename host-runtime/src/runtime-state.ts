@@ -40,7 +40,7 @@ function atomicWrite(file: string, data: unknown): void {
   fs.renameSync(tmp, file);
 }
 
-/** 本机实际态的持久化：Runtime 重启后从这里恢复 desired state，容器继续运行。 */
+/** Persistence of local actual state: after a Runtime restart, desired state is restored from here and containers keep running. */
 export class RuntimeState {
   private data: RuntimeStateData;
   private readonly file: string;

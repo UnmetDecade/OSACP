@@ -3,8 +3,8 @@ import { CHARACTERS, type CharacterState } from "../characters";
 import type { Role } from "../types";
 
 /**
- * 机器人头像：圆角外壳 + 屏幕脸 + LED 眼睛。
- * 状态只改变眼睛、天线、手臂与徽标，不改变布局。
+ * Robot avatar: rounded shell + screen face + LED eyes.
+ * State only changes the eyes, antenna, arms and badge, never the layout.
  */
 export function Character({
   role,
@@ -52,16 +52,16 @@ export function Character({
         <g className="ch-breath">
           {role === "scheduler" && <Halo color={c.led} />}
 
-          {/* 腿 */}
+          {/* Legs */}
           <rect x="35" y="81" width="9" height="11" rx="4" fill={c.accent} />
           <rect x="52" y="81" width="9" height="11" rx="4" fill={c.accent} />
 
-          {/* 身体 */}
+          {/* Body */}
           <rect x="27" y="55" width="42" height="29" rx="13" fill={`url(#${clip}-shell)`} />
           <rect x="38" y="61" width="20" height="14" rx="5" fill={c.screen} fillOpacity="0.86" />
           <circle cx="48" cy="68" r="3.2" fill={c.led} fillOpacity={sleeping ? 0.25 : 0.9} className="robot-core" />
 
-          {/* 手臂 */}
+          {/* Arms */}
           <g className="robot-arm robot-arm-left">
             <rect x="19" y="58" width="9" height="19" rx="4.5" fill={c.color} />
             <circle cx="23.5" cy="78" r="4" fill={c.accent} />
@@ -73,14 +73,14 @@ export function Character({
 
           {role === "scheduler" && <ClockFace color={c.led} screen={c.screen} accent={c.accent} />}
 
-          {/* 天线 */}
+          {/* Antenna */}
           <g className="robot-antenna">
             <path d="M48 22V12" stroke={c.accent} strokeWidth="2" strokeLinecap="round" />
             <circle cx="48" cy="9.5" r="3.2" fill={c.led} fillOpacity={sleeping ? 0.3 : 0.95} />
             {state === "working" && <circle cx="48" cy="9.5" r="6" fill={c.led} fillOpacity="0.18" />}
           </g>
 
-          {/* 头 */}
+          {/* Head */}
           <rect x="22" y="21" width="52" height="36" rx="13" fill={`url(#${clip}-shell)`} />
           <rect x="28" y="27" width="40" height="24" rx="8" fill={c.screen} />
           <path d="M31 27c0-3 2.5-5.5 5.5-5.5h23c3 0 5.5 2.5 5.5 5.5" fill={c.accent} fillOpacity="0.35" />

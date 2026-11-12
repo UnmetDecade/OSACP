@@ -2,19 +2,19 @@ import type { Executor } from "../exec-types.js";
 import { taskBuild } from "./builder.js";
 import { chatExecutorFor, consoleExecutorFor } from "./chat-console.js";
 
-/** v4：只有构建机执行任务；调度机负责排队、租约与派发。 */
+/** v4: only the builder executes tasks; the scheduler handles queuing, leases and dispatch. */
 const CHAT_ROLES = ["builder", "scheduler"] as const;
 
 /**
- * 按任务类型注册角色执行器。
+ * Register role executors by task type.
  *
- * 每个任务类型只由一个角色实现；调度机负责按 target_role 派发，
- * 角色进程不根据 payload 自行决定“要不要做别人的活”。
+ * Each task type is implemented by exactly one role; the scheduler dispatches by target_role,
+ * and a role process does not decide on its own from the payload whether to do someone else's work.
  */
 export const roleExecutors: Record<string, Executor> = {
   "task.build": taskBuild,
 
-  // 对话与终端同样是受调度、受审计的普通任务
+  // Chat and console are likewise ordinary tasks that are scheduled and audited
   ...Object.fromEntries(CHAT_ROLES.map((role) => [`task.chat.${role}`, chatExecutorFor(role)])),
   ...Object.fromEntries(CHAT_ROLES.map((role) => [`task.console.${role}`, consoleExecutorFor(role)])),
 };

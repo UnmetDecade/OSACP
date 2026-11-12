@@ -1,96 +1,98 @@
-# 调度机规范
+# Scheduler Specification
 
-> 版本：v4.3 · 2026-11-12
-> 调度机是唯一的状态权威。它只做四件事：收任务、排队、派发、记账。
+> English · [简体中文](scheduler.zh-CN.md)
 
----
-
-## 1. 职责
-
-做：
-
-- 接收任务（管理应用 / CLI / 外部系统）。
-- 维护任务状态与事件。
-- 按确定性规则把任务派给构建机。
-- 维护实例、租约、fencing token、资源预留。
-- 提供管理 API：构建机创建/启停/查询、队列统计、事件流。
-- 写审计日志。
-
-不做：
-
-- 不编译、不执行命令、不持有构建机 SSH 私钥。
-- 调度核心不解析 Agent 实现细节；调度 Agent 由容器内的 host-runtime 独立执行。
-- 不做审批、不做人工门禁。
-- 不做多租户与角色权限。
+> Version: v4.3 · 2026-11-12
+> The scheduler is the single source of truth for state. It does only four things: accept tasks, queue them, dispatch them, and keep accounts.
 
 ---
 
-## 2. 任务类型（v4）
+## 1. Responsibilities
 
-| `task_type` | 目标角色 | 说明 |
+Does:
+
+- Accept tasks (admin app / CLI / external systems).
+- Maintain task state and events.
+- Dispatch tasks to builders by deterministic rules.
+- Maintain instances, leases, fencing tokens, and resource reservations.
+- Provide the management API: builder create/start/stop/query, queue stats, event stream.
+- Write audit logs.
+
+Does not:
+
+- Does not compile, execute commands, or hold builder SSH private keys.
+- The scheduling core does not parse Agent implementation details; the scheduling Agent runs independently under host-runtime inside the container.
+- No approvals, no manual gates.
+- No multi-tenancy or role permissions.
+
+---
+
+## 2. Task Types (v4)
+
+| `task_type` | Target role | Description |
 |---|---|---|
-| `task.build` | `builder` | 构建/编译/脚本/测试等任务；管理端只下发自然语言描述，由 Agent 执行 |
-| `task.chat.builder` | `builder` | 与构建机器人对话 |
-| `task.console.builder` | `builder` | 构建机容器 Shell（SSH 等价，完整权限） |
-| `task.chat.scheduler` | `scheduler` | 与调度 Agent 对话：解释队列、租约与派发结果 |
-| `task.console.scheduler` | `scheduler` | 调度机容器 Shell |
+| `task.build` | `builder` | Build/compile/script/test and similar tasks; the admin side sends only a natural-language description, executed by the Agent |
+| `task.chat.builder` | `builder` | Chat with the builder robot |
+| `task.console.builder` | `builder` | Builder container shell (SSH-equivalent, full permissions) |
+| `task.chat.scheduler` | `scheduler` | Chat with the scheduler Agent: explain queues, leases, and dispatch results |
+| `task.console.scheduler` | `scheduler` | Scheduler container shell |
 
-> 不再有 `task.review.*`、`task.commit`、`task.test.*`、`task.ticket.*`。
+> There are no longer `task.review.*`, `task.commit`, `task.test.*`, or `task.ticket.*`.
 
-### 2.1 调度 Agent
+### 2.1 Scheduler Agent
 
-调度机也可以绑定一个 `scheduler` 角色的 Agent Profile（例如 DeepSeek 调度助手）。
-它的职责是**解释与问答**：为什么这条任务在等、下一轮会派给谁、哪台构建机最闲。
+The scheduler can also bind an Agent Profile with the `scheduler` role (for example, a DeepSeek scheduling assistant).
+Its job is **explanation and Q&A**: why a task is waiting, who it will be dispatched to next round, which builder is idlest.
 
-边界不变：
+The boundaries are unchanged:
 
-- 队列、优先级、租约、fencing 全部由确定性代码决定，Agent 不参与派发。
-- Agent 不能改优先级、不能插队、不能绕过资源预留。
-- 不存在 Agent 时退化为确定性回复，接口与任务类型保持不变。
+- Queues, priority, leases, and fencing are all decided by deterministic code; the Agent does not participate in dispatch.
+- The Agent cannot change priority, jump the queue, or bypass resource reservations.
+- When no Agent exists it degrades to deterministic replies, with the same API and task types.
 
 ---
 
-## 3. 调度规则
+## 3. Scheduling Rules
 
-### 3.1 资格过滤
+### 3.1 Eligibility Filtering
 
-任务可被某构建机领取，当且仅当：
+A task can be claimed by a builder if and only if:
 
-- 任务 `state = QUEUED`，且 `target_role = builder`。
-- 构建机 `state = ONLINE`。
-- 任务 `task_type` 在构建机 `allowed_task_types` 内。
-- 任务要求的 OS/能力是构建机能力的子集：`requirements.os` 为空或等于构建机 `BUILDER_OS`。
-- `requirements.target_instance_id` 为空或等于该实例。
-- 任务未到 `next_attempt_at` 时不参与。
+- The task has `state = QUEUED` and `target_role = builder`.
+- The builder has `state = ONLINE`.
+- The task's `task_type` is within the builder's `allowed_task_types`.
+- The OS/capabilities the task requires are a subset of the builder's capabilities: `requirements.os` is empty or equals the builder's `BUILDER_OS`.
+- `requirements.target_instance_id` is empty or equals that instance.
+- The task is excluded until `next_attempt_at` is reached.
 
-### 3.2 排序（确定性）
+### 3.2 Ordering (Deterministic)
 
 ```
 effective_priority = priority_class - floor(wait_seconds / aging_after_seconds)
 ORDER BY effective_priority ASC, enqueued_at ASC, task_id ASC
 ```
 
-- `priority_class`：0 最高，3 最低；默认 2。
-- 老化防止低优先级饥饿。
-- 不涉及大模型、不随机。
+- `priority_class`: 0 is highest, 3 is lowest; default 2.
+- Aging prevents low-priority starvation.
+- No LLM, no randomness.
 
-### 3.3 并发上限
+### 3.3 Concurrency Limits
 
-取以下最小值：
+Takes the minimum of:
 
-- 全局 `global_limit`（默认 8）。
-- 单构建机 `instance_limit`（默认 2）。
-- 单任务类型 `task_type_limit`（默认 4）。
+- Global `global_limit` (default 8).
+- Per-builder `instance_limit` (default 2).
+- Per-task-type `task_type_limit` (default 4).
 
-### 3.4 领取事务
+### 3.4 Claim Transaction
 
-`claim` 在同一个事务里完成：实例行锁 → 主机资源行锁 → 资格过滤 → 准入 → 创建 attempt/lease/预留 → 任务置 `ASSIGNED`。任何一步失败都不返回任务。
+`claim` completes within a single transaction: instance row lock → host resource row lock → eligibility filtering → admission → create attempt/lease/reservation → set the task to `ASSIGNED`. If any step fails, no task is returned.
 
 ---
 
-## 4. 状态机
+## 4. State Machines
 
-### 4.1 任务
+### 4.1 Tasks
 
 ```
 QUEUED ──claim──▶ ASSIGNED ──start-ack──▶ RUNNING ──result──▶ SUCCEEDED
@@ -100,93 +102,91 @@ QUEUED ──claim──▶ ASSIGNED ──start-ack──▶ RUNNING ──resu
    └──cancel────────────────────────────────▶ CANCELLED
 ```
 
-### 4.2 实例
+### 4.2 Instances
 
 ```
 STARTING → ONLINE ⇄ SUSPECT → OFFLINE
               └── DRAINING ──┘
 ```
 
-### 4.3 租约
+### 4.3 Leases
 
-- 默认 300s，构建机每 60s 续租。
-- 到期未续 → 回收 attempt，任务重新入队。
-- 每次 attempt 生成递增的 `fencing_token`；结果上报必须带当前 token，旧 token 一律拒绝。
+- Default 300s; builders renew every 60s.
+- If not renewed before expiry → reclaim the attempt and requeue the task.
+- Each attempt generates an incrementing `fencing_token`; result reports must carry the current token, and old tokens are always rejected.
 
 ---
 
-## 5. 重试与死信
+## 5. Retries and Dead Letters
 
-| 配置 | 默认 | 说明 |
+| Configuration | Default | Description |
 |---|---|---|
-| `max_attempts` | 3 | 可重试失败的最大尝试次数 |
-| `retry_backoff` | 指数退避 5s / 15s / 45s | 不超过 5 分钟 |
-| `deadline_at` | 无 | 超时任务置 FAILED |
-| `BLOCKED` | 达到上限 | 等待人工重新提交或重置 |
+| `max_attempts` | 3 | Maximum number of attempts for a retryable failure |
+| `retry_backoff` | Exponential backoff 5s / 15s / 45s | No more than 5 minutes |
+| `deadline_at` | None | Timed-out tasks are set to FAILED |
+| `BLOCKED` | When the limit is reached | Wait for manual resubmission or reset |
 
 ---
 
-## 6. 工作流（精简）
+## 6. Workflows (Simplified)
 
-v4 只保留一个内置工作流：
+v4 keeps only one built-in workflow:
 
 ```
 wft_build = [ EXECUTE(task.build) ]
 ```
 
-- 一个任务 = 一次构建，不再有 REVIEW / APPROVE / COMMIT / VERIFY 阶段。
-- 需要多步时，由 Agent 在一次任务里完成，或连续提交多个任务。
-- `requirements.build.command` 仍是底层能力（脚本、冒烟测试）；管理端提交的是
-  `requirements.build.instruction`，没有 Agent 的构建机会拒绝执行。
-- 保留 `workflow_runs` 表是为了兼容 v3 数据与未来扩展；v4 不暴露工作流配置页面。
+- One task = one build; there are no more REVIEW / APPROVE / COMMIT / VERIFY stages.
+- When multiple steps are needed, the Agent completes them within one task, or you submit several tasks in a row.
+- `requirements.build.command` remains a low-level capability (scripts, smoke tests); the admin side submits `requirements.build.instruction`, and a builder without an Agent refuses to execute.
+- The `workflow_runs` table is kept for compatibility with v3 data and future extension; v4 exposes no workflow configuration page.
 
 ---
 
-## 7. API（最小集）
+## 7. API (Minimal Set)
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/tasks` | 提交任务 |
-| `GET` | `/v1/tasks` | 任务列表 |
-| `GET` | `/v1/tasks/:id` | 任务详情（含 attempts/events） |
-| `POST` | `/v1/tasks/:id/cancel` | 取消 |
-| `GET` | `/v1/queue/stats` | 队列统计 |
-| `POST` | `/v1/instances/register` | 构建机注册 |
-| `POST` | `/v1/instances/:id/heartbeat` | 心跳 |
-| `POST` | `/v1/claim` | 领取任务 |
-| `POST` | `/v1/tasks/:id/start-ack` | 确认开始 |
-| `POST` | `/v1/tasks/:id/progress` | 进度 |
-| `POST` | `/v1/tasks/:id/result` | 结果 |
-| `GET` | `/v1/instances` | 实例列表 |
-| `POST` | `/v1/builders` | 创建构建机（容器） |
+| `POST` | `/v1/tasks` | Submit a task |
+| `GET` | `/v1/tasks` | Task list |
+| `GET` | `/v1/tasks/:id` | Task details (including attempts/events) |
+| `POST` | `/v1/tasks/:id/cancel` | Cancel |
+| `GET` | `/v1/queue/stats` | Queue stats |
+| `POST` | `/v1/instances/register` | Builder registration |
+| `POST` | `/v1/instances/:id/heartbeat` | Heartbeat |
+| `POST` | `/v1/claim` | Claim a task |
+| `POST` | `/v1/tasks/:id/start-ack` | Acknowledge start |
+| `POST` | `/v1/tasks/:id/progress` | Progress |
+| `POST` | `/v1/tasks/:id/result` | Result |
+| `GET` | `/v1/instances` | Instance list |
+| `POST` | `/v1/builders` | Create a builder (container) |
 | `POST` | `/v1/builders/:id/:action` | start/stop/restart/remove |
-| `GET` | `/v1/events/stream` | SSE 事件流 |
+| `GET` | `/v1/events/stream` | SSE event stream |
 
-认证：实例用 Bearer token；管理应用用可选的管理令牌。v4 不再区分 viewer/operator/approver。
+Authentication: instances use a Bearer token; the admin app uses an optional admin token. v4 no longer distinguishes viewer/operator/approver.
 
 ---
 
-## 8. 数据表
+## 8. Database Tables
 
-| 表 | 用途 |
+| Table | Purpose |
 |---|---|
-| `tasks` | 任务主表 |
-| `task_attempts` | 每次领取 |
-| `task_events` | 状态事件 |
-| `role_instances` | 构建机/调度机实例 |
-| `leases` | 租约与 fencing |
-| `resource_reservations` | 资源预留 |
-| `resource_profiles` | 资源画像 |
-| `task_definitions` | 任务类型 → 目标角色 |
-| `audit_logs` | 审计 |
-| `approval_*` | **保留但不再写入**（v3 迁移兼容） |
+| `tasks` | Task main table |
+| `task_attempts` | Each claim |
+| `task_events` | State events |
+| `role_instances` | Builder/scheduler instances |
+| `leases` | Leases and fencing |
+| `resource_reservations` | Resource reservations |
+| `resource_profiles` | Resource profiles |
+| `task_definitions` | Task type → target role |
+| `audit_logs` | Audit |
+| `approval_*` | **Retained but no longer written** (v3 migration compatibility) |
 
 ---
 
-## 9. 部署形态
+## 9. Deployment Form
 
-单机 Compose 见 [deploy/compose.yaml](../deploy/compose.yaml)；控制面部署由 PCS 生成计划，
-host-runtime 拉起官方 ubuntu 容器并写入 `/opt/platform/app/` 载荷。
+For the single-machine Compose setup see [deploy/compose.yaml](../deploy/compose.yaml); control plane deployments are planned by PCS, and host-runtime launches official ubuntu containers and writes the `/opt/platform/app/` payload.
 
 ```yaml
 scheduler:
@@ -195,22 +195,22 @@ scheduler:
   environment:
     DATABASE_URL: postgres://platform:***@postgres:5432/scheduler
     PCS_PUBLIC_KEY_FILE: /opt/platform/keys/pcs-public.pem
-    SCHEDULER_AUTH_TOKEN: ""          # 只在未配置 PCS 公钥时作为本地开发兜底
+    SCHEDULER_AUTH_TOKEN: ""          # local-dev fallback only when no PCS public key is configured
   depends_on: [postgres]
 ```
 
-- 单实例即可；不做 HA。
-- 重启后从 PostgreSQL 恢复。
-- 迁移脚本：`npm run migrate`，种子：`npm run seed`。
+- A single instance is enough; no HA.
+- Recovers from PostgreSQL after a restart.
+- Migration script: `npm run migrate`, seed: `npm run seed`.
 
 ---
 
-## 10. 验收清单
+## 10. Acceptance Checklist
 
-- [ ] 只有 `scheduler` 与 `builder` 两个角色。
-- [ ] 任务从 QUEUED 到 SUCCEEDED 全链路可追踪。
-- [ ] 构建机崩溃后任务在租约到期后重新入队。
-- [ ] 旧 fencing token 的结果被拒绝。
-- [ ] 管理应用无需切换角色即可执行所有操作。
-- [ ] 构建机 SSH 可直接连接，不经过调度机。
-- [ ] 任务事件与审计可查询。
+- [ ] There are only two roles, `scheduler` and `builder`.
+- [ ] A task is traceable end to end from QUEUED to SUCCEEDED.
+- [ ] After a builder crashes, the task is requeued once its lease expires.
+- [ ] Results carrying an old fencing token are rejected.
+- [ ] The admin app can perform all operations without switching roles.
+- [ ] Builder SSH can be connected directly, without going through the scheduler.
+- [ ] Task events and audits are queryable.

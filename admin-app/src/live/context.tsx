@@ -13,7 +13,7 @@ import { getLiveConnection, type LiveConnection } from "./config";
 import { syncLive, type SyncSummary } from "./sync";
 
 type LiveState = {
-  /** 至少成功同步过一次。 */
+  /** At least one successful sync has happened. */
   connected: boolean;
   syncing: boolean;
   version: number;
@@ -26,7 +26,7 @@ type LiveState = {
 const LiveContext = createContext<LiveState | null>(null);
 
 const POLL_MS = 15_000;
-/** 连接失败时用更短的间隔重试，控制面恢复后几秒内自动回到在线。 */
+/** Retry at a shorter interval after a failed connection, returning online within seconds once the control plane recovers. */
 const RETRY_MS = 3_000;
 
 export function LiveProvider({ children }: { children: ReactNode }) {
@@ -60,8 +60,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     }
   }, [connection]);
 
-  // 打开页面即同步一次；正常每 15 秒刷新，失败时 3 秒后重试。
-  // 窗口重新聚焦时补一次，这样控制面重启后无需手动点刷新。
+  // Sync once when the page opens; normally refresh every 15 seconds, retry after 3 seconds on failure.
+  // Sync once more when the window regains focus, so no manual refresh is needed after a control plane restart.
   useEffect(() => {
     let stopped = false;
     let timer: number | undefined;

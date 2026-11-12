@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# P2 验收：调度机 + Host Runtime 准入 + 两个角色实例的三进程端到端。
+# P2 acceptance: three-process end-to-end with the scheduler + Host Runtime admission + two role instances.
 #
-# 覆盖：
-#   A. 多实例并发领取：每个任务恰好一个 attempt，不重不漏
-#   B. Host Runtime 准入拒绝：任务回队、不消耗重试、不原地刷 attempt
-#   C. kill -9 角色实例：租约回收 → 另一实例重领（fencing+1）→ 旧结果 FENCING_STALE
-#   D. 调度机重启：在途任务照常完成，不重复执行
-#   E. 无孤儿预留（HELD/ACTIVE 为 0）
+# Covers:
+#   A. Concurrent claim by multiple instances: each task gets exactly one attempt, no duplicates or omissions
+#   B. Host Runtime admission rejection: task is requeued, does not consume retries, and does not bump the attempt count in place
+#   C. kill -9 a role instance: lease reclaimed → another instance reclaims it (fencing+1) → old result FENCING_STALE
+#   D. Scheduler restart: in-flight tasks complete as usual, without duplicate execution
+#   E. No orphaned reservations (HELD/ACTIVE is 0)
 #
-# 前提：
-#   - 调度机已启动（PCS_PUBLIC_KEY_FILE 已配置），两个 worker 已注册
-#   - Host Runtime 守护进程 + 看门狗已启动，准入 socket 存在
-#   - builder-ubuntu22-a / builder-ubuntu24-a 的 JWT 已签发到 INSTANCE_TOKEN_DIR
-#   - runtime.config.json 里两个 worker 的 slot 都是 1 GiB、slots=1
+# Prerequisites:
+#   - Scheduler is running (PCS_PUBLIC_KEY_FILE configured), and both workers are registered
+#   - Host Runtime daemon + watchdog are running, and the admission socket exists
+#   - JWTs for builder-ubuntu22-a / builder-ubuntu24-a have been issued to INSTANCE_TOKEN_DIR
+#   - Both workers in runtime.config.json have slot memory of 1 GiB and slots=1
 #
-# 注意：脚本会用 _clock 时间旅行（+602s）来验证租约过期，之后不要把它当真实时钟。
-# 重复执行会继续把 offset 往前推，这是设计允许的；需要干净环境请跑 scheduler/scripts/reset.sh。
+# Note: the script uses _clock time travel (+602s) to verify lease expiry; do not treat it as a real clock afterwards.
+# Re-running continues to push the offset forward, which is allowed by design; for a clean environment run scheduler/scripts/reset.sh.
 #
-# 用法：scripts/e2e-p2.sh
+# Usage: scripts/e2e-p2.sh
 set -euo pipefail
 
 SCHEDULER_URL=${SCHEDULER_URL:-http://127.0.0.1:7801}
@@ -74,7 +74,7 @@ wait_attempt_count() { # task_id n timeout_s
 workers_stop() { (cd "$RUNTIME_DIR" && ./scripts/stop.sh "${WORKERS[@]}" >/dev/null 2>&1 || true); sleep 1; }
 workers_start() { (cd "$RUNTIME_DIR" && ./scripts/start.sh "${WORKERS[@]}" | sed 's/^/  /'); }
 
-# ---- 前置检查 -------------------------------------------------------------
+# ---- Preflight checks -----------------------------------------------------
 say "前置检查"
 curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "调度机不可用：$SCHEDULER_URL"
 [[ -S "$HOST_ADMISSION_SOCKET" ]] || fail "Host Runtime 准入 socket 不存在：$HOST_ADMISSION_SOCKET"
@@ -83,11 +83,11 @@ for w in "${WORKERS[@]}"; do
 done
 ok "调度机、准入 socket、实例令牌齐备"
 
-# ---- A. 多实例并发领取 -----------------------------------------------------
+# ---- A. Concurrent claim by multiple instances -----------------------------
 say "A. 两个实例并发领取 6 个任务"
 workers_stop
 workers_start
-# 崩溃过的实例在启动时应释放上次残留的 task grant，否则余量被虚假占用
+# A crashed instance should release the leftover task grant from last time on startup; otherwise available capacity is falsely occupied
 for i in $(seq 1 20); do
   g=$(task_grants)
   [[ "$g" == "0" ]] && break
@@ -105,7 +105,7 @@ done
 [[ "$left" == "0" ]] || fail "6 个任务在 150s 内没有全部终结"
 ok_n=$(sql "SELECT count(*) FROM tasks WHERE payload_ref LIKE '$E2E_REF/burst-%' AND status = 'SUCCEEDED'")
 [[ "$ok_n" == "6" ]] || fail "应全部成功，实际成功 $ok_n/6"
-# 准入被拒不是重复执行；判据是每个任务只有一个真正成功的执行
+# Admission rejection is not duplicate execution; the criterion is exactly one genuinely successful execution per task
 bad=$(sql "SELECT count(*) FROM (SELECT t.task_id FROM tasks t JOIN task_attempts a USING (task_id)
             WHERE t.payload_ref LIKE '$E2E_REF/burst-%' GROUP BY t.task_id
            HAVING count(*) FILTER (WHERE a.status = 'SUCCEEDED') <> 1) x")
@@ -118,7 +118,7 @@ used=$(sql "SELECT count(DISTINCT a.instance_id) FROM task_attempts a JOIN tasks
              WHERE t.payload_ref LIKE '$E2E_REF/burst-%'")
 echo "  参与执行的实例数：$used（调度可能集中在一个实例，不强制均分）"
 
-# ---- B. Host Runtime 准入拒绝 ----------------------------------------------
+# ---- B. Host Runtime admission rejection -----------------------------------
 say "B. 准入拒绝：不消耗重试、不原地刷 attempt"
 workers_stop
 cp "$RUNTIME_DIR/runtime.config.json" "$RUNTIME_DIR/runtime.config.e2e-bak.json"
@@ -153,7 +153,7 @@ workers_start
 wait_task_status "$DENY_TASK" SUCCEEDED 60
 ok "准入拒绝过的任务最终成功"
 
-# ---- C. kill -9 + 租约回收 + fencing --------------------------------------
+# ---- C. kill -9 + lease reclaim + fencing ----------------------------------
 say "C. kill -9 角色实例，租约回收后由另一实例重领"
 workers_stop
 (cd "$RUNTIME_DIR" && ./scripts/start.sh builder-ubuntu22-a | sed 's/^/  /')
@@ -166,7 +166,7 @@ IFS='|' read -r OLD_ATT OLD_LEASE OLD_FENCE <<<"$(
 )" || true
 [[ -n "${OLD_ATT:-}" ]] || fail "找不到在途 attempt"
 (cd "$RUNTIME_DIR" && ./scripts/stop.sh --force builder-ubuntu22-a | sed 's/^/  /')
-advance 301000 # 让租约过期（lease_seconds=300）
+advance 301000 # Expire the lease (lease_seconds=300)
 wait_task_status "$CRASH_TASK" QUEUED 15
 [[ "$(sql "SELECT status FROM task_attempts WHERE attempt_id = '$OLD_ATT'")" == "TIMEOUT" ]] ||
   fail "旧 attempt 应被标记 TIMEOUT"
@@ -174,7 +174,7 @@ wait_task_status "$CRASH_TASK" QUEUED 15
   fail "旧预留应按 LEASE_EXPIRED 回收"
 ok "旧 attempt TIMEOUT、预留 RECLAIMED"
 
-advance 301000 # 跳过重试退避
+advance 301000 # Skip the retry backoff
 (cd "$RUNTIME_DIR" && ./scripts/start.sh builder-ubuntu24-a | sed 's/^/  /')
 wait_attempt_count "$CRASH_TASK" 2 20
 NEW_FENCE=$(sql "SELECT fencing_token FROM leases WHERE task_id = '$CRASH_TASK' AND released_at IS NULL")
@@ -192,7 +192,7 @@ ok "新租约 fencing=$NEW_FENCE，旧结果 409 FENCING_STALE"
 wait_task_status "$CRASH_TASK" SUCCEEDED 60
 ok "崩溃任务由另一实例完成"
 
-# ---- D. 调度机重启 ---------------------------------------------------------
+# ---- D. Scheduler restart --------------------------------------------------
 say "D. 调度机在任务执行中重启"
 RESTART_TASK=$(create_task restart)
 wait_task_status "$RESTART_TASK" RUNNING 20
@@ -200,7 +200,7 @@ SPID=$(ss -ltnp 2>/dev/null | grep ':7801' | grep -o 'pid=[0-9]*' | head -1 | cu
 [[ -n "$SPID" ]] || fail "找不到调度机进程"
 kill "$SPID"
 sleep 1
-# setsid：新会话 + 脱离本脚本，否则非交互 bash 会在退出时等这个后台子进程
+# setsid: new session + detach from this script; otherwise non-interactive bash waits for this background child process on exit
 (cd "$SCHEDULER_DIR" && PCS_PUBLIC_KEY_FILE="$PCS_PUBLIC_KEY_FILE" \
   setsid npm start >> server.log 2>&1 < /dev/null &)
 for i in $(seq 1 40); do curl -sf "$SCHEDULER_URL/healthz" >/dev/null && break; sleep 0.5; done
@@ -212,7 +212,7 @@ wait_task_status "$RESTART_TASK" SUCCEEDED 60
   fail "调度机重启后不得重复派发"
 ok "重启后任务照常完成，只有一个 attempt、一次派发"
 
-# ---- E. 孤儿预留 -----------------------------------------------------------
+# ---- E. Orphaned reservations ----------------------------------------------
 live=$(sql "SELECT count(*) FROM resource_reservations WHERE state IN ('HELD','ACTIVE')")
 [[ "$live" == "0" ]] || fail "仍有 $live 条 HELD/ACTIVE 预留"
 ok "没有孤儿预留"

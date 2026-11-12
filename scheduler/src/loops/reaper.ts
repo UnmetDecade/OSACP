@@ -3,14 +3,14 @@ import { appendEvent } from "../events.js";
 import { backoffSeconds } from "../core/attempts.js";
 
 /**
- * 租约回收（§5）。
+ * Lease reaping (§5).
  *
- * 两种触发，走同一条回收路径：
- *   1) 启动窗口超时：ASSIGNED 且 issued_at 超过 start_window_seconds
- *   2) 租约过期：expires_at <= app_now()
+ * Two triggers share one reap path:
+ *   1) start-window timeout: ASSIGNED and issued_at older than start_window_seconds
+ *   2) lease expired: expires_at <= app_now()
  *
- * 回收 = 释放租约 + 预留 RECLAIMED + attempt TIMEOUT + 任务回队（退避）或死信。
- * 每回收一次消耗一次 attempt；重试耗尽即 FAILED + 死信。
+ * Reap = release lease + reservation RECLAIMED + attempt TIMEOUT + requeue task (with backoff) or dead-letter.
+ * Each reap consumes one attempt; when retries are exhausted the task becomes FAILED + dead-letter.
  */
 export async function sweepLeases(limit = 50): Promise<{
   reclaimed: { task_id: string; cause: string; to: string }[];
@@ -45,7 +45,7 @@ export async function sweepLeases(limit = 50): Promise<{
       const cause =
         row.task_status === "ASSIGNED" && !row.expired ? "START_TIMEOUT" : "LEASE_EXPIRED";
 
-      // 释放租约 + 预留
+      // Release lease + reservation
       await c.query(
         `UPDATE leases SET released_at = app_now(), release_reason = $2
           WHERE lease_token = $1`,
