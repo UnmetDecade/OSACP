@@ -14,7 +14,7 @@ if [[ ! -x "$NODE" ]]; then
   NODE="$(command -v node || true)"
 fi
 if [[ -z "$NODE" ]]; then
-  echo "主机缓存里没有 Node：$CACHE/node/bin/node；请在主机 ~/.platform/cache/node 放一份 Node 22" >&2
+  echo "Node is not in the host cache: $CACHE/node/bin/node; place a Node 22 build in ~/.platform/cache/node on the host" >&2
   exit 1
 fi
 # The Agent CLI (claude / codex) is placed in the cache directory as needed; cli-agent in the scheduler finds them via PATH.
@@ -27,7 +27,7 @@ for b in claude codex; do
   [[ -x "$CACHE/agents/$b" ]] && ln -sf "$CACHE/agents/$b" /usr/local/bin/$b
 done
 
-: "${DATABASE_URL:?缺少 DATABASE_URL}"
+: "${DATABASE_URL:?DATABASE_URL is required}"
 
 SCHEDULER_INSTANCE_ID="${SCHEDULER_INSTANCE_ID:-scheduler}"
 SCHEDULER_AGENT_PROFILE_ID="${SCHEDULER_AGENT_PROFILE_ID:-agp_scheduler}"
@@ -54,7 +54,7 @@ if ! command -v sshd >/dev/null || ! command -v ssh >/dev/null; then
   if compgen -G "$CACHE/openssh/*.deb" >/dev/null; then
     DEBIAN_FRONTEND=noninteractive dpkg -i "$CACHE"/openssh/*.deb
   else
-    echo "缺少 ssh/sshd，且主机缓存里没有 $CACHE/openssh/*.deb" >&2
+    echo "ssh/sshd is missing and the host cache has no $CACHE/openssh/*.deb" >&2
     exit 1
   fi
 fi
@@ -79,10 +79,10 @@ for i in $(seq 1 60); do
     break
   fi
   if [[ "$i" == "60" ]]; then
-    echo "数据库迁移失败：60 秒内无法连接或迁移未通过" >&2
+    echo "Database migration failed: not connected or not applied within 60 seconds" >&2
     exit 1
   fi
-  echo "等待数据库就绪（$i/60）..."
+  echo "Waiting for the database ($i/60)..."
   sleep 2
 done
 
@@ -106,7 +106,7 @@ for i in $(seq 1 60); do
     break
   fi
   if ! kill -0 "$SCHED_PID" 2>/dev/null; then
-    echo "调度机进程提前退出" >&2
+    echo "The scheduler process exited early" >&2
     exit 1
   fi
   sleep 1
@@ -154,7 +154,7 @@ AGENT_PID=$!
 while kill -0 "$SCHED_PID" 2>/dev/null; do
   if ! kill -0 "$AGENT_PID" 2>/dev/null; then
     wait "$AGENT_PID" 2>/dev/null || true
-    echo "[scheduler-agent] 退出，2 秒后重启" >&2
+    echo "[scheduler-agent] Exited; restarting in 2 seconds" >&2
     sleep 2
     start_agent &
     AGENT_PID=$!

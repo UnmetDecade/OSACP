@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { CHARACTERS, type CharacterState } from "../characters";
+import { t } from "../i18n";
 import type { Role } from "../types";
 
 /**
@@ -32,9 +33,9 @@ export function Character({
       height={size}
       viewBox="0 0 96 96"
       role="img"
-      aria-label={`${c.name} · ${state}`}
+      aria-label={`${t(c.name)} · ${state}`}
     >
-      <title>{title ?? `${c.name}（${c.title}）`}</title>
+      <title>{title ?? `${t(c.name)} (${t(c.title)})`}</title>
       <defs>
         <clipPath id={clip}>
           <circle cx="48" cy="48" r="44" />

@@ -264,7 +264,7 @@ export class DockerEngine implements EngineAdapter {
 
 export function splitPinnedImage(image: string): { repo: string; tag: string } {
   const m = /^(.+)@(sha256:[0-9a-f]{64})$/.exec(image);
-  if (!m) throw new DockerError(400, "IMAGE_NOT_PINNED", `镜像必须固定 digest：${image}`);
+  if (!m) throw new DockerError(400, "IMAGE_NOT_PINNED", `Image must be pinned to a digest: ${image}`);
   return { repo: m[1], tag: m[2] };
 }
 

@@ -85,7 +85,7 @@ async function waitFor(fn, timeout, label) {
     if (await fn().catch(() => false)) return true;
     await sleep(250);
   }
-  throw new Error(`等待超时：${label}`);
+  throw new Error(`Timed out waiting for: ${label}`);
 }
 
 /** Text replacement: internal IPs and personal hostnames stay out of public screenshots. */
@@ -145,7 +145,7 @@ async function makeStudioGif() {
     const r = el.getBoundingClientRect();
     return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: r.width, height: r.height };
   })()`);
-  if (!rect) throw new Error("找不到 .scene");
+  if (!rect) throw new Error("Could not find .scene");
   // Cards are absolutely positioned and slightly overflow .scene; capture an extra margin so the hostname at the bottom is not clipped.
   const clip = {
     x: Math.max(0, Math.round(rect.x - 16)),
@@ -222,12 +222,12 @@ try {
     await captureArchitecture();
   } else if (GIF_ONLY) {
     await openPage(`${BASE}/`);
-    await waitFor(async () => evaluate(`Boolean(document.querySelector(".scene-scheduler"))`), 12_000, "工作室数据");
+    await waitFor(async () => evaluate(`Boolean(document.querySelector(".scene-scheduler"))`), 12_000, "studio data");
     await evaluate(SCRUB);
     await makeStudioGif();
   } else {
     await openPage(`${BASE}/`);
-    await waitFor(async () => evaluate(`Boolean(document.querySelector(".scene-scheduler"))`), 12_000, "工作室数据");
+    await waitFor(async () => evaluate(`Boolean(document.querySelector(".scene-scheduler"))`), 12_000, "studio data");
     await evaluate(SCRUB);
     await screenshot(`dashboard-${SUFFIX}.png`);
     if (!HERO_ONLY) await makeStudioGif();

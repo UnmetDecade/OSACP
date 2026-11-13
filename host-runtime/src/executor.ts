@@ -24,7 +24,7 @@ const fallback: Executor = async (task, ctx) => {
   ctx.progress(50, "generic");
   // Still abortable: even unknown task types must not keep running after the lease is lost
   await sleepAbortable(500, ctx.signal);
-  return { summary: `执行完成 ${task.task_id}` };
+  return { summary: `Execution completed ${task.task_id}` };
 };
 
 export function executorFor(taskType: string): Executor {

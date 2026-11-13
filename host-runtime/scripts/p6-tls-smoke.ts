@@ -14,7 +14,7 @@ import { PcsClient } from "../src/pcs-client.js";
 
 const url = process.env.PCS_URL ?? "";
 const token = process.env.P6_ENROLLMENT_TOKEN ?? "";
-if (!url || !token) throw new Error("缺少 PCS_URL / P6_ENROLLMENT_TOKEN");
+if (!url || !token) throw new Error("PCS_URL / P6_ENROLLMENT_TOKEN are required");
 
 const client = new PcsClient(url, 10_000, undefined, {
   caFile: process.env.PCS_CA_FILE,

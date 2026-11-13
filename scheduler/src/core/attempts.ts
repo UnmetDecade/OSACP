@@ -68,7 +68,7 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
   const attempt = (
     await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
   ).rows[0];
-  if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt 不存在: ${attemptId}`);
+  if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${attemptId}`);
 
   const task = (
     await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [attempt.task_id])
@@ -87,7 +87,7 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
     )
   ).rows[0].f;
   if (Number(proof.fencing_token) < Number(maxF)) {
-    throw new ApiError(409, "FENCING_STALE", "fencing_token 已过期，写入被拒绝", {
+    throw new ApiError(409, "FENCING_STALE", "fencing_token is stale; write rejected", {
       task_id: attempt.task_id,
       current_fencing: Number(maxF),
       got: Number(proof.fencing_token),
@@ -96,14 +96,14 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
   }
 
   // No lease = already reaped
-  if (!lease || lease.released_at) throw new ApiError(409, "LEASE_EXPIRED", "租约已释放或已回收");
+  if (!lease || lease.released_at) throw new ApiError(409, "LEASE_EXPIRED", "lease has been released or reclaimed");
 
   if (lease.lease_token !== proof.lease_token) {
-    throw new ApiError(409, "LEASE_MISMATCH", "lease_token 与当前 attempt 不匹配");
+    throw new ApiError(409, "LEASE_MISMATCH", "lease_token does not match the current attempt");
   }
   // fencing: writes from old attempts are blocked here (§5)
   if (Number(lease.fencing_token) !== Number(proof.fencing_token)) {
-    throw new ApiError(409, "FENCING_STALE", "fencing_token 已过期，写入被拒绝", {
+    throw new ApiError(409, "FENCING_STALE", "fencing_token is stale; write rejected", {
       task_id: attempt.task_id,
       expected: Number(lease.fencing_token),
       got: Number(proof.fencing_token),
@@ -113,15 +113,15 @@ async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Pro
   const nowRes = await c.query(`SELECT app_now() AS t`);
   const now: Date = nowRes.rows[0].t;
   if (new Date(lease.expires_at).getTime() <= now.getTime()) {
-    throw new ApiError(409, "LEASE_EXPIRED", "租约已过期");
+    throw new ApiError(409, "LEASE_EXPIRED", "lease has expired");
   }
 
   if (proof.instance_id && proof.instance_id !== lease.instance_id) {
-    throw new ApiError(409, "INSTANCE_MISMATCH", "该 attempt 不属于此实例");
+    throw new ApiError(409, "INSTANCE_MISMATCH", "this attempt does not belong to this instance");
   }
   // An instance token can only act on its own attempts; instance_id in the body is not an identity source
   if (proof.auth_instance_id && proof.auth_instance_id !== lease.instance_id) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "实例令牌不能操作其他实例的 attempt", {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "instance tokens cannot operate on attempts of other instances", {
       token_sub: proof.auth_instance_id,
       lease_owner: lease.instance_id,
     });
@@ -143,7 +143,7 @@ export async function startAck(
       return { attempt_id: attemptId, status: "STARTED", idempotent: true };
     }
     if (attempt.status !== "CREATED") {
-      throw new ApiError(409, "STATE_CONFLICT", `attempt 已是 ${attempt.status}`);
+      throw new ApiError(409, "STATE_CONFLICT", `attempt is already ${attempt.status}`);
     }
 
     if (proof.accepted === false) {
@@ -216,7 +216,7 @@ export async function renew(attemptId: string, proof: LeaseProof) {
       );
       return { attempt_id: attemptId, lease_expires_at: res.rows[0].expires_at };
     }
-    throw new ApiError(409, "STATE_CONFLICT", `attempt 已是 ${attempt.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `attempt is already ${attempt.status}`);
   });
 }
 
@@ -257,7 +257,7 @@ export async function submitResult(attemptId: string, input: ResultInput) {
     const attemptRow = (
       await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
     ).rows[0];
-    if (!attemptRow) throw new ApiError(404, "NOT_FOUND", `attempt 不存在: ${attemptId}`);
+    if (!attemptRow) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${attemptId}`);
 
     // Idempotent: a repeated report from the same attempt returns the first result.
     // Note that TIMEOUT does not count as "has a result" — it means the result never arrived, so a late write must still go through fencing checks.
@@ -274,12 +274,12 @@ export async function submitResult(attemptId: string, input: ResultInput) {
     const { task, lease } = await lockContext(c, attemptId, input);
 
     if (!["RUNNING", "ASSIGNED"].includes(task.status)) {
-      throw new ApiError(409, "STATE_CONFLICT", `任务状态 ${task.status} 不接受结果`);
+      throw new ApiError(409, "STATE_CONFLICT", `task state ${task.status} does not accept results`);
     }
     // The state machine allows ASSIGNED → SUCCEEDED/FAILED so the parent scheduler can mirror child task results;
     // the executor must first start-ack to be eligible to report a result; this transition must not skip start acknowledgement.
     if (task.status === "ASSIGNED") {
-      throw new ApiError(409, "STATE_CONFLICT", "任务还没 start-ack，不接受结果");
+      throw new ApiError(409, "STATE_CONFLICT", "task has not been start-acked; results are not accepted");
     }
 
     if (input.status === "SUCCEEDED") {

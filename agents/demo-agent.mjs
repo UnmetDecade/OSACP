@@ -50,7 +50,7 @@ async function execute(id) {
   const req = task?.requirements ?? {};
   const text = String(req.message ?? `probe ${task?.task_id ?? "unknown"}`);
   event({ type: "progress", percent: 10, phase: "start" });
-  event({ type: "log", level: "info", message: `demo-agent ${MARKER} 开始` });
+  event({ type: "log", level: "info", message: `demo-agent ${MARKER} starting` });
 
   if (req.crash === true) {
     // Simulate an Adapter crash: return no result; role-agent must handle it as a retryable failure

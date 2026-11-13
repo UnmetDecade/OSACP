@@ -20,7 +20,7 @@ export class HttpLocalAdapter {
   private get base(): string {
     const u = this.profile.entrypoint[0];
     if (!u || !/^https?:\/\//.test(u)) {
-      throw new AdapterCrash("AGENT_PROFILE_INVALID", "http-local 需要 entrypoint[0] = http://127.0.0.1:<port>");
+      throw new AdapterCrash("AGENT_PROFILE_INVALID", "http-local requires entrypoint[0] = http://127.0.0.1:<port>");
     }
     return u.replace(/\/+$/, "");
   }
@@ -30,7 +30,7 @@ export class HttpLocalAdapter {
   }
 
   private async request(method: string, params: unknown, timeoutMs: number): Promise<any> {
-    if (this.closed) throw new AdapterCrash("AGENT_CRASHED", "Adapter 已退出");
+    if (this.closed) throw new AdapterCrash("AGENT_CRASHED", "Adapter has exited");
     const id = ++this.seq;
     let res: Response;
     try {
@@ -41,13 +41,13 @@ export class HttpLocalAdapter {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      throw new AdapterCrash("AGENT_CRASHED", `Adapter 不可达：${e instanceof Error ? e.message : String(e)}`);
+      throw new AdapterCrash("AGENT_CRASHED", `Adapter unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }
     const data = (await res.json().catch(() => ({}))) as any;
     if (!res.ok) throw new AdapterCrash("AGENT_CRASHED", `Adapter HTTP ${res.status}`);
     for (const ev of data.events ?? []) this.hooks.onEvent(ev);
     if (data.error) {
-      throw new AdapterCrash(String(data.error.code ?? "AGENT_RPC_ERROR"), String(data.error.message ?? "Adapter 错误"));
+      throw new AdapterCrash(String(data.error.code ?? "AGENT_RPC_ERROR"), String(data.error.message ?? "Adapter error"));
     }
     return data.result;
   }

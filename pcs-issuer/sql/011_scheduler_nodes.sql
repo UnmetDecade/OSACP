@@ -1,6 +1,6 @@
 -- 011: a host can run multiple scheduler containers.
 --
--- Architecture rules (架构图.html, figure 1):
+-- Architecture rules (architecture diagram, figure 1):
 --   1. Each host has at most one "root scheduler". It is the host's entry point for both internal and external traffic.
 --   2. A root scheduler can have multiple "node schedulers" under it, and node schedulers in turn have builders/nodes,
 --      all of these containers run on the same host and call each other over the container network.

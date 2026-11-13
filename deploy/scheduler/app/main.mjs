@@ -226,8 +226,8 @@ var require_postgres_date = __commonJS({
     function bcYearToNegativeYear(year) {
       return -(year - 1);
     }
-    function is0To99(num) {
-      return num >= 0 && num < 100;
+    function is0To99(num2) {
+      return num2 >= 0 && num2 < 100;
     }
   }
 });
@@ -2403,18 +2403,18 @@ var require_buffer_writer = __commonJS({
           oldBuffer.copy(this.buffer, 0, 0, this.offset);
         }
       }
-      addInt32(num) {
+      addInt32(num2) {
         this.ensure(4);
-        this.buffer[this.offset++] = num >>> 24 & 255;
-        this.buffer[this.offset++] = num >>> 16 & 255;
-        this.buffer[this.offset++] = num >>> 8 & 255;
-        this.buffer[this.offset++] = num >>> 0 & 255;
+        this.buffer[this.offset++] = num2 >>> 24 & 255;
+        this.buffer[this.offset++] = num2 >>> 16 & 255;
+        this.buffer[this.offset++] = num2 >>> 8 & 255;
+        this.buffer[this.offset++] = num2 >>> 0 & 255;
         return this;
       }
-      addInt16(num) {
+      addInt16(num2) {
         this.ensure(2);
-        this.buffer[this.offset++] = num >>> 8 & 255;
-        this.buffer[this.offset++] = num >>> 0 & 255;
+        this.buffer[this.offset++] = num2 >>> 8 & 255;
+        this.buffer[this.offset++] = num2 >>> 0 & 255;
         return this;
       }
       addCString(string) {
@@ -3711,8 +3711,8 @@ var require_client = __commonJS({
         return Number.isFinite(value) ? value : defaultValue;
       }
       if (typeof value === "string" && value.trim() !== "") {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : defaultValue;
+        const n2 = Number(value);
+        return Number.isFinite(n2) ? n2 : defaultValue;
       }
       return defaultValue;
     }
@@ -5346,7 +5346,266 @@ var require_lib2 = __commonJS({
   }
 });
 
+// scheduler/src/core/resources.ts
+var MIB = 1024 ** 2;
+var DEFAULT_DYNAMIC_POLICY = {
+  max_instances_per_host: 64,
+  cpu_single_overcommit: 4,
+  overcommit_warn: 2,
+  h_min: 0.05,
+  w_floor: 25,
+  w_degrade_scope: "resource",
+  pressure_enter: { busy: 0.7, pressure: 0.85, critical: 0.95 },
+  pressure_exit: { busy: 0.6, pressure: 0.75, critical: 0.9 },
+  recovery_hold_seconds: 60,
+  grant_update_interval_seconds: 5,
+  reclaim_cooldown_seconds: 3,
+  reclaim_check_window_seconds: 5,
+  reclaim_max_steps: 3,
+  require_applied_before_start: true,
+  idle_floor_cpu_millicores: 50,
+  idle_floor_mem_bytes: 128 * MIB,
+  ewma_alpha: 0.3,
+  dispatch_window_seconds: 15
+};
+var num = (value, fallback) => {
+  const n2 = Number(value);
+  return Number.isFinite(n2) ? n2 : fallback;
+};
+var ratio = (value, fallback) => {
+  const n2 = num(value, fallback);
+  return Math.max(0, Math.min(1, n2));
+};
+function normalizeDynamicPolicy(input) {
+  const raw = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const enter = raw.pressure_enter ?? {};
+  const exit = raw.pressure_exit ?? {};
+  return {
+    max_instances_per_host: Math.max(1, Math.trunc(num(raw.max_instances_per_host, DEFAULT_DYNAMIC_POLICY.max_instances_per_host))),
+    cpu_single_overcommit: Math.max(1, num(raw.cpu_single_overcommit, DEFAULT_DYNAMIC_POLICY.cpu_single_overcommit)),
+    overcommit_warn: Math.max(0, num(raw.overcommit_warn, DEFAULT_DYNAMIC_POLICY.overcommit_warn)),
+    h_min: ratio(raw.h_min, DEFAULT_DYNAMIC_POLICY.h_min),
+    w_floor: Math.max(0, Math.min(1e3, Math.trunc(num(raw.w_floor, DEFAULT_DYNAMIC_POLICY.w_floor)))),
+    w_degrade_scope: raw.w_degrade_scope === "whole" ? "whole" : "resource",
+    pressure_enter: {
+      busy: ratio(enter.busy, DEFAULT_DYNAMIC_POLICY.pressure_enter.busy),
+      pressure: ratio(enter.pressure, DEFAULT_DYNAMIC_POLICY.pressure_enter.pressure),
+      critical: ratio(enter.critical, DEFAULT_DYNAMIC_POLICY.pressure_enter.critical)
+    },
+    pressure_exit: {
+      busy: ratio(exit.busy, DEFAULT_DYNAMIC_POLICY.pressure_exit.busy),
+      pressure: ratio(exit.pressure, DEFAULT_DYNAMIC_POLICY.pressure_exit.pressure),
+      critical: ratio(exit.critical, DEFAULT_DYNAMIC_POLICY.pressure_exit.critical)
+    },
+    recovery_hold_seconds: Math.max(0, num(raw.recovery_hold_seconds, DEFAULT_DYNAMIC_POLICY.recovery_hold_seconds)),
+    grant_update_interval_seconds: Math.max(1, num(raw.grant_update_interval_seconds, DEFAULT_DYNAMIC_POLICY.grant_update_interval_seconds)),
+    reclaim_cooldown_seconds: Math.max(0, num(raw.reclaim_cooldown_seconds, DEFAULT_DYNAMIC_POLICY.reclaim_cooldown_seconds)),
+    reclaim_check_window_seconds: Math.max(1, num(raw.reclaim_check_window_seconds, DEFAULT_DYNAMIC_POLICY.reclaim_check_window_seconds)),
+    reclaim_max_steps: Math.max(1, Math.trunc(num(raw.reclaim_max_steps, DEFAULT_DYNAMIC_POLICY.reclaim_max_steps))),
+    require_applied_before_start: raw.require_applied_before_start === void 0 ? DEFAULT_DYNAMIC_POLICY.require_applied_before_start : Boolean(raw.require_applied_before_start),
+    idle_floor_cpu_millicores: Math.max(0, Math.trunc(num(raw.idle_floor_cpu_millicores, DEFAULT_DYNAMIC_POLICY.idle_floor_cpu_millicores))),
+    idle_floor_mem_bytes: Math.max(0, Math.trunc(num(raw.idle_floor_mem_bytes, DEFAULT_DYNAMIC_POLICY.idle_floor_mem_bytes))),
+    ewma_alpha: ratio(raw.ewma_alpha, DEFAULT_DYNAMIC_POLICY.ewma_alpha),
+    dispatch_window_seconds: Math.max(1, num(raw.dispatch_window_seconds, DEFAULT_DYNAMIC_POLICY.dispatch_window_seconds))
+  };
+}
+function computeHRes(input) {
+  const uMem = input.memCapacityBytes > 0 ? Math.max(0, Math.min(1, input.usedMemBytes / input.memCapacityBytes)) : 0;
+  const uCpu = input.cpuCapacityMillicores > 0 ? Math.max(0, Math.min(1, input.usedCpuMillicores / input.cpuCapacityMillicores)) : 0;
+  const min = Math.max(0, Math.min(1, input.hMin));
+  return Math.max(min, Math.min(1, 1 - Math.max(uMem, uCpu)));
+}
+function percentile25(samples) {
+  const values = samples.filter((n2) => Number.isFinite(n2)).sort((a, b) => a - b);
+  if (!values.length) return 0;
+  const rank = Math.max(1, Math.ceil(values.length * 0.25));
+  return Math.round(values[Math.min(values.length - 1, rank - 1)]);
+}
+function computeDemand(inputs) {
+  const totalCapCpu = inputs.reduce((sum, i) => sum + Math.max(0, i.capCpuMillicores), 0);
+  const totalCapMem = inputs.reduce((sum, i) => sum + Math.max(0, i.capMemBytes), 0);
+  return inputs.map((i) => {
+    const capCpu = Math.max(0, Math.trunc(i.capCpuMillicores));
+    const capMem = Math.max(0, Math.trunc(i.capMemBytes));
+    const floorCpu = Math.min(capCpu, Math.max(0, Math.trunc(i.idleFloorCpuMillicores)));
+    const floorMem = Math.min(capMem, Math.max(0, Math.trunc(i.idleFloorMemBytes)));
+    return {
+      instanceId: i.instanceId,
+      capCpuMillicores: capCpu,
+      capMemBytes: capMem,
+      reservedCpuMillicores: Math.max(0, Math.trunc(i.reservedCpuMillicores)),
+      reservedMemBytes: Math.max(0, Math.trunc(i.reservedMemBytes)),
+      demandCpuMillicores: Math.min(
+        capCpu,
+        Math.max(0, Math.trunc(Math.max(i.reservedCpuMillicores, i.usedCpuMillicores, floorCpu)))
+      ),
+      demandMemBytes: Math.min(
+        capMem,
+        Math.max(0, Math.trunc(Math.max(i.reservedMemBytes, i.usedMemBytes, floorMem)))
+      ),
+      // Normalize to per-mille integers so the water filler stays integer-only.
+      weightCpu: totalCapCpu > 0 ? Math.max(1, Math.round(capCpu / totalCapCpu * 1e6)) : 1e6,
+      weightMem: totalCapMem > 0 ? Math.max(1, Math.round(capMem / totalCapMem * 1e6)) : 1e6
+    };
+  });
+}
+function waterFill(capacity, items) {
+  const cap = Math.max(0, Math.trunc(capacity));
+  const sorted = [...items].sort((a, b) => a.instanceId.localeCompare(b.instanceId));
+  const grants = /* @__PURE__ */ new Map();
+  for (const item of sorted) {
+    const upper = Math.max(0, Math.min(Math.trunc(item.demand), Math.trunc(item.cap)));
+    const floor = Math.max(0, Math.min(upper, Math.trunc(item.floor)));
+    grants.set(item.instanceId, floor);
+  }
+  let remaining = cap - [...grants.values()].reduce((a, b) => a + b, 0);
+  if (remaining <= 0) return grants;
+  const active = () => sorted.filter((item) => {
+    const upper = Math.max(0, Math.min(Math.trunc(item.demand), Math.trunc(item.cap)));
+    return (grants.get(item.instanceId) ?? 0) < upper;
+  });
+  let guard = 0;
+  while (remaining > 0 && guard++ < sorted.length + 4) {
+    const set = active();
+    if (!set.length) break;
+    const totalWeight = set.reduce((sum, i) => sum + Math.max(1, Math.trunc(i.weight)), 0);
+    let added = 0;
+    for (const item of set) {
+      const value = grants.get(item.instanceId) ?? 0;
+      const upper = Math.max(0, Math.min(Math.trunc(item.demand), Math.trunc(item.cap)));
+      const room = upper - value;
+      const share = Number(
+        BigInt(remaining) * BigInt(Math.max(1, Math.trunc(item.weight))) / BigInt(totalWeight)
+      );
+      const add = Math.min(room, share, remaining - added);
+      if (add > 0) {
+        grants.set(item.instanceId, value + add);
+        added += add;
+      }
+    }
+    remaining -= added;
+    if (added === 0) break;
+  }
+  let changed = true;
+  while (remaining > 0 && changed) {
+    changed = false;
+    for (const item of sorted) {
+      if (remaining <= 0) break;
+      const value = grants.get(item.instanceId) ?? 0;
+      const upper = Math.max(0, Math.min(Math.trunc(item.demand), Math.trunc(item.cap)));
+      if (value < upper) {
+        grants.set(item.instanceId, value + 1);
+        remaining -= 1;
+        changed = true;
+      }
+    }
+  }
+  return grants;
+}
+function allocateGrants(input) {
+  const memCapacity = Math.max(0, Math.trunc(input.memCapacityBytes));
+  const cpuCapacity = Math.max(0, Math.trunc(input.cpuCapacityMillicores));
+  const memGrants = waterFill(
+    memCapacity,
+    input.demands.map((d) => ({
+      instanceId: d.instanceId,
+      cap: d.capMemBytes,
+      demand: d.demandMemBytes,
+      weight: d.weightMem,
+      floor: Math.min(d.capMemBytes, input.policy.idle_floor_mem_bytes)
+    }))
+  );
+  const cpuGrants = waterFill(
+    cpuCapacity,
+    input.demands.map((d) => ({
+      instanceId: d.instanceId,
+      cap: d.capCpuMillicores,
+      demand: d.demandCpuMillicores,
+      weight: d.weightCpu,
+      floor: Math.min(d.capCpuMillicores, input.policy.idle_floor_cpu_millicores)
+    }))
+  );
+  const pressure = String(input.pressureState ?? "NORMAL");
+  const highRatio = pressure === "CRITICAL" ? 1 : pressure === "PRESSURE" ? 1.1 : 1.25;
+  const minHigh = 16 * MIB;
+  return input.demands.map((d) => {
+    const grantMem = Math.max(0, memGrants.get(d.instanceId) ?? 0);
+    const grantCpu = Math.max(0, cpuGrants.get(d.instanceId) ?? 0);
+    const capMem = Math.max(0, d.capMemBytes);
+    const pressureHigh = Math.max(minHigh, Math.min(capMem, Math.round(grantMem * highRatio)));
+    const memoryHigh = pressure === "NORMAL" || pressure === "BUSY" ? capMem : Math.min(capMem, pressureHigh);
+    const finalCpu = Math.min(grantCpu, Math.max(0, d.capCpuMillicores));
+    const finalMem = Math.min(grantMem, capMem);
+    return {
+      instanceId: d.instanceId,
+      capCpuMillicores: Math.max(0, d.capCpuMillicores),
+      capMemBytes: capMem,
+      demandCpuMillicores: d.demandCpuMillicores,
+      demandMemBytes: d.demandMemBytes,
+      grantCpuMillicores: finalCpu,
+      grantMemBytes: finalMem,
+      memoryLowBytes: finalMem,
+      memoryHighBytes: memoryHigh,
+      cpuWeight: Math.max(
+        1,
+        cpuCapacity > 0 ? Math.round(1e4 * finalCpu / cpuCapacity) : 1
+      ),
+      // A grant below already-committed reservations is an allowed temporary state; admission stops.
+      overcommitted: finalCpu < d.reservedCpuMillicores || finalMem < d.reservedMemBytes
+    };
+  });
+}
+function computeConcurrency(input) {
+  if (input.requestCpuMillicores <= 0 || input.requestMemBytes <= 0) return 0;
+  const cpu = Math.floor(Math.max(0, input.remainingCpuMillicores) / input.requestCpuMillicores);
+  const mem = Math.floor(Math.max(0, input.remainingMemBytes) / input.requestMemBytes);
+  return Math.max(0, Math.min(Math.max(0, Math.trunc(input.kMax)), cpu, mem));
+}
+function backoffSeconds(blockedAttempts, baseSeconds, maxSeconds) {
+  const base = Math.max(1, Math.trunc(baseSeconds));
+  const max = Math.max(base, Math.trunc(maxSeconds));
+  const n2 = Math.max(0, Math.min(6, Math.trunc(blockedAttempts)));
+  return Math.min(max, base * 2 ** n2);
+}
+function nextPressureState(current, utilization, policy) {
+  const u = Math.max(0, Math.min(1, Number.isFinite(utilization) ? utilization : 0));
+  const now = String(current || "NORMAL");
+  const enter = policy.pressure_enter;
+  const exit = policy.pressure_exit;
+  if (now === "CRITICAL") return u <= exit.critical ? "RECOVERING" : "CRITICAL";
+  if (now === "PRESSURE") {
+    if (u >= enter.critical) return "CRITICAL";
+    return u <= exit.pressure ? "RECOVERING" : "PRESSURE";
+  }
+  if (now === "RECOVERING") {
+    if (u >= enter.critical) return "CRITICAL";
+    if (u >= enter.pressure) return "PRESSURE";
+    return u <= exit.busy ? "NORMAL" : "RECOVERING";
+  }
+  if (now === "BUSY") {
+    if (u >= enter.pressure) return "PRESSURE";
+    return u <= exit.busy ? "NORMAL" : "BUSY";
+  }
+  if (u >= enter.critical) return "CRITICAL";
+  if (u >= enter.pressure) return "PRESSURE";
+  if (u >= enter.busy) return "BUSY";
+  return "NORMAL";
+}
+function admissionAllowedByPressure(state) {
+  return state === "NORMAL" || state === "BUSY" || state === "RECOVERING";
+}
+
 // scheduler/src/config.ts
+function dynamicPolicyFromEnv() {
+  const raw = (process.env.DYNAMIC_POLICY ?? "").trim();
+  if (!raw) return normalizeDynamicPolicy({});
+  try {
+    return normalizeDynamicPolicy(JSON.parse(raw));
+  } catch {
+    console.warn("[config] DYNAMIC_POLICY is not valid JSON; using the default dynamic policy");
+    return normalizeDynamicPolicy({});
+  }
+}
 var config = {
   port: Number(process.env.PORT ?? 7801),
   // Listen on loopback by default: expose externally only through the control-plane reverse proxy + mTLS, never bind the port directly to a NIC
@@ -5377,13 +5636,21 @@ var config = {
   relaySyncMs: Math.max(
     250,
     Number(process.env.SCHEDULER_RELAY_SYNC_MS ?? 2e3) || 2e3
+  ),
+  // Scheduling mode is fixed when the root scheduler is deployed and inherited by node schedulers and builders.
+  schedulingMode: process.env.SCHEDULING_MODE === "dynamic" ? "dynamic" : "static",
+  dynamicPolicy: dynamicPolicyFromEnv(),
+  // Grant recomputation cadence; events (claim/release/pressure change) also trigger a recompute.
+  grantIntervalMs: Math.max(
+    1e3,
+    Number(process.env.GRANT_UPDATE_INTERVAL_MS ?? 5e3) || 5e3
   )
 };
 if (Boolean(config.tlsCertFile) !== Boolean(config.tlsKeyFile)) {
-  throw new Error("SCHEDULER_TLS_CERT_FILE \u4E0E SCHEDULER_TLS_KEY_FILE \u5FC5\u987B\u540C\u65F6\u914D\u7F6E");
+  throw new Error("SCHEDULER_TLS_CERT_FILE and SCHEDULER_TLS_KEY_FILE must be configured together");
 }
 if (config.mtls && (!config.tlsCertFile || !config.tlsCaFile)) {
-  throw new Error("SCHEDULER_MTLS=1 \u9700\u8981\u540C\u65F6\u914D\u7F6E TLS \u8BC1\u4E66\u4E0E\u5BA2\u6237\u7AEF CA\uFF08SCHEDULER_TLS_CA_FILE\uFF09");
+  throw new Error("SCHEDULER_MTLS=1 requires both a TLS certificate and a client CA (SCHEDULER_TLS_CA_FILE)");
 }
 
 // scheduler/node_modules/pg/esm/index.mjs
@@ -5462,7 +5729,7 @@ function pcsPublicKeyPem() {
     try {
       return fs.readFileSync(file, "utf8");
     } catch {
-      throw new ApiError(503, "AUTH_NOT_CONFIGURED", `\u65E0\u6CD5\u8BFB\u53D6 PCS \u516C\u94A5\uFF1A${file}`);
+      throw new ApiError(503, "AUTH_NOT_CONFIGURED", `failed to read PCS public key: ${file}`);
     }
   }
   return null;
@@ -5474,25 +5741,25 @@ function parsePart(part, what) {
   try {
     return JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
   } catch {
-    throw new ApiError(401, "TOKEN_INVALID", `\u4EE4\u724C ${what} \u4E0D\u662F\u5408\u6CD5 JSON`);
+    throw new ApiError(401, "TOKEN_INVALID", `token ${what} is not valid JSON`);
   }
 }
 function verifyJwt(token, opts = {}) {
   const parts = token.split(".");
-  if (parts.length !== 3) throw new ApiError(401, "TOKEN_INVALID", "\u4EE4\u724C\u683C\u5F0F\u65E0\u6548");
-  const header = parsePart(parts[0], "\u5934\u90E8");
+  if (parts.length !== 3) throw new ApiError(401, "TOKEN_INVALID", "invalid token format");
+  const header = parsePart(parts[0], "header");
   if (header.alg !== "ES256") {
-    throw new ApiError(401, "TOKEN_INVALID", `\u4E0D\u652F\u6301\u7684\u7B7E\u540D\u7B97\u6CD5\uFF1A${header.alg ?? "none"}`);
+    throw new ApiError(401, "TOKEN_INVALID", `unsupported signature algorithm: ${header.alg ?? "none"}`);
   }
   const pem = pcsPublicKeyPem();
   if (!pem) {
-    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "\u672A\u914D\u7F6E PCS \u516C\u94A5\uFF0C\u65E0\u6CD5\u9A8C\u7B7E");
+    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "PCS public key is not configured; cannot verify signature");
   }
   let key;
   try {
     key = createPublicKey(pem);
   } catch {
-    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "PCS \u516C\u94A5\u683C\u5F0F\u65E0\u6548");
+    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "invalid PCS public key format");
   }
   const ok = verify(
     "sha256",
@@ -5500,24 +5767,24 @@ function verifyJwt(token, opts = {}) {
     { key, dsaEncoding: "ieee-p1363" },
     Buffer.from(parts[2], "base64url")
   );
-  if (!ok) throw new ApiError(401, "TOKEN_INVALID", "\u4EE4\u724C\u7B7E\u540D\u65E0\u6548");
-  const claims = parsePart(parts[1], "\u8F7D\u8377");
+  if (!ok) throw new ApiError(401, "TOKEN_INVALID", "invalid token signature");
+  const claims = parsePart(parts[1], "payload");
   const skew = opts.skewSeconds ?? 60;
   const now = opts.nowSeconds ?? Math.floor(Date.now() / 1e3);
   if (typeof claims.exp !== "number") {
-    throw new ApiError(401, "TOKEN_INVALID", "\u4EE4\u724C\u7F3A\u5C11 exp");
+    throw new ApiError(401, "TOKEN_INVALID", "token is missing exp");
   }
-  if (claims.exp + skew < now) throw new ApiError(401, "TOKEN_EXPIRED", "\u4EE4\u724C\u5DF2\u8FC7\u671F");
+  if (claims.exp + skew < now) throw new ApiError(401, "TOKEN_EXPIRED", "token has expired");
   if (typeof claims.nbf === "number" && claims.nbf - skew > now) {
-    throw new ApiError(401, "TOKEN_INVALID", "\u4EE4\u724C\u5C1A\u672A\u751F\u6548");
+    throw new ApiError(401, "TOKEN_INVALID", "token is not valid yet");
   }
   if (opts.issuer && claims.iss !== opts.issuer) {
-    throw new ApiError(401, "TOKEN_INVALID", `\u7B7E\u53D1\u8005\u4E0D\u53D7\u4FE1\u4EFB\uFF1A${claims.iss ?? "-"}`);
+    throw new ApiError(401, "TOKEN_INVALID", `untrusted issuer: ${claims.iss ?? "-"}`);
   }
   if (opts.audience) {
     const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!aud.includes(opts.audience)) {
-      throw new ApiError(401, "TOKEN_INVALID", "\u4EE4\u724C\u53D7\u4F17\u4E0D\u5339\u914D");
+      throw new ApiError(401, "TOKEN_INVALID", "token audience mismatch");
     }
   }
   return claims;
@@ -5525,7 +5792,7 @@ function verifyJwt(token, opts = {}) {
 function requireScope(claims, scope) {
   const scopes = Array.isArray(claims.scopes) ? claims.scopes : [];
   if (!scopes.includes(scope)) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", `\u4EE4\u724C\u7F3A\u5C11\u6743\u9650\u8303\u56F4\uFF1A${scope}`, {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", `token is missing required scope: ${scope}`, {
       required: scope,
       scopes
     });
@@ -5534,16 +5801,16 @@ function requireScope(claims, scope) {
 function verifyApprovalToken(token) {
   const claims = verifyJwt(token, { issuer: ISSUER, audience: AUDIENCE });
   if (claims.typ !== "approval") {
-    throw new ApiError(401, "TOKEN_INVALID", "\u4E0D\u662F\u5BA1\u6279\u4EE4\u724C");
+    throw new ApiError(401, "TOKEN_INVALID", "not an approval token");
   }
   requireScope(claims, "approval:decide");
   for (const k of ["approval_request_id", "operator_id"]) {
     if (typeof claims[k] !== "string" || !claims[k]) {
-      throw new ApiError(401, "TOKEN_INVALID", `\u5BA1\u6279\u4EE4\u724C\u7F3A\u5C11 ${k}`);
+      throw new ApiError(401, "TOKEN_INVALID", `approval token is missing ${k}`);
     }
   }
   if (!Array.isArray(claims.action_scope)) {
-    throw new ApiError(401, "TOKEN_INVALID", "\u5BA1\u6279\u4EE4\u724C\u7F3A\u5C11 action_scope");
+    throw new ApiError(401, "TOKEN_INVALID", "approval token is missing action_scope");
   }
   return claims;
 }
@@ -5563,13 +5830,13 @@ function safeEqual(a, b) {
 function bearer(req) {
   const header = req.headers.authorization ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(header);
-  if (!m) throw new ApiError(401, "UNAUTHENTICATED", "\u7F3A\u5C11 Bearer \u4EE4\u724C");
+  if (!m) throw new ApiError(401, "UNAUTHENTICATED", "missing Bearer token");
   return m[1];
 }
 function requireInstanceAuth(req) {
   if (jwtEnabled()) {
     const claims = verifyJwt(bearer(req), { issuer: "platform-control", audience: "scheduler" });
-    if (!claims.sub) throw new ApiError(401, "TOKEN_INVALID", "\u5B9E\u4F8B\u4EE4\u724C\u7F3A\u5C11 sub");
+    if (!claims.sub) throw new ApiError(401, "TOKEN_INVALID", "instance token is missing sub");
     return {
       kind: "jwt",
       instance_id: claims.sub,
@@ -5580,14 +5847,14 @@ function requireInstanceAuth(req) {
   const expected = authToken();
   if (!expected) return null;
   if (!safeEqual(bearer(req), expected)) {
-    throw new ApiError(401, "UNAUTHENTICATED", "\u4EE4\u724C\u65E0\u6548");
+    throw new ApiError(401, "UNAUTHENTICATED", "invalid token");
   }
   return { kind: "shared", instance_id: null, scopes: [] };
 }
 function assertSelf(auth, instanceId) {
   if (auth?.kind !== "jwt") return;
   if (!instanceId || instanceId !== auth.instance_id) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u5B9E\u4F8B\u4EE4\u724C\u53EA\u80FD\u64CD\u4F5C\u81EA\u8EAB\u5B9E\u4F8B", {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "instance tokens may only operate on their own instance", {
       token_sub: auth.instance_id,
       requested: instanceId ?? null
     });
@@ -5595,7 +5862,7 @@ function assertSelf(auth, instanceId) {
 }
 function requireApprovalConfigured() {
   if (!jwtEnabled()) {
-    throw new ApiError(503, "APPROVAL_NOT_CONFIGURED", "\u672A\u914D\u7F6E PCS \u516C\u94A5\uFF0C\u5BA1\u6279\u63A5\u53E3\u4E0D\u53EF\u7528");
+    throw new ApiError(503, "APPROVAL_NOT_CONFIGURED", "PCS public key is not configured; approval endpoints are unavailable");
   }
 }
 
@@ -5651,8 +5918,539 @@ function newToken() {
   return randomBytes(24).toString("base64url");
 }
 
+// scheduler/src/capability.ts
+var CAPABILITY_WEIGHTS = {
+  cores: 0.3,
+  freq_ghz: 0.15,
+  mem_gb: 0.2,
+  disk_gb: 0.1,
+  model: 0.15,
+  api: 0.1
+};
+var CAPABILITY_CEILINGS = {
+  cores: 8,
+  freq_ghz: 4,
+  mem_gb: 32,
+  disk_gb: 256,
+  model: 10,
+  api: 10
+};
+function ratio2(value, ceiling) {
+  const n2 = Number(value);
+  if (!Number.isFinite(n2) || n2 <= 0) return 0;
+  return Math.min(n2 / ceiling, 1);
+}
+function computeCapabilityScore(detail) {
+  if (!detail) return 0;
+  const raw = CAPABILITY_WEIGHTS.cores * ratio2(detail.cores, CAPABILITY_CEILINGS.cores) + CAPABILITY_WEIGHTS.freq_ghz * ratio2(detail.freq_ghz, CAPABILITY_CEILINGS.freq_ghz) + CAPABILITY_WEIGHTS.mem_gb * ratio2(detail.mem_gb, CAPABILITY_CEILINGS.mem_gb) + CAPABILITY_WEIGHTS.disk_gb * ratio2(detail.disk_gb, CAPABILITY_CEILINGS.disk_gb) + CAPABILITY_WEIGHTS.model * ratio2(detail.model, CAPABILITY_CEILINGS.model) + CAPABILITY_WEIGHTS.api * ratio2(detail.api, CAPABILITY_CEILINGS.api);
+  return Math.max(0, Math.min(1e3, Math.round(raw * 1e3)));
+}
+function splitCapability(detail, cap) {
+  const d = normalizeCapabilityDetail(detail ?? {});
+  const staticRaw = CAPABILITY_WEIGHTS.freq_ghz * ratio2(d.freq_ghz, CAPABILITY_CEILINGS.freq_ghz) + CAPABILITY_WEIGHTS.disk_gb * ratio2(d.disk_gb, CAPABILITY_CEILINGS.disk_gb) + CAPABILITY_WEIGHTS.model * ratio2(d.model, CAPABILITY_CEILINGS.model) + CAPABILITY_WEIGHTS.api * ratio2(d.api, CAPABILITY_CEILINGS.api);
+  const cores = cap?.cpu_cores ?? d.cores ?? 0;
+  const memGb = cap?.mem_gb ?? d.mem_gb ?? 0;
+  const resRaw = CAPABILITY_WEIGHTS.cores * ratio2(cores, CAPABILITY_CEILINGS.cores) + CAPABILITY_WEIGHTS.mem_gb * ratio2(memGb, CAPABILITY_CEILINGS.mem_gb);
+  const staticScore = Math.max(0, Math.min(500, Math.round(staticRaw * 1e3)));
+  const resScore = Math.max(0, Math.min(500, Math.round(resRaw * 1e3)));
+  return { static_score: staticScore, res_score: resScore, ceiling: staticScore + resScore };
+}
+function dynamicLiveScore(split, hRes, opts = {}) {
+  const h = Number.isFinite(hRes) ? Math.max(0, Math.min(1, hRes)) : 1;
+  if ((opts.scope ?? "resource") === "whole") {
+    const floor = Math.max(0, Math.min(1e3, Number(opts.wFloor ?? 0)));
+    return Math.max(floor, Math.round(split.ceiling * h));
+  }
+  return Math.max(0, Math.min(1e3, Math.round(split.static_score + h * split.res_score)));
+}
+function dynamicGuaranteedScore(split, minShare) {
+  const res = CAPABILITY_WEIGHTS.cores * ratio2(minShare.cpu_cores, CAPABILITY_CEILINGS.cores) + CAPABILITY_WEIGHTS.mem_gb * ratio2(minShare.mem_gb, CAPABILITY_CEILINGS.mem_gb);
+  return Math.max(0, Math.min(1e3, Math.round(split.static_score + res * 1e3)));
+}
+function normalizeCapabilityDetail(detail) {
+  if (!detail || typeof detail !== "object") return {};
+  const d = detail;
+  const out = {};
+  for (const key of Object.keys(CAPABILITY_WEIGHTS)) {
+    const n2 = Number(d[key]);
+    if (Number.isFinite(n2) && n2 >= 0) out[key] = n2;
+  }
+  return out;
+}
+function normalizeDifficulty(value) {
+  const n2 = Number(value);
+  if (!Number.isFinite(n2) || n2 <= 0) return 0;
+  return Math.min(1e3, Math.round(n2));
+}
+
+// scheduler/src/repo/resources.ts
+var GIB = 1024 ** 3;
+var n = (value) => {
+  const x = Number(value);
+  return Number.isFinite(x) ? x : 0;
+};
+var floorNonNeg = (value) => Math.max(0, Math.trunc(n(value)));
+function policyForScheduler(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input) || !Object.keys(input).length) {
+    return config.dynamicPolicy;
+  }
+  const raw = input;
+  const base = config.dynamicPolicy;
+  return normalizeDynamicPolicy({
+    ...base,
+    ...raw,
+    pressure_enter: { ...base.pressure_enter, ...raw.pressure_enter ?? {} },
+    pressure_exit: { ...base.pressure_exit, ...raw.pressure_exit ?? {} }
+  });
+}
+async function getPool(c, hostId) {
+  await c.query(
+    `INSERT INTO host_resource_pools (host_id, cpu_total_millicores, mem_total_bytes)
+     SELECT host_id, GREATEST(cpu_total, 0) * 1000, GREATEST(mem_total_bytes, 0)
+       FROM hosts WHERE host_id = $1
+     ON CONFLICT (host_id) DO NOTHING`,
+    [hostId]
+  );
+  const row = (await c.query(
+    `SELECT p.*, h.host_state
+         FROM host_resource_pools p JOIN hosts h USING (host_id)
+        WHERE p.host_id = $1`,
+    [hostId]
+  )).rows[0];
+  return {
+    ...row,
+    cpu_total_millicores: n(row?.cpu_total_millicores),
+    mem_total_bytes: n(row?.mem_total_bytes),
+    cpu_granted_millicores: n(row?.cpu_granted_millicores),
+    mem_granted_bytes: n(row?.mem_granted_bytes),
+    cpu_used_millicores: n(row?.cpu_used_millicores),
+    mem_used_bytes: n(row?.mem_used_bytes),
+    mem_working_set_bytes: n(row?.mem_working_set_bytes),
+    available_commitment_bytes: n(row?.available_commitment_bytes)
+  };
+}
+async function getGrants(hostId) {
+  return grantsWith(pool, hostId);
+}
+function mapGrant(r) {
+  return {
+    ...r,
+    generation: n(r.generation),
+    cpu_millicores: n(r.cpu_millicores),
+    memory_bytes: n(r.memory_bytes),
+    memory_low_bytes: n(r.memory_low_bytes),
+    memory_high_bytes: n(r.memory_high_bytes),
+    cpu_weight: n(r.cpu_weight),
+    cap_cpu_millicores: r.cap_cpu_millicores === void 0 ? void 0 : n(r.cap_cpu_millicores),
+    cap_mem_bytes: r.cap_mem_bytes === void 0 ? void 0 : n(r.cap_mem_bytes),
+    applied_generation: r.applied_generation === null ? null : n(r.applied_generation)
+  };
+}
+async function grantsWith(c, hostId) {
+  const rows = (await c.query(
+    `SELECT g.*, r.cap_cpu_millicores, r.cap_mem_bytes
+         FROM resource_grants g
+         JOIN role_instances r USING (instance_id)
+        WHERE g.host_id = $1
+        ORDER BY g.instance_id`,
+    [hostId]
+  )).rows;
+  return rows.map(mapGrant);
+}
+async function getInstanceGrantState(instanceId) {
+  const owner = await q1(
+    `SELECT instance_id, host_id, scheduling_mode FROM role_instances WHERE instance_id = $1`,
+    [instanceId]
+  );
+  if (!owner) return null;
+  const grant = await q1(
+    `SELECT g.*, r.cap_cpu_millicores, r.cap_mem_bytes
+       FROM resource_grants g
+       JOIN role_instances r USING (instance_id)
+      WHERE g.instance_id = $1`,
+    [instanceId]
+  );
+  const pool2 = await q1(
+    `SELECT * FROM host_resource_pools WHERE host_id = $1`,
+    [owner.host_id]
+  );
+  return {
+    instance_id: owner.instance_id,
+    host_id: owner.host_id,
+    scheduling_mode: owner.scheduling_mode ?? "static",
+    grant: grant ? mapGrant(grant) : null,
+    pool: pool2 ? {
+      ...pool2,
+      cpu_total_millicores: n(pool2.cpu_total_millicores),
+      mem_total_bytes: n(pool2.mem_total_bytes),
+      cpu_granted_millicores: n(pool2.cpu_granted_millicores),
+      mem_granted_bytes: n(pool2.mem_granted_bytes),
+      cpu_used_millicores: n(pool2.cpu_used_millicores),
+      mem_used_bytes: n(pool2.mem_used_bytes),
+      mem_working_set_bytes: n(pool2.mem_working_set_bytes),
+      available_commitment_bytes: n(pool2.available_commitment_bytes)
+    } : null
+  };
+}
+async function markGrantApplied(input) {
+  if (!input.host_id || !input.instance_id) throw new Error("host_id / instance_id are required");
+  const row = await q1(
+    `UPDATE resource_grants
+        SET state = CASE WHEN $3::bigint >= generation THEN 'APPLIED' ELSE 'SUPERSEDED' END,
+            applied_generation = $3::bigint,
+            applied_cpu_millicores = $4,
+            applied_memory_bytes = $5,
+            applied_memory_low_bytes = $6,
+            applied_memory_high_bytes = $7,
+            applied_cpu_weight = $8,
+            applied_at = CASE WHEN $3::bigint >= generation THEN app_now() ELSE applied_at END,
+            last_error = NULL,
+            updated_at = app_now()
+      WHERE host_id = $1 AND instance_id = $2
+      RETURNING state`,
+    [
+      input.host_id,
+      input.instance_id,
+      Math.trunc(input.generation),
+      input.cpu_millicores ?? null,
+      input.memory_bytes ?? null,
+      input.memory_low_bytes ?? null,
+      input.memory_high_bytes ?? null,
+      input.cpu_weight ?? null
+    ]
+  );
+  return { applied: Boolean(row), state: String(row?.state ?? "UNKNOWN") };
+}
+async function markGrantFailed(input) {
+  await q(
+    `UPDATE resource_grants
+        SET state = CASE WHEN $3::bigint >= generation THEN 'FAILED' ELSE state END,
+            last_error = $4, updated_at = app_now()
+      WHERE host_id = $1 AND instance_id = $2`,
+    [input.host_id, input.instance_id, Math.trunc(input.generation), String(input.error).slice(0, 500)]
+  );
+}
+function capOf(row, pool2) {
+  const detail = row.capability_detail ?? {};
+  const detailCpu = Math.max(0, Math.round(n(detail.cores) * 1e3));
+  const detailMem = Math.max(0, Math.round(n(detail.mem_gb) * GIB));
+  const fallbackCpu = Math.max(1, Math.floor(pool2.cpu_total_millicores / 4));
+  const fallbackMem = Math.max(256 * 1024 ** 2, Math.floor(pool2.mem_total_bytes / 8));
+  return {
+    cpu: Math.max(1, floorNonNeg(row.cap_cpu_millicores) || detailCpu || fallbackCpu),
+    mem: Math.max(1, floorNonNeg(row.cap_mem_bytes) || detailMem || fallbackMem)
+  };
+}
+async function demandRows(c, hostId) {
+  const rows = (await c.query(
+    `SELECT r.instance_id, r.state, r.scheduling_mode, r.capability_score,
+              r.capability_detail, r.cap_cpu_millicores, r.cap_mem_bytes,
+              r.usage_cpu_millicores, r.usage_mem_bytes,
+              r.capability_ceiling_score,
+              COALESCE(SUM(p.cpu_millicores) FILTER (WHERE l.released_at IS NULL AND l.expires_at > app_now()), 0)::int AS reserved_cpu_millicores,
+              COALESCE(SUM(p.memory_bytes) FILTER (WHERE l.released_at IS NULL AND l.expires_at > app_now()), 0)::bigint AS reserved_mem_bytes
+         FROM role_instances r
+         LEFT JOIN leases l ON l.instance_id = r.instance_id
+         LEFT JOIN tasks t ON t.task_id = l.task_id
+         LEFT JOIN resource_profiles p ON p.profile_id = t.resource_profile_id
+        WHERE r.host_id = $1 AND r.role_id = 'builder'
+          AND r.state NOT IN ('OFFLINE','FAILED')
+        GROUP BY r.instance_id
+        ORDER BY r.instance_id`,
+    [hostId]
+  )).rows;
+  return rows.map((r) => ({
+    ...r,
+    capability_score: n(r.capability_score),
+    cap_cpu_millicores: n(r.cap_cpu_millicores),
+    cap_mem_bytes: n(r.cap_mem_bytes),
+    usage_cpu_millicores: n(r.usage_cpu_millicores),
+    usage_mem_bytes: n(r.usage_mem_bytes),
+    reserved_cpu_millicores: n(r.reserved_cpu_millicores),
+    reserved_mem_bytes: n(r.reserved_mem_bytes),
+    capability_ceiling_score: n(r.capability_ceiling_score)
+  }));
+}
+var liveHistory = /* @__PURE__ */ new Map();
+function rememberAndPercentile(instanceId, score, windowSeconds) {
+  const now = Date.now();
+  const cutoff = now - windowSeconds * 1e3;
+  const list = (liveHistory.get(instanceId) ?? []).filter((x) => x.at >= cutoff);
+  list.push({ at: now, score });
+  liveHistory.set(instanceId, list);
+  return percentile25(list.map((x) => x.score));
+}
+async function recomputeHostGrants(c, hostId, policy = config.dynamicPolicy) {
+  await c.query(`SELECT host_id FROM hosts WHERE host_id = $1 FOR UPDATE`, [hostId]);
+  const pool2 = await getPool(c, hostId);
+  if (!pool2.mem_total_bytes && !pool2.cpu_total_millicores) return null;
+  const memCapacity = Math.max(0, pool2.mem_total_bytes);
+  const cpuCapacity = Math.max(0, pool2.cpu_total_millicores);
+  const rawUsedMem = pool2.mem_working_set_bytes > 0 ? pool2.mem_working_set_bytes : pool2.mem_used_bytes;
+  const hRes = computeHRes({
+    usedMemBytes: rawUsedMem,
+    memCapacityBytes: memCapacity,
+    usedCpuMillicores: pool2.cpu_used_millicores,
+    cpuCapacityMillicores: cpuCapacity,
+    hMin: policy.h_min
+  });
+  const utilization = Math.max(
+    memCapacity > 0 ? rawUsedMem / memCapacity : 0,
+    cpuCapacity > 0 ? pool2.cpu_used_millicores / cpuCapacity : 0
+  );
+  const pressureState = nextPressureState(pool2.pressure_state, utilization, policy);
+  const rows = await demandRows(c, hostId);
+  const dynamicRows = rows.filter((r) => r.scheduling_mode === "dynamic");
+  const capPairs = /* @__PURE__ */ new Map();
+  for (const row of rows) capPairs.set(row.instance_id, capOf(row, pool2));
+  const demands = computeDemand(
+    dynamicRows.map((row) => {
+      const cap = capPairs.get(row.instance_id);
+      return {
+        instanceId: row.instance_id,
+        capCpuMillicores: cap.cpu,
+        capMemBytes: cap.mem,
+        reservedCpuMillicores: row.reserved_cpu_millicores,
+        reservedMemBytes: row.reserved_mem_bytes,
+        usedCpuMillicores: row.usage_cpu_millicores,
+        usedMemBytes: row.usage_mem_bytes,
+        idleFloorCpuMillicores: policy.idle_floor_cpu_millicores,
+        idleFloorMemBytes: policy.idle_floor_mem_bytes
+      };
+    })
+  );
+  const grants = allocateGrants({
+    cpuCapacityMillicores: cpuCapacity,
+    memCapacityBytes: memCapacity,
+    demands,
+    pressureState,
+    policy
+  });
+  const existing = new Map(
+    (await grantsWith(c, hostId)).map((g) => [g.instance_id, g])
+  );
+  for (const grant of grants) {
+    const prev = existing.get(grant.instanceId);
+    const changed = !prev || prev.cpu_millicores !== grant.grantCpuMillicores || prev.memory_bytes !== grant.grantMemBytes || prev.memory_low_bytes !== grant.memoryLowBytes || prev.memory_high_bytes !== grant.memoryHighBytes || prev.cpu_weight !== grant.cpuWeight;
+    if (!changed) continue;
+    const generation = (prev?.generation ?? 0) + 1;
+    await c.query(
+      `INSERT INTO resource_grants
+         (host_id, instance_id, generation, cpu_millicores, memory_bytes,
+          memory_low_bytes, memory_high_bytes, cpu_weight, state, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PENDING',app_now())
+       ON CONFLICT (host_id, instance_id) DO UPDATE SET
+         generation = EXCLUDED.generation,
+         cpu_millicores = EXCLUDED.cpu_millicores,
+         memory_bytes = EXCLUDED.memory_bytes,
+         memory_low_bytes = EXCLUDED.memory_low_bytes,
+         memory_high_bytes = EXCLUDED.memory_high_bytes,
+         cpu_weight = EXCLUDED.cpu_weight,
+         state = 'PENDING',
+         updated_at = app_now()`,
+      [
+        hostId,
+        grant.instanceId,
+        generation,
+        grant.grantCpuMillicores,
+        grant.grantMemBytes,
+        grant.memoryLowBytes,
+        grant.memoryHighBytes,
+        grant.cpuWeight
+      ]
+    );
+    await c.query(
+      `INSERT INTO outbox_events
+         (event_type, aggregate_type, aggregate_id, aggregate_version, actor_id, payload)
+       VALUES ('INSTANCE_GRANT_UPDATED', 'instance', $1, $2, 'scheduler', $3::jsonb)`,
+      [
+        grant.instanceId,
+        generation,
+        JSON.stringify({
+          host_id: hostId,
+          generation,
+          cpu_millicores: grant.grantCpuMillicores,
+          memory_bytes: grant.grantMemBytes,
+          memory_low_bytes: grant.memoryLowBytes,
+          memory_high_bytes: grant.memoryHighBytes,
+          cpu_weight: grant.cpuWeight,
+          pressure_state: pressureState
+        })
+      ]
+    );
+  }
+  const grantByInstance = new Map(grants.map((g) => [g.instanceId, g]));
+  const totalCaps = [...capPairs.values()];
+  const sumCpu = totalCaps.reduce((s, x) => s + x.cpu, 0) || 1;
+  const sumMem = totalCaps.reduce((s, x) => s + x.mem, 0) || 1;
+  for (const row of rows) {
+    const cap = capPairs.get(row.instance_id);
+    const split = splitCapability(row.capability_detail, {
+      cpu_cores: cap.cpu / 1e3,
+      mem_gb: cap.mem / GIB
+    });
+    const dynamic = row.scheduling_mode === "dynamic";
+    const live = dynamic ? dynamicLiveScore(split, hRes, { scope: policy.w_degrade_scope, wFloor: policy.w_floor }) : Math.round(row.capability_score);
+    const dispatch = dynamic ? rememberAndPercentile(row.instance_id, live, policy.dispatch_window_seconds) : live;
+    const guaranteed = dynamic ? dynamicGuaranteedScore(split, {
+      cpu_cores: cpuCapacity * cap.cpu / sumCpu / 1e3,
+      mem_gb: memCapacity * cap.mem / sumMem / GIB
+    }) : Math.round(row.capability_score);
+    await c.query(
+      `UPDATE role_instances
+          SET cap_cpu_millicores = $2,
+              cap_mem_bytes = $3,
+              capability_static_score = $4,
+              capability_ceiling_score = $5,
+              capability_live_score = $6,
+              capability_dispatch_score = $7,
+              capability_guaranteed_score = $8,
+              capability_schema_version = 1,
+              capability_updated_at = app_now()
+        WHERE instance_id = $1`,
+      [
+        row.instance_id,
+        cap.cpu,
+        cap.mem,
+        split.static_score,
+        dynamic ? split.ceiling : Math.round(row.capability_score),
+        live,
+        dispatch,
+        guaranteed
+      ]
+    );
+    if (!dynamic) {
+      await c.query(
+        `UPDATE role_instances
+            SET capability_ceiling_score = capability_score,
+                capability_live_score = capability_score,
+                capability_dispatch_score = capability_score,
+                capability_guaranteed_score = capability_score
+          WHERE instance_id = $1`,
+        [row.instance_id]
+      );
+    }
+    const grant = grantByInstance.get(row.instance_id);
+    if (grant && grant.overcommitted) {
+      await c.query(
+        `INSERT INTO outbox_events
+           (event_type, aggregate_type, aggregate_id, actor_id, payload)
+         VALUES ('INSTANCE_OVERCOMMITTED', 'instance', $1, 'scheduler', $2::jsonb)`,
+        [
+          row.instance_id,
+          JSON.stringify({
+            host_id: hostId,
+            grant_cpu_millicores: grant.grantCpuMillicores,
+            grant_mem_bytes: grant.grantMemBytes,
+            reserved_cpu_millicores: row.reserved_cpu_millicores,
+            reserved_mem_bytes: row.reserved_mem_bytes
+          })
+        ]
+      );
+    }
+  }
+  await c.query(
+    `DELETE FROM resource_grants
+      WHERE host_id = $1 AND NOT (instance_id = ANY($2::text[]))`,
+    [hostId, grants.map((g) => g.instanceId)]
+  );
+  const grantedCpu = grants.reduce((s, g) => s + g.grantCpuMillicores, 0);
+  const grantedMem = grants.reduce((s, g) => s + g.grantMemBytes, 0);
+  await c.query(
+    `UPDATE host_resource_pools
+        SET cpu_granted_millicores = $2,
+            mem_granted_bytes = $3,
+            available_commitment_bytes = GREATEST(0, $4 - $3),
+            pressure_state = $5,
+            updated_at = app_now()
+      WHERE host_id = $1`,
+    [hostId, grantedCpu, grantedMem, memCapacity, pressureState]
+  );
+  if (pressureState !== pool2.pressure_state) {
+    await c.query(
+      `INSERT INTO outbox_events
+         (event_type, aggregate_type, aggregate_id, actor_id, payload)
+       VALUES ('HOST_PRESSURE_CHANGED', 'host', $1, 'scheduler', $2::jsonb)`,
+      [
+        hostId,
+        JSON.stringify({
+          host_id: hostId,
+          from: pool2.pressure_state,
+          to: pressureState,
+          utilization,
+          h_res: hRes
+        })
+      ]
+    );
+  }
+  return { host_id: hostId, grants, pressure_state: pressureState };
+}
+async function recomputeAllGrants(policy = config.dynamicPolicy) {
+  const rows = await q(`SELECT host_id FROM host_resource_pools ORDER BY host_id`);
+  const out = [];
+  for (const row of rows) {
+    const result = await tx((c) => recomputeHostGrants(c, String(row.host_id), policy));
+    if (result) {
+      out.push({
+        host_id: result.host_id,
+        grants: result.grants.length,
+        pressure_state: result.pressure_state
+      });
+    }
+  }
+  return out;
+}
+async function instanceResourceState(c, instanceId) {
+  const row = (await c.query(
+    `SELECT r.instance_id, r.host_id, r.scheduling_mode
+         FROM role_instances r WHERE r.instance_id = $1`,
+    [instanceId]
+  )).rows[0];
+  if (!row) return null;
+  const reserved = (await c.query(
+    `SELECT COALESCE(SUM(p.cpu_millicores),0)::int AS cpu,
+              COALESCE(SUM(p.memory_bytes),0)::bigint AS mem
+         FROM leases l
+         JOIN tasks t ON t.task_id = l.task_id
+         JOIN resource_profiles p ON p.profile_id = t.resource_profile_id
+        WHERE l.instance_id = $1 AND l.released_at IS NULL AND l.expires_at > app_now()`,
+    [instanceId]
+  )).rows[0];
+  const grant = (await c.query(
+    `SELECT * FROM resource_grants WHERE instance_id = $1 LIMIT 1`,
+    [instanceId]
+  )).rows[0] ?? null;
+  const pool2 = await getPool(c, String(row.host_id));
+  const siblings = (await demandRows(c, String(row.host_id))).filter(
+    (r) => r.scheduling_mode === "dynamic"
+  );
+  const capPairs = new Map(
+    siblings.map((r) => [r.instance_id, capOf(r, pool2)])
+  );
+  const own = capPairs.get(instanceId) ?? { cpu: 0, mem: 0 };
+  const sumCpu = [...capPairs.values()].reduce((s, x) => s + x.cpu, 0);
+  const sumMem = [...capPairs.values()].reduce((s, x) => s + x.mem, 0);
+  return {
+    mode: String(row.scheduling_mode ?? "static"),
+    grant: grant ? {
+      ...grant,
+      generation: n(grant.generation),
+      cpu_millicores: n(grant.cpu_millicores),
+      memory_bytes: n(grant.memory_bytes),
+      memory_low_bytes: n(grant.memory_low_bytes),
+      memory_high_bytes: n(grant.memory_high_bytes),
+      cpu_weight: n(grant.cpu_weight),
+      applied_generation: grant.applied_generation === null ? null : n(grant.applied_generation)
+    } : null,
+    reservedCpuMillicores: n(reserved?.cpu),
+    reservedMemBytes: n(reserved?.mem),
+    fairShareCpuMillicores: sumCpu > 0 ? Math.floor(pool2.cpu_total_millicores * own.cpu / sumCpu) : 0,
+    fairShareMemBytes: sumMem > 0 ? Math.floor(pool2.mem_total_bytes * own.mem / sumMem) : 0,
+    pool: pool2
+  };
+}
+
 // scheduler/src/core/claim.ts
-var MAX_CANDIDATE_SCAN = 20;
 async function loadConfig(c) {
   const res = await c.query("SELECT * FROM scheduler_config WHERE id = TRUE");
   return res.rows[0];
@@ -5661,44 +6459,80 @@ async function countActive(c, sql, params) {
   const res = await c.query(sql, params);
   return res.rows[0].n;
 }
+var dynamicScoreOf = (inst) => {
+  const dispatch = Number(inst.capability_dispatch_score ?? 0);
+  if (dispatch > 0) return dispatch;
+  const live = Number(inst.capability_live_score ?? 0);
+  if (live > 0) return live;
+  return Number(inst.capability_score ?? 0);
+};
 async function claim(input) {
-  if (!input.instance_id) throw new ApiError(400, "BAD_REQUEST", "instance_id \u5FC5\u586B");
+  if (!input.instance_id) throw new ApiError(400, "BAD_REQUEST", "instance_id is required");
   return tx(async (c) => {
     const cfg = await loadConfig(c);
+    const policy = policyForScheduler(cfg?.dynamic_policy);
+    const owner = (await c.query(`SELECT host_id FROM role_instances WHERE instance_id = $1`, [input.instance_id])).rows[0];
+    if (!owner) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
+    const hostRes = await c.query(
+      `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
+      [owner.host_id]
+    );
+    const host = hostRes.rows[0];
+    if (!host) throw new ApiError(409, "HOST_UNKNOWN", `host not registered: ${owner.host_id}`);
     const instRes = await c.query(
       `SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`,
       [input.instance_id]
     );
     const inst = instRes.rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${input.instance_id}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
+    if (inst.host_id !== host.host_id) {
+      throw new ApiError(409, "HOST_CHANGED", `host of instance ${inst.instance_id} has changed to ${inst.host_id}`);
+    }
     if (inst.state !== "ONLINE") {
-      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `\u5B9E\u4F8B\u72B6\u6001 ${inst.state}\uFF0C\u53EA\u6709 ONLINE \u53EF\u9886\u53D6`);
+      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `instance state is ${inst.state}; only ONLINE instances can claim`);
     }
     if (!inst.agent_profile_id) {
-      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", "\u5B9E\u4F8B\u672A\u7ED1\u5B9A Agent Profile");
+      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", "instance is not bound to an Agent Profile");
     }
-    const hostRes = await c.query(
-      `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
-      [inst.host_id]
-    );
-    const host = hostRes.rows[0];
-    if (!host) throw new ApiError(409, "HOST_UNKNOWN", `\u4E3B\u673A\u672A\u6CE8\u518C: ${inst.host_id}`);
     if (host.host_state !== "NORMAL" && host.host_state !== "WARNING") {
-      throw new ApiError(409, "HOST_NOT_ELIGIBLE", `\u4E3B\u673A ${host.host_id} \u72B6\u6001 ${host.host_state}\uFF0C\u6682\u505C\u6D3E\u53D1`);
+      throw new ApiError(409, "HOST_NOT_ELIGIBLE", `host ${host.host_id} is in state ${host.host_state}; dispatching paused`);
     }
-    const instanceActive = await countActive(
+    const mode = inst.scheduling_mode === "dynamic" ? "dynamic" : "static";
+    if (mode === "static") {
+      const instanceActive = await countActive(
+        c,
+        `SELECT count(*)::int AS n FROM leases
+          WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
+        [inst.instance_id]
+      );
+      if (instanceActive >= cfg.instance_limit) {
+        return null;
+      }
+    }
+    let res = mode === "dynamic" ? await instanceResourceState(c, inst.instance_id) : null;
+    if (mode === "dynamic" && !res?.grant) {
+      await recomputeHostGrants(c, host.host_id, policy);
+      res = await instanceResourceState(c, inst.instance_id);
+    }
+    const globalActive = await countActive(
       c,
-      `SELECT count(*)::int AS n FROM leases
-        WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
-      [inst.instance_id]
+      `SELECT count(*)::int AS n FROM leases WHERE released_at IS NULL AND expires_at > app_now()`,
+      []
     );
-    if (instanceActive >= cfg.instance_limit) {
-      return null;
-    }
+    if (globalActive >= cfg.global_limit) return null;
+    const roleActive = await countActive(
+      c,
+      `SELECT count(*)::int AS n
+         FROM leases l JOIN role_instances i USING (instance_id)
+        WHERE i.role_id = $1 AND l.released_at IS NULL AND l.expires_at > app_now()`,
+      [inst.role_id]
+    );
+    if (roleActive >= cfg.role_pool_limit) return null;
     const capabilities = inst.capabilities?.healthy ?? [];
     const unhealthy = inst.capabilities?.unhealthy ?? [];
     const usable = capabilities.filter((x) => !unhealthy.includes(x));
-    const capabilityScore = Number(inst.capability_score ?? 0);
+    const capabilityScore = mode === "dynamic" ? dynamicScoreOf(inst) : Number(inst.capability_score ?? 0);
+    const maxScan = Math.max(1, Number(cfg.max_candidate_scan ?? 20));
     const candidateSql = `
       SELECT t.*,
              effective_priority(t.priority_class, t.enqueued_at, $1) AS effective_priority,
@@ -5711,6 +6545,8 @@ async function claim(input) {
            SELECT 1 FROM task_relays r
             WHERE r.parent_task_id = t.task_id AND r.state = 'ACTIVE'
          )
+         AND t.unschedulable = FALSE
+         AND (t.resource_retry_after IS NULL OR t.resource_retry_after <= app_now())
          AND td.target_role = $2
          AND t.task_type = ANY($3::text[])
          AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= app_now())
@@ -5723,65 +6559,87 @@ async function claim(input) {
          AND ($7 <= 0 OR t.difficulty <= $7)
        ORDER BY effective_priority ASC, t.enqueued_at ASC, t.task_id ASC
        FOR UPDATE OF t SKIP LOCKED
-       LIMIT 1`;
-    for (let scanned = 0; scanned < MAX_CANDIDATE_SCAN; scanned++) {
-      const cand = await c.query(candidateSql, [
-        cfg.aging_after_seconds,
-        inst.role_id,
-        inst.allowed_task_types,
-        JSON.stringify(usable),
-        inst.payload_schemas,
-        inst.instance_id,
-        capabilityScore
-      ]);
-      const task = cand.rows[0];
-      if (!task) return null;
-      const blocked = await admit(c, cfg, inst, host, task);
+       LIMIT $8`;
+    const cand = await c.query(candidateSql, [
+      cfg.aging_after_seconds,
+      inst.role_id,
+      inst.allowed_task_types,
+      JSON.stringify(usable),
+      inst.payload_schemas,
+      inst.instance_id,
+      capabilityScore,
+      maxScan
+    ]);
+    const ctx = { cfg, inst, host, mode, res, policy };
+    for (const task of cand.rows) {
+      const blocked = await admit(c, ctx, task);
       if (blocked) {
-        const reasonChanged = task.resource_block_reason !== blocked.reason;
-        await c.query(
-          `UPDATE tasks SET resource_block_reason = $2, resource_evaluated_at = app_now(),
-                            version = version + 1, updated_at = app_now()
-            WHERE task_id = $1`,
-          [task.task_id, blocked.reason]
-        );
-        if (reasonChanged) {
-          await appendEvent(c, {
-            task_id: task.task_id,
-            event_type: "TASK_RESOURCE_BLOCKED",
-            from_status: "QUEUED",
-            to_status: "QUEUED",
-            actor: "scheduler",
-            payload: blocked,
-            trace_id: input.trace_id
-          });
-        }
+        if (blocked.halt) return null;
+        await recordBlock(c, task, blocked, cfg, input.trace_id);
         continue;
       }
-      return assign(c, cfg, inst, host, task, input.trace_id);
+      const assignment = await assign(c, cfg, inst, host, task, input.trace_id, mode, res?.grant ?? null);
+      if (mode === "dynamic") {
+        await recomputeHostGrants(c, host.host_id, policy);
+        const fresh = await instanceResourceState(c, inst.instance_id);
+        if (fresh?.grant) {
+          assignment.resource_grant = {
+            generation: fresh.grant.generation,
+            state: fresh.grant.state,
+            cpu_millicores: fresh.grant.cpu_millicores,
+            memory_bytes: fresh.grant.memory_bytes,
+            memory_low_bytes: fresh.grant.memory_low_bytes,
+            memory_high_bytes: fresh.grant.memory_high_bytes,
+            cpu_weight: fresh.grant.cpu_weight
+          };
+        }
+      }
+      return assignment;
     }
     return null;
   });
 }
-async function admit(c, cfg, inst, host, task) {
-  const globalActive = await countActive(
-    c,
-    `SELECT count(*)::int AS n FROM leases WHERE released_at IS NULL AND expires_at > app_now()`,
-    []
+async function recordBlock(c, task, blocked, cfg, traceId) {
+  const attempts = Number(task.blocked_attempts ?? 0) + 1;
+  const delay = backoffSeconds(
+    attempts - 1,
+    Number(cfg.backoff_base_seconds ?? 1),
+    Number(cfg.backoff_max_seconds ?? 60)
   );
-  if (globalActive >= cfg.global_limit) {
-    return { reason: "CONCURRENCY_LIMIT", detail: { scope: "global", limit: cfg.global_limit } };
-  }
-  const roleActive = await countActive(
-    c,
-    `SELECT count(*)::int AS n
-       FROM leases l JOIN role_instances i USING (instance_id)
-      WHERE i.role_id = $1 AND l.released_at IS NULL AND l.expires_at > app_now()`,
-    [inst.role_id]
+  const unschedulable = blocked.permanent === true && attempts >= Number(cfg.max_blocked_attempts ?? 8);
+  const reasonChanged = task.resource_block_reason !== blocked.reason;
+  await c.query(
+    `UPDATE tasks
+        SET resource_block_reason = $2,
+            resource_evaluated_at = app_now(),
+            blocked_attempts = $3,
+            resource_retry_after = app_now() + make_interval(secs => $4),
+            unschedulable = $5,
+            version = version + 1,
+            updated_at = app_now()
+      WHERE task_id = $1`,
+    [task.task_id, blocked.reason, attempts, delay, unschedulable]
   );
-  if (roleActive >= cfg.role_pool_limit) {
-    return { reason: "CONCURRENCY_LIMIT", detail: { scope: "role_pool", limit: cfg.role_pool_limit } };
+  if (reasonChanged || unschedulable) {
+    await appendEvent(c, {
+      task_id: task.task_id,
+      event_type: unschedulable ? "TASK_UNSCHEDULABLE" : "TASK_RESOURCE_BLOCKED",
+      from_status: "QUEUED",
+      to_status: "QUEUED",
+      actor: "scheduler",
+      payload: {
+        reason: blocked.reason,
+        detail: blocked.detail,
+        blocked_attempts: attempts,
+        retry_after_seconds: delay,
+        unschedulable
+      },
+      trace_id: traceId
+    });
   }
+}
+async function admit(c, ctx, task) {
+  const { cfg, inst, host, mode, res, policy } = ctx;
   const typeActive = await countActive(
     c,
     `SELECT count(*)::int AS n
@@ -5790,11 +6648,169 @@ async function admit(c, cfg, inst, host, task) {
     [task.task_type]
   );
   if (typeActive >= cfg.task_type_limit) {
-    return { reason: "CONCURRENCY_LIMIT", detail: { scope: "task_type", limit: cfg.task_type_limit } };
+    return {
+      reason: "CONCURRENCY_LIMIT",
+      detail: { scope: "task_type", limit: cfg.task_type_limit }
+    };
   }
   const profile = (await c.query(`SELECT * FROM resource_profiles WHERE profile_id = $1`, [task.resource_profile_id])).rows[0];
   if (!profile) {
-    return { reason: "INSUFFICIENT_MEMORY", detail: { why: "\u8D44\u6E90\u753B\u50CF\u4E0D\u5B58\u5728", profile: task.resource_profile_id } };
+    return {
+      reason: "INSUFFICIENT_MEMORY",
+      detail: { why: "resource profile not found", profile: task.resource_profile_id }
+    };
+  }
+  const needMem = BigInt(profile.memory_bytes);
+  const needCpu = Math.max(0, Math.trunc(Number(profile.cpu_millicores ?? 0)));
+  if (mode === "dynamic") {
+    const pool2 = res?.pool ?? null;
+    if (pool2?.reported_at && !pool2.cgroup_available) {
+      return {
+        reason: "CGROUP_UNAVAILABLE",
+        detail: { host: host.host_id, pool_id: pool2.pool_id, driver: pool2.cgroup_driver },
+        halt: true
+      };
+    }
+    if (!admissionAllowedByPressure(pool2?.pressure_state ?? "NORMAL")) {
+      return {
+        reason: "HOST_PRESSURE",
+        detail: {
+          host: host.host_id,
+          pressure_state: pool2?.pressure_state,
+          mem_used_bytes: pool2?.mem_used_bytes,
+          cpu_used_millicores: pool2?.cpu_used_millicores
+        },
+        halt: true
+      };
+    }
+    const grant = res?.grant ?? null;
+    if (!grant) {
+      return {
+        reason: "GRANT_PENDING",
+        detail: { host: host.host_id, instance: inst.instance_id },
+        halt: true
+      };
+    }
+    if (grant.state === "FAILED") {
+      return {
+        reason: "GRANT_FAILED",
+        detail: { host: host.host_id, instance: inst.instance_id, error: grant.last_error },
+        halt: true
+      };
+    }
+    if (policy.require_applied_before_start) {
+      const applied = Number(grant.applied_generation ?? 0);
+      if (grant.state !== "APPLIED" || applied < grant.generation) {
+        return {
+          reason: "GRANT_PENDING",
+          detail: {
+            host: host.host_id,
+            instance: inst.instance_id,
+            generation: grant.generation,
+            state: grant.state,
+            applied_generation: grant.applied_generation
+          },
+          halt: true
+        };
+      }
+    }
+    const reservedMem = Number(res?.reservedMemBytes ?? 0);
+    const reservedCpu = Number(res?.reservedCpuMillicores ?? 0);
+    if (Number(grant.memory_bytes) < reservedMem || Number(grant.cpu_millicores) < reservedCpu) {
+      return {
+        reason: "INSUFFICIENT_MEMORY",
+        detail: {
+          scope: "instance_overcommitted",
+          host: host.host_id,
+          instance: inst.instance_id,
+          grant_bytes: grant.memory_bytes,
+          grant_millicores: grant.cpu_millicores,
+          reserved_bytes: reservedMem,
+          reserved_millicores: reservedCpu,
+          grant_generation: grant.generation
+        },
+        halt: true
+      };
+    }
+    const budgetMem = Math.min(
+      Number(inst.cap_mem_bytes || Number.MAX_SAFE_INTEGER),
+      Math.max(Number(grant.memory_bytes), Number(res?.fairShareMemBytes ?? 0))
+    );
+    const budgetCpu = Math.min(
+      Number(inst.cap_cpu_millicores || Number.MAX_SAFE_INTEGER),
+      Math.max(Number(grant.cpu_millicores), Number(res?.fairShareCpuMillicores ?? 0))
+    );
+    const remainingMem = Math.max(0, budgetMem - reservedMem);
+    const remainingCpu = Math.max(0, budgetCpu - reservedCpu);
+    const needMemNum = Number(needMem);
+    if (needMemNum > remainingMem) {
+      return {
+        reason: "INSUFFICIENT_MEMORY",
+        detail: {
+          scope: "instance_grant",
+          host: host.host_id,
+          instance: inst.instance_id,
+          grant_bytes: grant.memory_bytes,
+          grant_generation: grant.generation,
+          grant_state: grant.state,
+          reserved_bytes: res?.reservedMemBytes ?? 0,
+          remaining_bytes: remainingMem,
+          requested_bytes: needMemNum
+        },
+        permanent: needMemNum > Number(inst.cap_mem_bytes || Number.MAX_SAFE_INTEGER)
+      };
+    }
+    if (needCpu > remainingCpu) {
+      return {
+        reason: "INSUFFICIENT_CPU",
+        detail: {
+          scope: "instance_grant",
+          host: host.host_id,
+          instance: inst.instance_id,
+          grant_millicores: grant.cpu_millicores,
+          grant_generation: grant.generation,
+          reserved_millicores: res?.reservedCpuMillicores ?? 0,
+          remaining_millicores: remainingCpu,
+          requested_millicores: needCpu
+        },
+        permanent: needCpu > Number(inst.cap_cpu_millicores || Number.MAX_SAFE_INTEGER)
+      };
+    }
+    const kMax = Math.max(1, Number(cfg.task_type_instance_limit ?? 4));
+    const typeOnInstance = await countActive(
+      c,
+      `SELECT count(*)::int AS n
+         FROM leases l JOIN tasks t USING (task_id)
+        WHERE l.instance_id = $1 AND t.task_type = $2
+          AND l.released_at IS NULL AND l.expires_at > app_now()`,
+      [inst.instance_id, task.task_type]
+    );
+    if (typeOnInstance >= kMax) {
+      return {
+        reason: "CONCURRENCY_LIMIT",
+        detail: { scope: "instance_task_type", limit: kMax, active: typeOnInstance }
+      };
+    }
+    const k = computeConcurrency({
+      remainingCpuMillicores: remainingCpu,
+      remainingMemBytes: remainingMem,
+      requestCpuMillicores: needCpu,
+      requestMemBytes: needMemNum,
+      kMax
+    });
+    if (k < 1) {
+      return {
+        reason: needMemNum > remainingMem ? "INSUFFICIENT_MEMORY" : "INSUFFICIENT_CPU",
+        detail: {
+          scope: "instance_grant",
+          k,
+          grant_generation: grant.generation,
+          remaining_millicores: remainingCpu,
+          remaining_bytes: remainingMem
+        }
+      };
+    }
+    return null;
   }
   const used = (await c.query(
     `SELECT COALESCE(SUM(memory_bytes),0)::bigint AS mem,
@@ -5804,7 +6820,6 @@ async function admit(c, cfg, inst, host, task) {
     [host.host_id]
   )).rows[0];
   const usedMem = BigInt(used.mem);
-  const needMem = BigInt(profile.memory_bytes);
   if (usedMem + needMem > BigInt(host.mem_available_bytes)) {
     return {
       reason: "INSUFFICIENT_MEMORY",
@@ -5813,12 +6828,13 @@ async function admit(c, cfg, inst, host, task) {
         available_bytes: host.mem_available_bytes.toString(),
         reserved_bytes: usedMem.toString(),
         requested_bytes: needMem.toString()
-      }
+      },
+      permanent: needMem > BigInt(host.mem_available_bytes)
     };
   }
   return null;
 }
-async function assign(c, cfg, inst, host, task, traceId) {
+async function assign(c, cfg, inst, host, task, traceId, mode, grant) {
   const attemptNumber = Number(
     (await c.query(
       `SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n
@@ -5871,6 +6887,10 @@ async function assign(c, cfg, inst, host, task, traceId) {
             attempt_count = attempt_count + 1,
             current_attempt_id = $2,
             resource_block_reason = NULL,
+            resource_evaluated_at = NULL,
+            resource_retry_after = NULL,
+            blocked_attempts = 0,
+            unschedulable = FALSE,
             version = version + 1,
             updated_at = app_now()
       WHERE task_id = $1
@@ -5905,6 +6925,8 @@ async function assign(c, cfg, inst, host, task, traceId) {
       host_id: host.host_id,
       grant_id: grantId,
       capability_score: Number(inst.capability_score ?? 0),
+      scheduling_mode: mode,
+      grant_generation: grant?.generation ?? null,
       difficulty: Number(task.difficulty ?? 0)
     },
     trace_id: traceId
@@ -5931,7 +6953,17 @@ async function assign(c, cfg, inst, host, task, traceId) {
       version: inst.agent_profile_version ?? null
     },
     api_profiles: inst.api_profile_ids ?? [],
-    started: false
+    started: false,
+    scheduling_mode: mode,
+    resource_grant: grant ? {
+      generation: grant.generation,
+      state: grant.state,
+      cpu_millicores: grant.cpu_millicores,
+      memory_bytes: grant.memory_bytes,
+      memory_low_bytes: grant.memory_low_bytes,
+      memory_high_bytes: grant.memory_high_bytes,
+      cpu_weight: grant.cpu_weight
+    } : null
   };
 }
 
@@ -5977,7 +7009,7 @@ function assertTransition(from, to, cause) {
     throw new ApiError(
       409,
       "STATE_CONFLICT",
-      `\u975E\u6CD5\u72B6\u6001\u8FC1\u79FB ${from} \u2192 ${to}${cause ? `\uFF08\u89E6\u53D1\uFF1A${cause}\uFF09` : ""}`,
+      `illegal state transition ${from} \u2192 ${to}${cause ? ` (cause: ${cause})` : ""}`,
       { from, to, allowed: Object.keys(TRANSITIONS[from] ?? {}) }
     );
   }
@@ -6020,7 +7052,7 @@ async function maybeRelayTask(task, input) {
   try {
     return await relayToNode(node, task, input, depth);
   } catch (e) {
-    logRelay(`\u4E0B\u63A8\u5931\u8D25 ${task.task_id} \u2192 ${node.node_id}`, e instanceof Error ? e.message : e);
+    logRelay(`Push-down failed ${task.task_id} \u2192 ${node.node_id}`, e instanceof Error ? e.message : e);
     return null;
   }
 }
@@ -6030,13 +7062,15 @@ async function relayNodeForInstance(instanceId) {
   ]);
   if (local) return null;
   return q1(
-    `SELECT node_id, url, max_builder_score, idle_builder_count
+    `SELECT node_id, url, max_builder_score, idle_builder_count,
+            mode, max_builder_ceiling, max_builder_live, pressure_state
        FROM scheduler_nodes
       WHERE parent_node_id = $1
         AND url IS NOT NULL AND url <> ''
         AND updated_at > app_now() - make_interval(secs => $2)
         AND instances @> $3::jsonb
-      ORDER BY node_id
+      ORDER BY CASE WHEN pressure_state IN ('NORMAL','BUSY','RECOVERING') THEN 0 ELSE 1 END,
+               node_id
       LIMIT 1`,
     [selfNodeId(), RELAY_NODE_FRESH_SECONDS, JSON.stringify([{ instance_id: instanceId }])]
   );
@@ -6050,7 +7084,13 @@ async function relayNodeForCapacity(taskType, difficulty, parentTaskId) {
         AND r.state = 'ONLINE'
         AND $1 = ANY(r.allowed_task_types)
         AND $2 = ANY(r.payload_schemas)
-        AND ($3 <= 0 OR r.capability_score >= $3)`,
+        -- Same-mode local routing compares W_live; static rows have live = frozen W.
+        AND (
+          $3 <= 0
+          OR (CASE WHEN r.scheduling_mode = 'dynamic'
+                   THEN GREATEST(r.capability_dispatch_score, r.capability_live_score, 0)
+                   ELSE r.capability_score END) >= $3
+        )`,
     [taskType, "1.0", d]
   );
   if (Number(local?.n ?? 0) > 0) return null;
@@ -6058,18 +7098,27 @@ async function relayNodeForCapacity(taskType, difficulty, parentTaskId) {
     parentTaskId
   ]);
   if (relayed) return null;
-  const order = d > 0 ? "max_builder_score ASC, idle_builder_count DESC, node_id" : "idle_builder_count DESC, max_builder_score DESC, node_id";
+  const sameMode = config.schedulingMode;
+  const order = d > 0 ? `(mode = $4) DESC,
+         (pressure_state IN ('NORMAL','BUSY','RECOVERING')) DESC,
+         CASE WHEN mode = $4 THEN max_builder_live ELSE max_builder_ceiling END ASC,
+         idle_builder_count DESC, node_id` : `(mode = $4) DESC,
+         (pressure_state IN ('NORMAL','BUSY','RECOVERING')) DESC,
+         idle_builder_count DESC,
+         CASE WHEN mode = $4 THEN max_builder_live ELSE max_builder_ceiling END DESC,
+         node_id`;
   return q1(
-    `SELECT node_id, url, max_builder_score, idle_builder_count
+    `SELECT node_id, url, max_builder_score, idle_builder_count,
+            mode, max_builder_ceiling, max_builder_live, pressure_state
        FROM scheduler_nodes
       WHERE parent_node_id = $1
         AND url IS NOT NULL AND url <> ''
         AND builder_count > 0
         AND updated_at > app_now() - make_interval(secs => $2)
-        AND ($3 <= 0 OR max_builder_score >= $3)
+        AND ($3 <= 0 OR max_builder_ceiling >= $3)
       ORDER BY ${order}
       LIMIT 1`,
-    [selfNodeId(), RELAY_NODE_FRESH_SECONDS, d]
+    [selfNodeId(), RELAY_NODE_FRESH_SECONDS, d, sameMode]
   );
 }
 async function relayToNode(node, task, input, depth) {
@@ -6102,16 +7151,16 @@ async function relayToNode(node, task, input, depth) {
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`\u5B50\u7ED3\u70B9\u8FD4\u56DE ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`child node returned ${res.status}: ${text.slice(0, 200)}`);
   }
   let out = null;
   try {
     out = JSON.parse(text);
   } catch {
-    throw new Error("\u5B50\u7ED3\u70B9\u8FD4\u56DE\u7684\u4E0D\u662F JSON");
+    throw new Error("child node did not return JSON");
   }
   const childTaskId = String(out?.task_id ?? "").trim();
-  if (!childTaskId) throw new Error("\u5B50\u7ED3\u70B9\u6CA1\u6709\u8FD4\u56DE task_id");
+  if (!childTaskId) throw new Error("child node did not return task_id");
   await tx(async (c) => {
     const inserted = await c.query(
       `INSERT INTO task_relays
@@ -6218,7 +7267,7 @@ async function sendChildCancel(row) {
       }
     );
     if (!res.ok && res.status !== 409) {
-      throw new Error(`\u5B50\u7ED3\u70B9\u53D6\u6D88\u8FD4\u56DE ${res.status}`);
+      throw new Error(`child node cancel returned ${res.status}`);
     }
     await q(
       `UPDATE task_relays SET cancel_sent = TRUE, updated_at = app_now()
@@ -6228,7 +7277,7 @@ async function sendChildCancel(row) {
   } catch (e) {
     await recordRelayFailure(
       row.parent_task_id,
-      `\u53D6\u6D88\u8F6C\u53D1\u5931\u8D25\uFF1A${e instanceof Error ? e.message : String(e)}`
+      `failed to forward cancellation: ${e instanceof Error ? e.message : String(e)}`
     );
   }
 }
@@ -6271,7 +7320,7 @@ async function syncRelays(limit = 50) {
         `${row.child_url.replace(/\/+$/, "")}/v1/tasks/${encodeURIComponent(row.child_task_id)}`,
         { signal: AbortSignal.timeout(RELAY_FETCH_TIMEOUT_MS) }
       );
-      if (!res.ok) throw new Error(`\u5B50\u7ED3\u70B9\u8FD4\u56DE ${res.status}`);
+      if (!res.ok) throw new Error(`child node returned ${res.status}`);
       child = await res.json();
     } catch (e) {
       await recordRelayFailure(
@@ -6283,7 +7332,7 @@ async function syncRelays(limit = 50) {
     const childStatus = String(child?.status ?? "").toUpperCase();
     const summary = childSummary(child);
     if (!childStatus) {
-      await recordRelayFailure(row.parent_task_id, "\u5B50\u7ED3\u70B9\u4EFB\u52A1\u7F3A\u5C11 status");
+      await recordRelayFailure(row.parent_task_id, "child task is missing status");
       continue;
     }
     if (childStatus === "SUCCEEDED" || childStatus === "FAILED" || childStatus === "CANCELLED") {
@@ -6307,59 +7356,16 @@ async function syncRelays(limit = 50) {
   return { checked: rows.length, updated };
 }
 
-// scheduler/src/capability.ts
-var CAPABILITY_WEIGHTS = {
-  cores: 0.3,
-  freq_ghz: 0.15,
-  mem_gb: 0.2,
-  disk_gb: 0.1,
-  model: 0.15,
-  api: 0.1
-};
-var CAPABILITY_CEILINGS = {
-  cores: 8,
-  freq_ghz: 4,
-  mem_gb: 32,
-  disk_gb: 256,
-  model: 10,
-  api: 10
-};
-function ratio(value, ceiling) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.min(n / ceiling, 1);
-}
-function computeCapabilityScore(detail) {
-  if (!detail) return 0;
-  const raw = CAPABILITY_WEIGHTS.cores * ratio(detail.cores, CAPABILITY_CEILINGS.cores) + CAPABILITY_WEIGHTS.freq_ghz * ratio(detail.freq_ghz, CAPABILITY_CEILINGS.freq_ghz) + CAPABILITY_WEIGHTS.mem_gb * ratio(detail.mem_gb, CAPABILITY_CEILINGS.mem_gb) + CAPABILITY_WEIGHTS.disk_gb * ratio(detail.disk_gb, CAPABILITY_CEILINGS.disk_gb) + CAPABILITY_WEIGHTS.model * ratio(detail.model, CAPABILITY_CEILINGS.model) + CAPABILITY_WEIGHTS.api * ratio(detail.api, CAPABILITY_CEILINGS.api);
-  return Math.max(0, Math.min(1e3, Math.round(raw * 1e3)));
-}
-function normalizeCapabilityDetail(detail) {
-  if (!detail || typeof detail !== "object") return {};
-  const d = detail;
-  const out = {};
-  for (const key of Object.keys(CAPABILITY_WEIGHTS)) {
-    const n = Number(d[key]);
-    if (Number.isFinite(n) && n >= 0) out[key] = n;
-  }
-  return out;
-}
-function normalizeDifficulty(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.min(1e3, Math.round(n));
-}
-
 // scheduler/src/repo/task-insert.ts
 async function insertTask(c, input) {
-  if (!input.task_type) throw new ApiError(400, "BAD_REQUEST", "task_type \u5FC5\u586B");
+  if (!input.task_type) throw new ApiError(400, "BAD_REQUEST", "task_type is required");
   const def = await c.query(`SELECT * FROM task_definitions WHERE task_type = $1`, [
     input.task_type
   ]);
   const d = def.rows[0];
-  if (!d) throw new ApiError(422, "TASK_TYPE_UNKNOWN", `\u672A\u5B9A\u4E49\u7684\u4EFB\u52A1\u7C7B\u578B: ${input.task_type}`);
+  if (!d) throw new ApiError(422, "TASK_TYPE_UNKNOWN", `unknown task type: ${input.task_type}`);
   const profile = input.resource_profile_id ?? d.default_profile;
-  if (!profile) throw new ApiError(422, "PROFILE_UNKNOWN", "\u7F3A\u5C11\u8D44\u6E90\u753B\u50CF");
+  if (!profile) throw new ApiError(422, "PROFILE_UNKNOWN", "missing resource profile");
   const taskId = newId("task");
   const priority = input.priority_class ?? 1;
   const difficulty = normalizeDifficulty(input.difficulty);
@@ -6442,11 +7448,11 @@ var PHASE_STATUS = {
 async function loadTemplate(c, templateId) {
   const row = (await c.query(`SELECT * FROM workflow_templates WHERE workflow_template_id = $1`, [templateId])).rows[0];
   if (!row) {
-    throw new ApiError(404, "WORKFLOW_TEMPLATE_UNKNOWN", `\u5DE5\u4F5C\u6D41\u6A21\u677F\u4E0D\u5B58\u5728: ${templateId}`);
+    throw new ApiError(404, "WORKFLOW_TEMPLATE_UNKNOWN", `workflow template not found: ${templateId}`);
   }
   const phases = row.phases;
   if (!Array.isArray(phases) || phases.length === 0) {
-    throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "\u6A21\u677F\u6CA1\u6709 phases");
+    throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "template has no phases");
   }
   return { ...row, phases };
 }
@@ -6460,13 +7466,13 @@ async function appendWorkflowEvent(c, runId, eventType, payload) {
 }
 async function createWorkflowRun(input) {
   if (!input.workflow_template_id) {
-    throw new ApiError(400, "BAD_REQUEST", "workflow_template_id \u5FC5\u586B");
+    throw new ApiError(400, "BAD_REQUEST", "workflow_template_id is required");
   }
   return tx(async (c) => {
     const tpl = await loadTemplate(c, input.workflow_template_id);
     const first = tpl.phases[0];
     if (!first.task_type) {
-      throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "\u7B2C\u4E00\u4E2A\u9636\u6BB5\u5FC5\u987B\u6709 task_type");
+      throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "the first phase must have a task_type");
     }
     const runId = newId("wfr");
     const context = {
@@ -6527,7 +7533,7 @@ async function advanceWorkflow(c, task, outcome) {
   const tpl = await loadTemplate(c, run.workflow_template_id);
   const idx = tpl.phases.findIndex((p) => p.phase === run.current_phase);
   if (idx < 0) {
-    throw new ApiError(500, "WORKFLOW_STATE_INVALID", `\u5F53\u524D\u9636\u6BB5\u4E0D\u5728\u6A21\u677F\u91CC: ${run.current_phase}`);
+    throw new ApiError(500, "WORKFLOW_STATE_INVALID", `current phase is not in the template: ${run.current_phase}`);
   }
   const next = tpl.phases[idx + 1];
   if (!next) {
@@ -6614,7 +7620,7 @@ async function enterApproval(c, run, prev, tpl, phase) {
     [prev.task_id]
   )).rows[0];
   if (phase.artifact_required && !artifact) {
-    throw new ApiError(409, "ARTIFACT_REQUIRED", "\u8BE5\u5BA1\u6279\u9636\u6BB5\u8981\u6C42\u4E0A\u4E00\u9636\u6BB5\u4E0A\u4F20\u5E76\u901A\u8FC7\u6821\u9A8C\u7684\u5236\u54C1");
+    throw new ApiError(409, "ARTIFACT_REQUIRED", "this approval phase requires an artifact uploaded and verified in the previous phase");
   }
   const attempt = (await c.query(
     `SELECT outputs FROM task_attempts
@@ -6652,14 +7658,14 @@ async function enterApproval(c, run, prev, tpl, phase) {
 async function decideApproval(input) {
   requireApprovalConfigured();
   if (!input.approval_token || !input.operator_id) {
-    throw new ApiError(400, "BAD_REQUEST", "approval_token / operator_id \u5FC5\u586B");
+    throw new ApiError(400, "BAD_REQUEST", "approval_token / operator_id are required");
   }
   if (input.decision !== "APPROVED" && input.decision !== "REJECTED") {
-    throw new ApiError(400, "BAD_REQUEST", "decision \u5FC5\u987B\u662F APPROVED / REJECTED");
+    throw new ApiError(400, "BAD_REQUEST", "decision must be APPROVED or REJECTED");
   }
   const claims = verifyApprovalToken(input.approval_token);
   if (claims.operator_id !== input.operator_id) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u5BA1\u6279\u4EE4\u724C\u7684 operator \u4E0E\u8C03\u7528\u65B9\u4E0D\u4E00\u81F4", {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "approval token operator does not match the caller", {
       token_operator: claims.operator_id,
       requested: input.operator_id
     });
@@ -6669,22 +7675,22 @@ async function decideApproval(input) {
       `SELECT * FROM approval_requests WHERE task_id = $1 AND status = 'PENDING' FOR UPDATE`,
       [input.task_id]
     )).rows[0];
-    if (!req) throw new ApiError(404, "APPROVAL_NOT_FOUND", "\u6CA1\u6709\u5F85\u51B3\u5BA1\u6279\u8BF7\u6C42");
+    if (!req) throw new ApiError(404, "APPROVAL_NOT_FOUND", "no pending approval request");
     if (claims.approval_request_id !== req.approval_request_id) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u5BA1\u6279\u4EE4\u724C\u4E0D\u662F\u4E3A\u8FD9\u6761\u8BF7\u6C42\u7B7E\u53D1\u7684", {
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "approval token was not issued for this request", {
         token_request: claims.approval_request_id,
         pending_request: req.approval_request_id
       });
     }
     const tokenDigest = claims.subject_digest ?? null;
     if (req.subject_digest && tokenDigest !== req.subject_digest) {
-      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "\u5BA1\u6279\u5BF9\u8C61\u5DF2\u53D8\u5316\uFF0C\u5FC5\u987B\u91CD\u65B0\u5BA1\u6279", {
+      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "the approval subject has changed; approval must be repeated", {
         expected: req.subject_digest,
         got: tokenDigest
       });
     }
     if (input.subject_digest && input.subject_digest !== tokenDigest) {
-      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "\u8BF7\u6C42\u4F53\u6458\u8981\u4E0E\u5BA1\u6279\u4EE4\u724C\u4E0D\u4E00\u81F4", {
+      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "request body digest does not match the approval token", {
         token: tokenDigest,
         body: input.subject_digest
       });
@@ -6692,7 +7698,7 @@ async function decideApproval(input) {
     const reqScope = [...req.action_scope ?? []].sort();
     const tokenScope = [...claims.action_scope].sort();
     if (reqScope.join(",") !== tokenScope.join(",")) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u5BA1\u6279\u4EE4\u724C\u7684\u64CD\u4F5C\u8303\u56F4\u4E0E\u8BF7\u6C42\u4E0D\u4E00\u81F4", {
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "approval token action scope does not match the request", {
         expected: reqScope,
         got: tokenScope
       });
@@ -6700,10 +7706,10 @@ async function decideApproval(input) {
     const run = (await c.query(`SELECT * FROM workflow_runs WHERE workflow_run_id = $1 FOR UPDATE`, [
       req.workflow_run_id
     ])).rows[0];
-    if (!run) throw new ApiError(409, "STATE_CONFLICT", "\u5BA1\u6279\u5BF9\u5E94\u7684\u5DE5\u4F5C\u6D41\u4E0D\u5B58\u5728");
+    if (!run) throw new ApiError(409, "STATE_CONFLICT", "the workflow for this approval does not exist");
     if (claims.jti) {
       const used = await q1(`SELECT 1 FROM approvals WHERE token_jti = $1`, [claims.jti]);
-      if (used) throw new ApiError(409, "APPROVAL_TOKEN_USED", "\u5BA1\u6279\u4EE4\u724C\u5DF2\u88AB\u4F7F\u7528");
+      if (used) throw new ApiError(409, "APPROVAL_TOKEN_USED", "approval token has already been used");
     }
     const approval = (await c.query(
       `INSERT INTO approvals
@@ -6772,7 +7778,7 @@ async function decideApproval(input) {
 }
 async function getWorkflowRun(runId) {
   const run = await q1(`SELECT * FROM workflow_runs WHERE workflow_run_id = $1`, [runId]);
-  if (!run) throw new ApiError(404, "NOT_FOUND", `\u5DE5\u4F5C\u6D41\u4E0D\u5B58\u5728: ${runId}`);
+  if (!run) throw new ApiError(404, "NOT_FOUND", `workflow not found: ${runId}`);
   const tasks = await q(
     `SELECT task_id, task_type, status, parent_task_id, current_attempt_id,
             attempt_count, enqueued_at, updated_at
@@ -6837,7 +7843,7 @@ async function createTask(input) {
 }
 async function getTask(taskId) {
   const task = await q1("SELECT * FROM tasks WHERE task_id = $1", [taskId]);
-  if (!task) throw new ApiError(404, "NOT_FOUND", `\u4EFB\u52A1\u4E0D\u5B58\u5728: ${taskId}`);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
   const attempts = await q(
     `SELECT attempt_id, attempt_number, instance_id, status, result_summary, outputs,
             error, started_at, finished_at
@@ -6896,10 +7902,10 @@ async function listEvents(taskId) {
 async function cancelTask(taskId, actor = "operator") {
   return tx(async (c) => {
     const row = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
-    if (!row) throw new ApiError(404, "NOT_FOUND", `\u4EFB\u52A1\u4E0D\u5B58\u5728: ${taskId}`);
+    if (!row) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
     const from = row.status;
     if (isTerminal(from)) {
-      throw new ApiError(409, "STATE_CONFLICT", `\u4EFB\u52A1\u5DF2\u7EC8\u7ED3\uFF08${from}\uFF09\uFF0C\u4E0D\u80FD\u53D6\u6D88`);
+      throw new ApiError(409, "STATE_CONFLICT", `task is already terminal (${from}); cannot cancel`);
     }
     if (from === "RUNNING") {
       await c.query(
@@ -6980,14 +7986,14 @@ var NON_RETRYABLE = /* @__PURE__ */ new Set([
   "ARTIFACT_PATH_DENIED"
 ]);
 var DEFAULT_BACKOFF = [300, 900, 2700];
-function backoffSeconds(table, attemptCount) {
+function backoffSeconds2(table, attemptCount) {
   const arr = Array.isArray(table) && table.length > 0 ? table : DEFAULT_BACKOFF;
   const idx = Math.min(Math.max(attemptCount - 1, 0), arr.length - 1);
   return arr[idx] ?? 300;
 }
 async function lockContext(c, attemptId, proof2) {
   const attempt = (await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])).rows[0];
-  if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt \u4E0D\u5B58\u5728: ${attemptId}`);
+  if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${attemptId}`);
   const task = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [attempt.task_id])).rows[0];
   const lease = (await c.query(`SELECT * FROM leases WHERE attempt_id = $1 FOR UPDATE`, [attemptId])).rows[0];
   const maxF = (await c.query(
@@ -6995,19 +8001,19 @@ async function lockContext(c, attemptId, proof2) {
     [attempt.task_id]
   )).rows[0].f;
   if (Number(proof2.fencing_token) < Number(maxF)) {
-    throw new ApiError(409, "FENCING_STALE", "fencing_token \u5DF2\u8FC7\u671F\uFF0C\u5199\u5165\u88AB\u62D2\u7EDD", {
+    throw new ApiError(409, "FENCING_STALE", "fencing_token is stale; write rejected", {
       task_id: attempt.task_id,
       current_fencing: Number(maxF),
       got: Number(proof2.fencing_token),
       attempt_id: attemptId
     });
   }
-  if (!lease || lease.released_at) throw new ApiError(409, "LEASE_EXPIRED", "\u79DF\u7EA6\u5DF2\u91CA\u653E\u6216\u5DF2\u56DE\u6536");
+  if (!lease || lease.released_at) throw new ApiError(409, "LEASE_EXPIRED", "lease has been released or reclaimed");
   if (lease.lease_token !== proof2.lease_token) {
-    throw new ApiError(409, "LEASE_MISMATCH", "lease_token \u4E0E\u5F53\u524D attempt \u4E0D\u5339\u914D");
+    throw new ApiError(409, "LEASE_MISMATCH", "lease_token does not match the current attempt");
   }
   if (Number(lease.fencing_token) !== Number(proof2.fencing_token)) {
-    throw new ApiError(409, "FENCING_STALE", "fencing_token \u5DF2\u8FC7\u671F\uFF0C\u5199\u5165\u88AB\u62D2\u7EDD", {
+    throw new ApiError(409, "FENCING_STALE", "fencing_token is stale; write rejected", {
       task_id: attempt.task_id,
       expected: Number(lease.fencing_token),
       got: Number(proof2.fencing_token)
@@ -7016,13 +8022,13 @@ async function lockContext(c, attemptId, proof2) {
   const nowRes = await c.query(`SELECT app_now() AS t`);
   const now = nowRes.rows[0].t;
   if (new Date(lease.expires_at).getTime() <= now.getTime()) {
-    throw new ApiError(409, "LEASE_EXPIRED", "\u79DF\u7EA6\u5DF2\u8FC7\u671F");
+    throw new ApiError(409, "LEASE_EXPIRED", "lease has expired");
   }
   if (proof2.instance_id && proof2.instance_id !== lease.instance_id) {
-    throw new ApiError(409, "INSTANCE_MISMATCH", "\u8BE5 attempt \u4E0D\u5C5E\u4E8E\u6B64\u5B9E\u4F8B");
+    throw new ApiError(409, "INSTANCE_MISMATCH", "this attempt does not belong to this instance");
   }
   if (proof2.auth_instance_id && proof2.auth_instance_id !== lease.instance_id) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u5B9E\u4F8B\u4EE4\u724C\u4E0D\u80FD\u64CD\u4F5C\u5176\u4ED6\u5B9E\u4F8B\u7684 attempt", {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "instance tokens cannot operate on attempts of other instances", {
       token_sub: proof2.auth_instance_id,
       lease_owner: lease.instance_id
     });
@@ -7036,7 +8042,7 @@ async function startAck(attemptId, proof2) {
       return { attempt_id: attemptId, status: "STARTED", idempotent: true };
     }
     if (attempt.status !== "CREATED") {
-      throw new ApiError(409, "STATE_CONFLICT", `attempt \u5DF2\u662F ${attempt.status}`);
+      throw new ApiError(409, "STATE_CONFLICT", `attempt is already ${attempt.status}`);
     }
     if (proof2.accepted === false) {
       await c.query(
@@ -7102,7 +8108,7 @@ async function renew(attemptId, proof2) {
       );
       return { attempt_id: attemptId, lease_expires_at: res.rows[0].expires_at };
     }
-    throw new ApiError(409, "STATE_CONFLICT", `attempt \u5DF2\u662F ${attempt.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `attempt is already ${attempt.status}`);
   });
 }
 async function progress(attemptId, proof2) {
@@ -7122,7 +8128,7 @@ async function progress(attemptId, proof2) {
 async function submitResult(attemptId, input) {
   return tx(async (c) => {
     const attemptRow = (await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])).rows[0];
-    if (!attemptRow) throw new ApiError(404, "NOT_FOUND", `attempt \u4E0D\u5B58\u5728: ${attemptId}`);
+    if (!attemptRow) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${attemptId}`);
     if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(attemptRow.status)) {
       return {
         idempotent: true,
@@ -7134,10 +8140,10 @@ async function submitResult(attemptId, input) {
     }
     const { task, lease } = await lockContext(c, attemptId, input);
     if (!["RUNNING", "ASSIGNED"].includes(task.status)) {
-      throw new ApiError(409, "STATE_CONFLICT", `\u4EFB\u52A1\u72B6\u6001 ${task.status} \u4E0D\u63A5\u53D7\u7ED3\u679C`);
+      throw new ApiError(409, "STATE_CONFLICT", `task state ${task.status} does not accept results`);
     }
     if (task.status === "ASSIGNED") {
-      throw new ApiError(409, "STATE_CONFLICT", "\u4EFB\u52A1\u8FD8\u6CA1 start-ack\uFF0C\u4E0D\u63A5\u53D7\u7ED3\u679C");
+      throw new ApiError(409, "STATE_CONFLICT", "task has not been start-acked; results are not accepted");
     }
     if (input.status === "SUCCEEDED") {
       assertTransition(task.status, "SUCCEEDED", "result_succeeded");
@@ -7199,7 +8205,7 @@ async function submitResult(attemptId, input) {
     await closeActiveLease(c, task.task_id, "ATTEMPT_FAILED", "RELEASED");
     if (retryable) {
       const cfg = (await c.query(`SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`)).rows[0];
-      const backoff = backoffSeconds(cfg.retry_backoff_seconds, task.attempt_count);
+      const backoff = backoffSeconds2(cfg.retry_backoff_seconds, task.attempt_count);
       assertTransition(task.status, "QUEUED", "result_failed_retryable");
       const updated2 = await c.query(
         `UPDATE tasks
@@ -7267,7 +8273,7 @@ function ensureDir() {
 function normalizeDigest(value) {
   const hex = value.startsWith("sha256:") ? value.slice(7) : value;
   if (!/^[0-9a-f]{64}$/i.test(hex)) {
-    throw new ApiError(400, "BAD_REQUEST", "sha256 \u5FC5\u987B\u662F 64 \u4F4D\u5341\u516D\u8FDB\u5236");
+    throw new ApiError(400, "BAD_REQUEST", "sha256 must be 64 hex characters");
   }
   return `sha256:${hex.toLowerCase()}`;
 }
@@ -7275,26 +8281,26 @@ function digestOf(data) {
   return `sha256:${createHash2("sha256").update(data).digest("hex")}`;
 }
 async function createArtifact(input, instanceId) {
-  if (!input.task_id) throw new ApiError(400, "BAD_REQUEST", "task_id \u5FC5\u586B");
+  if (!input.task_id) throw new ApiError(400, "BAD_REQUEST", "task_id is required");
   const declared = normalizeDigest(input.sha256);
   const task = await q1(`SELECT task_id FROM tasks WHERE task_id = $1`, [input.task_id]);
-  if (!task) throw new ApiError(404, "NOT_FOUND", `\u4EFB\u52A1\u4E0D\u5B58\u5728: ${input.task_id}`);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${input.task_id}`);
   let owner = instanceId;
   if (input.attempt_id) {
     const attempt = await q1(
       `SELECT task_id, instance_id FROM task_attempts WHERE attempt_id = $1`,
       [input.attempt_id]
     );
-    if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt \u4E0D\u5B58\u5728: ${input.attempt_id}`);
+    if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${input.attempt_id}`);
     if (attempt.task_id !== input.task_id) {
-      throw new ApiError(409, "STATE_CONFLICT", "attempt \u4E0D\u5C5E\u4E8E\u8BE5\u4EFB\u52A1");
+      throw new ApiError(409, "STATE_CONFLICT", "attempt does not belong to this task");
     }
     if (instanceId && attempt.instance_id !== instanceId) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u53EA\u80FD\u4E3A\u81EA\u8EAB\u7684 attempt \u4E0A\u4F20\u5236\u54C1");
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "artifacts may only be uploaded for your own attempt");
     }
     owner = attempt.instance_id;
   }
-  if (!owner) throw new ApiError(400, "BAD_REQUEST", "\u7F3A\u5C11 instance_id");
+  if (!owner) throw new ApiError(400, "BAD_REQUEST", "missing instance_id");
   const artifactId = newId("art");
   const row = await q1(
     `INSERT INTO artifacts
@@ -7327,15 +8333,15 @@ function storagePath(storageRef) {
 }
 async function putArtifactContent(artifactId, data, instanceId) {
   if (data.length > MAX_BYTES) {
-    throw new ApiError(413, "PAYLOAD_TOO_LARGE", "\u5236\u54C1\u8D85\u8FC7 64MB");
+    throw new ApiError(413, "PAYLOAD_TOO_LARGE", "artifact exceeds 64MB");
   }
   const row = await q1(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `\u5236\u54C1\u4E0D\u5B58\u5728: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   if (instanceId && row.instance_id !== instanceId) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u53EA\u80FD\u4E0A\u4F20\u81EA\u8EAB\u5B9E\u4F8B\u7684\u5236\u54C1");
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "artifacts may only be uploaded for your own instance");
   }
   if (row.status !== "PENDING") {
-    throw new ApiError(409, "STATE_CONFLICT", `\u5236\u54C1\u5DF2\u662F ${row.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `artifact is already ${row.status}`);
   }
   const file = storagePath(row.storage_ref);
   const tmp = `${file}.${process.pid}.tmp`;
@@ -7346,19 +8352,19 @@ async function putArtifactContent(artifactId, data, instanceId) {
 }
 async function completeArtifact(artifactId, instanceId) {
   const row = await q1(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `\u5236\u54C1\u4E0D\u5B58\u5728: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   if (instanceId && row.instance_id !== instanceId) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u53EA\u80FD\u786E\u8BA4\u81EA\u8EAB\u5B9E\u4F8B\u7684\u5236\u54C1");
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "artifacts may only be confirmed for your own instance");
   }
   if (row.status === "COMPLETE") {
     return { ...row, idempotent: true };
   }
   if (row.status !== "PENDING") {
-    throw new ApiError(409, "STATE_CONFLICT", `\u5236\u54C1\u5DF2\u662F ${row.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `artifact is already ${row.status}`);
   }
   const file = storagePath(row.storage_ref);
   if (!fs2.existsSync(file)) {
-    throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "\u5236\u54C1\u5185\u5BB9\u5C1A\u672A\u4E0A\u4F20");
+    throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "artifact content has not been uploaded");
   }
   const actual = digestOf(fs2.readFileSync(file));
   if (actual !== row.declared_sha256) {
@@ -7366,7 +8372,7 @@ async function completeArtifact(artifactId, instanceId) {
       artifactId,
       actual
     ]);
-    throw new ApiError(422, "ARTIFACT_DIGEST_MISMATCH", "\u5236\u54C1\u5185\u5BB9\u4E0E\u58F0\u660E\u6458\u8981\u4E0D\u4E00\u81F4", {
+    throw new ApiError(422, "ARTIFACT_DIGEST_MISMATCH", "artifact content does not match the declared digest", {
       declared: row.declared_sha256,
       actual
     });
@@ -7382,14 +8388,14 @@ async function completeArtifact(artifactId, instanceId) {
 }
 async function getArtifact(artifactId) {
   const row = await q1(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `\u5236\u54C1\u4E0D\u5B58\u5728: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   return row;
 }
 async function readArtifactContent(artifactId, instanceId) {
   const row = await q1(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `\u5236\u54C1\u4E0D\u5B58\u5728: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   if (row.status !== "COMPLETE") {
-    throw new ApiError(409, "STATE_CONFLICT", `\u5236\u54C1\u5C1A\u672A\u901A\u8FC7\u6821\u9A8C: ${row.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `artifact has not passed verification: ${row.status}`);
   }
   if (instanceId && row.instance_id !== instanceId) {
     const allowed = await q1(
@@ -7407,11 +8413,11 @@ async function readArtifactContent(artifactId, instanceId) {
       [artifactId, instanceId]
     );
     if (!allowed) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "\u53EA\u80FD\u8BFB\u53D6\u672C\u5B9E\u4F8B\u7684\u5236\u54C1\uFF0C\u6216\u8C03\u5EA6\u673A\u4EA4\u63A5\u7ED9\u5F53\u524D\u4EFB\u52A1\u7684\u4E0A\u6E38\u5236\u54C1");
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "you may only read artifacts of your own instance, or upstream artifacts handed to the current task by the scheduler");
     }
   }
   const file = storagePath(row.storage_ref);
-  if (!fs2.existsSync(file)) throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "\u5236\u54C1\u5185\u5BB9\u4E0D\u5B58\u5728");
+  if (!fs2.existsSync(file)) throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "artifact content does not exist");
   return {
     artifact_id: row.artifact_id,
     media_type: row.media_type ?? "application/octet-stream",
@@ -7434,37 +8440,147 @@ async function latestEventId() {
 
 // scheduler/src/repo/hosts.ts
 var STATES = /* @__PURE__ */ new Set(["NORMAL", "WARNING", "THROTTLED", "PROTECTING", "RECOVERING"]);
+var PRESSURE = /* @__PURE__ */ new Set(["NORMAL", "BUSY", "PRESSURE", "CRITICAL", "RECOVERING"]);
+var nonNeg = (value) => Math.max(0, Math.trunc(Number(value) || 0));
+async function upsertPoolRow(c, hostId, pool2) {
+  const instances = Array.isArray(pool2.instances) ? pool2.instances : [];
+  const old = (await c.query(
+    `SELECT cpu_used_millicores, mem_used_bytes, mem_working_set_bytes
+         FROM host_resource_pools WHERE host_id = $1`,
+    [hostId]
+  )).rows[0];
+  const alpha = Math.max(0, Math.min(1, config.dynamicPolicy.ewma_alpha));
+  const smooth = (next, prev) => prev === void 0 ? next : Math.round(alpha * next + (1 - alpha) * Number(prev));
+  const cpuUsed = smooth(nonNeg(pool2.cpu_used_millicores), old?.cpu_used_millicores);
+  const memUsed = smooth(nonNeg(pool2.mem_used_bytes), old?.mem_used_bytes);
+  const workingSet = nonNeg(pool2.mem_working_set_bytes) || memUsed;
+  const pressure = String(pool2.pressure_state ?? "").toUpperCase();
+  await c.query(
+    `INSERT INTO host_resource_pools
+       (host_id, pool_id, cgroup_available, cgroup_driver,
+        cpu_total_millicores, mem_total_bytes,
+        cpu_used_millicores, mem_used_bytes, mem_working_set_bytes,
+        psi, cgroup, reported_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,COALESCE($12::timestamptz,app_now()),app_now())
+     ON CONFLICT (host_id) DO UPDATE SET
+       pool_id = EXCLUDED.pool_id,
+       cgroup_available = EXCLUDED.cgroup_available,
+       cgroup_driver = EXCLUDED.cgroup_driver,
+       cpu_total_millicores = CASE WHEN EXCLUDED.cpu_total_millicores > 0 THEN EXCLUDED.cpu_total_millicores ELSE host_resource_pools.cpu_total_millicores END,
+       mem_total_bytes = CASE WHEN EXCLUDED.mem_total_bytes > 0 THEN EXCLUDED.mem_total_bytes ELSE host_resource_pools.mem_total_bytes END,
+       cpu_used_millicores = EXCLUDED.cpu_used_millicores,
+       mem_used_bytes = EXCLUDED.mem_used_bytes,
+       mem_working_set_bytes = EXCLUDED.mem_working_set_bytes,
+       pressure_state = CASE WHEN $13::text = ANY('{NORMAL,BUSY,PRESSURE,CRITICAL,RECOVERING}'::text[]) THEN $13::text ELSE host_resource_pools.pressure_state END,
+       psi = EXCLUDED.psi,
+       cgroup = EXCLUDED.cgroup,
+       reported_at = EXCLUDED.reported_at,
+       updated_at = app_now()`,
+    [
+      hostId,
+      String(pool2.pool_id ?? "osacp.slice/pool.slice"),
+      Boolean(pool2.cgroup_available),
+      String(pool2.cgroup_driver ?? "cgroupfs"),
+      nonNeg(pool2.cpu_total_millicores),
+      nonNeg(pool2.mem_total_bytes),
+      Math.min(cpuUsed, nonNeg(pool2.cpu_total_millicores) || cpuUsed),
+      Math.min(memUsed, nonNeg(pool2.mem_total_bytes) || memUsed),
+      workingSet,
+      JSON.stringify(pool2.psi ?? {}),
+      JSON.stringify(pool2.cgroup ?? {}),
+      pool2.reported_at ?? null,
+      // The scheduler owns the pressure state machine; a report that omits it must not reset it to NORMAL.
+      PRESSURE.has(pressure) ? pressure : null
+    ]
+  );
+  for (const item of instances) {
+    const instanceId = String(item.instance_id ?? "").trim();
+    if (!instanceId) continue;
+    const prev = (await c.query(
+      `SELECT usage_cpu_millicores, usage_mem_bytes
+           FROM role_instances WHERE instance_id = $1 AND host_id = $2`,
+      [instanceId, hostId]
+    )).rows[0];
+    if (!prev) continue;
+    const cpu = smooth(nonNeg(item.cpu_millicores), prev.usage_cpu_millicores);
+    const mem = smooth(nonNeg(item.mem_bytes), prev.usage_mem_bytes);
+    await c.query(
+      `UPDATE role_instances
+          SET usage_cpu_millicores = $2, usage_mem_bytes = $3, usage_updated_at = app_now()
+        WHERE instance_id = $1`,
+      [instanceId, cpu, mem]
+    );
+    const appliedGeneration = Number(item.applied_generation ?? 0);
+    if (Number.isFinite(appliedGeneration) && appliedGeneration > 0) {
+      await c.query(
+        `UPDATE resource_grants
+            SET state = CASE WHEN $3::bigint >= generation THEN 'APPLIED' ELSE 'SUPERSEDED' END,
+                applied_generation = $3::bigint,
+                applied_cpu_millicores = $4,
+                applied_memory_bytes = $5,
+                applied_memory_low_bytes = $6,
+                applied_memory_high_bytes = $7,
+                applied_cpu_weight = $8,
+                applied_at = CASE WHEN $3::bigint >= generation THEN app_now() ELSE applied_at END,
+                updated_at = app_now()
+          WHERE host_id = $1 AND instance_id = $2
+            AND $3::bigint >= COALESCE(applied_generation, 0)`,
+        [
+          hostId,
+          instanceId,
+          appliedGeneration,
+          item.applied_cpu_millicores ?? null,
+          item.applied_memory_bytes ?? null,
+          item.applied_memory_low_bytes ?? null,
+          item.applied_memory_high_bytes ?? null,
+          item.applied_cpu_weight ?? null
+        ]
+      );
+    }
+  }
+}
 async function upsertHost(input) {
   const hostId = String(input.host_id ?? "").trim();
-  if (!hostId) throw new ApiError(400, "BAD_REQUEST", "host_id \u5FC5\u586B");
+  if (!hostId) throw new ApiError(400, "BAD_REQUEST", "host_id is required");
   const raw = String(input.host_state ?? "NORMAL").toUpperCase();
   const hostState = STATES.has(raw) ? raw : "PROTECTING";
   const memTotal = Math.max(0, Math.trunc(Number(input.mem_total_bytes) || 0));
   const memAvailable = Math.min(memTotal, Math.max(0, Math.trunc(Number(input.mem_available_bytes) || 0)));
-  await q(
-    `INSERT INTO hosts
-       (host_id, name, os, arch, host_state, cpu_total, mem_total_bytes, mem_available_bytes, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,app_now())
-     ON CONFLICT (host_id) DO UPDATE SET
-       name = EXCLUDED.name,
-       os = EXCLUDED.os,
-       arch = EXCLUDED.arch,
-       host_state = EXCLUDED.host_state,
-       cpu_total = EXCLUDED.cpu_total,
-       mem_total_bytes = EXCLUDED.mem_total_bytes,
-       mem_available_bytes = EXCLUDED.mem_available_bytes,
-       updated_at = app_now()`,
-    [
-      hostId,
-      String(input.name ?? hostId),
-      String(input.os ?? "Linux"),
-      String(input.arch ?? "-"),
-      hostState,
-      Math.max(1, Math.trunc(Number(input.cpu_total) || 4)),
-      memTotal,
-      memAvailable
-    ]
-  );
+  const cpuTotal = Math.max(1, Math.trunc(Number(input.cpu_total) || 4));
+  await tx(async (c) => {
+    await c.query(
+      `INSERT INTO hosts
+         (host_id, name, os, arch, host_state, cpu_total, mem_total_bytes, mem_available_bytes, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,app_now())
+       ON CONFLICT (host_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         os = EXCLUDED.os,
+         arch = EXCLUDED.arch,
+         host_state = EXCLUDED.host_state,
+         cpu_total = EXCLUDED.cpu_total,
+         mem_total_bytes = EXCLUDED.mem_total_bytes,
+         mem_available_bytes = EXCLUDED.mem_available_bytes,
+         updated_at = app_now()`,
+      [
+        hostId,
+        String(input.name ?? hostId),
+        String(input.os ?? "Linux"),
+        String(input.arch ?? "-"),
+        hostState,
+        cpuTotal,
+        memTotal,
+        memAvailable
+      ]
+    );
+    await c.query(
+      `INSERT INTO host_resource_pools
+         (host_id, cpu_total_millicores, mem_total_bytes, reported_at, updated_at)
+       VALUES ($1,$2,$3,NULL,app_now())
+       ON CONFLICT (host_id) DO NOTHING`,
+      [hostId, cpuTotal * 1e3, memTotal]
+    );
+    if (input.resource_pool) await upsertPoolRow(c, hostId, input.resource_pool);
+  });
   return { host_id: hostId, host_state: hostState };
 }
 
@@ -7474,14 +8590,14 @@ var STALE_CHILD_SECONDS = Math.max(
   Math.ceil(config.federationIntervalMs / 1e3) * 3
 );
 function clampScore(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(1e6, Math.round(n));
+  const n2 = Number(value);
+  if (!Number.isFinite(n2) || n2 < 0) return 0;
+  return Math.min(1e6, Math.round(n2));
 }
 function count(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(1e6, Math.round(n));
+  const n2 = Number(value);
+  if (!Number.isFinite(n2) || n2 < 0) return 0;
+  return Math.min(1e6, Math.round(n2));
 }
 function sanitizeUrl(value) {
   const raw = typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
@@ -7510,7 +8626,9 @@ function sanitizeInstances(value) {
       role_id: roleId,
       host_id: String(row.host_id ?? "").slice(0, 200),
       state: String(row.state ?? "").slice(0, 40),
-      capability_score: clampScore(row.capability_score)
+      capability_score: clampScore(row.capability_score),
+      capability_ceiling: clampScore(row.capability_ceiling),
+      capability_live: clampScore(row.capability_live)
     });
     if (out.length >= INSTANCE_LIMIT) break;
   }
@@ -7520,15 +8638,19 @@ async function upsertNodeReport(input) {
   const nodeId = String(input.node_id ?? "").trim();
   const hostId = String(input.host_id ?? "").trim();
   if (!nodeId || !hostId) {
-    throw new ApiError(400, "BAD_REQUEST", "node_id / host_id \u5FC5\u586B");
+    throw new ApiError(400, "BAD_REQUEST", "node_id / host_id are required");
   }
   const role = input.role === "root" ? "root" : "node";
+  const mode = input.mode === "dynamic" ? "dynamic" : input.mode === "static" ? "static" : null;
+  const pressure = String(input.pressure_state ?? "").toUpperCase();
   const row = await q1(
     `INSERT INTO scheduler_nodes
        (node_id, parent_node_id, host_id, role, local_score, subtree_score,
         builder_count, child_count, url, max_builder_score, idle_builder_count,
-        instances, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb, app_now())
+        instances, mode, max_builder_ceiling, max_builder_live, guaranteed_score,
+        available_commitment_mem_bytes, pressure_state, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,
+             COALESCE($13, 'static'), $14, $15, $16, $17, COALESCE($18, 'NORMAL'), app_now())
      ON CONFLICT (node_id) DO UPDATE SET
        parent_node_id = EXCLUDED.parent_node_id,
        host_id = EXCLUDED.host_id,
@@ -7541,6 +8663,13 @@ async function upsertNodeReport(input) {
        max_builder_score = EXCLUDED.max_builder_score,
        idle_builder_count = EXCLUDED.idle_builder_count,
        instances = EXCLUDED.instances,
+       mode = COALESCE($13, scheduler_nodes.mode),
+       max_builder_ceiling = $14,
+       max_builder_live = $15,
+       guaranteed_score = $16,
+       available_commitment_mem_bytes = $17,
+       pressure_state = COALESCE($18, scheduler_nodes.pressure_state),
+       stale = FALSE,
        updated_at = app_now()
      RETURNING *`,
     [
@@ -7555,7 +8684,13 @@ async function upsertNodeReport(input) {
       sanitizeUrl(input.url),
       clampScore(input.max_builder_score),
       count(input.idle_builder_count),
-      JSON.stringify(sanitizeInstances(input.instances))
+      JSON.stringify(sanitizeInstances(input.instances)),
+      mode,
+      clampScore(input.max_builder_ceiling ?? input.max_builder_score),
+      clampScore(input.max_builder_live ?? input.max_builder_score),
+      clampScore(input.guaranteed_score),
+      count(input.available_commitment_mem_bytes),
+      ["NORMAL", "BUSY", "PRESSURE", "CRITICAL", "RECOVERING"].includes(pressure) ? pressure : null
     ]
   );
   return row;
@@ -7564,36 +8699,86 @@ async function listNodes() {
   return q(
     `SELECT node_id, parent_node_id, host_id, role, local_score, subtree_score,
             builder_count, child_count, url, max_builder_score, idle_builder_count,
-            instances, updated_at,
-            EXTRACT(EPOCH FROM (app_now() - updated_at))::int AS age_seconds
+            instances, mode, max_builder_ceiling, max_builder_live, guaranteed_score,
+            available_commitment_mem_bytes, pressure_state,
+            updated_at, EXTRACT(EPOCH FROM (app_now() - updated_at))::int AS age_seconds
        FROM scheduler_nodes
       ORDER BY role DESC, node_id`
   );
 }
+var PRESSURE_RANK = {
+  NORMAL: 0,
+  RECOVERING: 1,
+  BUSY: 2,
+  PRESSURE: 3,
+  CRITICAL: 4
+};
+function worstPressure(states) {
+  let worst = "NORMAL";
+  for (const state of states) {
+    const s = String(state ?? "NORMAL").toUpperCase();
+    if ((PRESSURE_RANK[s] ?? 0) > (PRESSURE_RANK[worst] ?? 0)) worst = s;
+  }
+  return worst;
+}
 async function capabilitySnapshot(nodeId) {
   const local = await q1(
-    `SELECT COALESCE(SUM(r.capability_score), 0)::int AS score,
+    `WITH b AS (
+       SELECT r.*,
+              CASE WHEN r.scheduling_mode = 'dynamic' AND r.capability_ceiling_score > 0
+                   THEN r.capability_ceiling_score ELSE r.capability_score END AS eff_ceiling,
+              CASE WHEN r.scheduling_mode = 'dynamic' AND r.capability_live_score > 0
+                   THEN r.capability_live_score ELSE r.capability_score END AS eff_live,
+              CASE WHEN r.scheduling_mode = 'dynamic' AND r.capability_guaranteed_score > 0
+                   THEN r.capability_guaranteed_score ELSE r.capability_score END AS eff_guaranteed
+         FROM role_instances r
+        WHERE r.role_id = 'builder' AND r.state NOT IN ('OFFLINE','FAILED')
+     )
+     SELECT COALESCE(SUM(capability_score), 0)::int AS score,
             count(*)::int AS n,
-            COALESCE(MAX(r.capability_score), 0)::int AS max_score,
+            COALESCE(MAX(capability_score), 0)::int AS max_score,
+            COALESCE(SUM(eff_ceiling), 0)::int AS ceiling_sum,
+            COALESCE(MAX(eff_ceiling), 0)::int AS max_ceiling,
+            COALESCE(MAX(eff_live), 0)::int AS max_live,
+            COALESCE(SUM(eff_guaranteed), 0)::int AS guaranteed_sum,
             count(*) FILTER (
               WHERE NOT EXISTS (
                 SELECT 1 FROM leases l
-                 WHERE l.instance_id = r.instance_id
+                 WHERE l.instance_id = b.instance_id
                    AND l.released_at IS NULL AND l.expires_at > app_now()
               )
             )::int AS idle
-       FROM role_instances r
-      WHERE r.role_id = 'builder' AND r.state NOT IN ('OFFLINE','FAILED')`
+       FROM b`
   );
   const localInstances = await q(
-    `SELECT instance_id, role_id, host_id, state, capability_score
+    `SELECT instance_id, role_id, host_id, state, capability_score,
+            CASE WHEN scheduling_mode = 'dynamic' AND capability_ceiling_score > 0
+                 THEN capability_ceiling_score ELSE capability_score END AS capability_ceiling,
+            CASE WHEN scheduling_mode = 'dynamic' AND capability_live_score > 0
+                 THEN capability_live_score ELSE capability_score END AS capability_live
        FROM role_instances
       WHERE role_id IN ('builder','scheduler')
       ORDER BY role_id, instance_id`
   );
+  const localPools = await q(
+    `SELECT p.available_commitment_bytes, p.pressure_state
+       FROM host_resource_pools p
+      WHERE EXISTS (
+        SELECT 1 FROM role_instances r
+         WHERE r.host_id = p.host_id AND r.role_id = 'builder'
+           AND r.state NOT IN ('OFFLINE','FAILED')
+      )`
+  );
+  const localAvailable = localPools.reduce(
+    (sum, p) => sum + Number(p.available_commitment_bytes ?? 0),
+    0
+  );
+  const localPressure = worstPressure(localPools.map((p) => p.pressure_state));
   const children = await q(
     `SELECT node_id, host_id, role, local_score, subtree_score, builder_count, child_count,
             url, max_builder_score, idle_builder_count, instances,
+            mode, max_builder_ceiling, max_builder_live, guaranteed_score,
+            available_commitment_mem_bytes, pressure_state,
             EXTRACT(EPOCH FROM (app_now() - updated_at))::int AS age_seconds
        FROM scheduler_nodes
       WHERE parent_node_id = $1
@@ -7611,6 +8796,23 @@ async function capabilitySnapshot(nodeId) {
     (max, c) => Math.max(max, Number(c.max_builder_score ?? 0)),
     0
   );
+  const childCeiling = children.reduce(
+    (max, c) => Math.max(max, Number(c.max_builder_ceiling ?? c.max_builder_score ?? 0)),
+    0
+  );
+  const childLive = children.reduce(
+    (max, c) => Math.max(max, Number(c.max_builder_live ?? c.max_builder_score ?? 0)),
+    0
+  );
+  const childGuaranteed = children.reduce(
+    (sum, c) => sum + Number(c.guaranteed_score ?? 0),
+    0
+  );
+  const childAvailable = children.reduce(
+    (sum, c) => sum + Number(c.available_commitment_mem_bytes ?? 0),
+    0
+  );
+  const childPressure = worstPressure(children.map((c) => c.pressure_state));
   const instances = [...localInstances];
   const seen = new Set(instances.map((i) => i.instance_id));
   for (const child of children) {
@@ -7622,12 +8824,23 @@ async function capabilitySnapshot(nodeId) {
   }
   return {
     node_id: nodeId,
+    mode: config.schedulingMode,
     local_score: Number(local?.score ?? 0),
     builder_count: Number(local?.n ?? 0),
-    max_builder_score: Number(local?.max_score ?? 0),
+    max_builder_score: Number(local?.max_ceiling ?? local?.max_score ?? 0),
+    max_builder_ceiling: Number(local?.max_ceiling ?? 0),
+    max_builder_live: Number(local?.max_live ?? 0),
+    guaranteed_score: Number(local?.guaranteed_sum ?? 0),
+    available_commitment_mem_bytes: localAvailable,
+    pressure_state: localPressure,
     idle_builder_count: Number(local?.idle ?? 0),
     subtree_builder_count: Number(local?.n ?? 0) + childBuilders,
-    subtree_max_builder_score: Math.max(Number(local?.max_score ?? 0), childMax),
+    subtree_max_builder_score: Math.max(Number(local?.max_ceiling ?? 0), childCeiling),
+    subtree_max_builder_ceiling: Math.max(Number(local?.max_ceiling ?? 0), childCeiling),
+    subtree_max_builder_live: Math.max(Number(local?.max_live ?? 0), childLive),
+    subtree_guaranteed_score: Number(local?.guaranteed_sum ?? 0) + childGuaranteed,
+    subtree_available_commitment_mem_bytes: localAvailable + childAvailable,
+    subtree_pressure_state: worstPressure([localPressure, childPressure]),
     subtree_idle_builder_count: Number(local?.idle ?? 0) + childIdle,
     child_score: childScore,
     child_count: children.length,
@@ -7649,26 +8862,49 @@ function setFederationParentUrl(value) {
 }
 
 // scheduler/src/repo/instances.ts
+var GIB2 = 1024 ** 3;
+var nonNeg2 = (value) => Math.max(0, Math.trunc(Number(value) || 0));
 async function register(input) {
   if (!input.instance_id || !input.role_id || !input.host_id) {
-    throw new ApiError(400, "BAD_REQUEST", "instance_id / role_id / host_id \u5FC5\u586B");
+    throw new ApiError(400, "BAD_REQUEST", "instance_id / role_id / host_id are required");
   }
   const host = await q1("SELECT host_id FROM hosts WHERE host_id = $1", [input.host_id]);
-  if (!host) throw new ApiError(409, "HOST_UNKNOWN", `\u4E3B\u673A\u672A\u6CE8\u518C: ${input.host_id}`);
+  if (!host) throw new ApiError(409, "HOST_UNKNOWN", `host not registered: ${input.host_id}`);
   const declared = input.capabilities ?? { healthy: [] };
   const ceiling = [.../* @__PURE__ */ new Set([...declared.healthy ?? [], ...declared.unhealthy ?? []])];
   const detail = input.capability_detail === void 0 ? null : normalizeCapabilityDetail(input.capability_detail);
   const score = input.capability_score !== void 0 ? Math.max(0, Math.min(1e3, Math.round(Number(input.capability_score) || 0))) : detail ? computeCapabilityScore(detail) : null;
+  const mode = input.scheduling_mode === "dynamic" ? "dynamic" : input.scheduling_mode === "static" ? "static" : null;
+  const capCpu = input.cap_cpu_millicores !== void 0 ? nonNeg2(input.cap_cpu_millicores) : detail?.cores !== void 0 ? Math.round(nonNeg2(detail.cores) * 1e3) : null;
+  const capMem = input.cap_mem_bytes !== void 0 ? nonNeg2(input.cap_mem_bytes) : detail?.mem_gb !== void 0 ? Math.round(nonNeg2(detail.mem_gb) * GIB2) : null;
+  const split = detail ? splitCapability(detail, {
+    cpu_cores: (capCpu ?? Math.round(nonNeg2(detail.cores) * 1e3)) / 1e3,
+    mem_gb: (capMem ?? Math.round(nonNeg2(detail.mem_gb) * GIB2)) / GIB2
+  }) : null;
+  const isDynamic = mode === "dynamic";
+  const scoreCeiling = split ? isDynamic ? split.ceiling : score : null;
+  const scoreLive = split ? isDynamic ? dynamicLiveScore(split, 1, { scope: "resource" }) : score : null;
+  const scoreGuaranteed = split && isDynamic ? dynamicGuaranteedScore(split, {
+    cpu_cores: (capCpu ?? 0) / 1e3,
+    mem_gb: (capMem ?? 0) / GIB2
+  }) : scoreCeiling;
   return tx(async (c) => {
     const res = await c.query(
       `INSERT INTO role_instances (
          instance_id, role_id, host_id, state, agent_profile_id, allowed_task_types,
          capabilities, config_version, protocol_version, payload_schemas,
          capability_ceiling, drain_deadline_at, last_heartbeat_at, updated_at,
-         agent_profile_version, api_profile_ids, capability_score, capability_detail)
+         agent_profile_version, api_profile_ids, capability_score, capability_detail,
+         scheduling_mode, cap_cpu_millicores, cap_mem_bytes,
+         capability_static_score, capability_ceiling_score, capability_live_score,
+         capability_dispatch_score, capability_guaranteed_score, capability_updated_at)
        VALUES ($1,$2,$3,'STARTING',$4,$5,$6,$7,$8,COALESCE($9, ARRAY['1.0']),
                $10, NULL, app_now(), app_now(), $11, $12::text[],
-               COALESCE($13, 0), COALESCE($14::jsonb, '{}'::jsonb))
+               COALESCE($13, 0), COALESCE($14::jsonb, '{}'::jsonb),
+               COALESCE($15, 'static'), COALESCE($16, 0), COALESCE($17, 0),
+               COALESCE($18, 0), COALESCE($19, COALESCE($13, 0)), COALESCE($20, COALESCE($13, 0)),
+               COALESCE($20, COALESCE($13, 0)), COALESCE($21, COALESCE($19, COALESCE($13, 0))),
+               CASE WHEN $13 IS NULL AND $14 IS NULL THEN NULL ELSE app_now() END)
        ON CONFLICT (instance_id) DO UPDATE SET
          role_id = EXCLUDED.role_id,
          host_id = EXCLUDED.host_id,
@@ -7682,6 +8918,16 @@ async function register(input) {
          payload_schemas = EXCLUDED.payload_schemas,
          capability_score = COALESCE($13, role_instances.capability_score),
          capability_detail = COALESCE($14::jsonb, role_instances.capability_detail),
+         scheduling_mode = COALESCE($15, role_instances.scheduling_mode),
+         cap_cpu_millicores = COALESCE($16, role_instances.cap_cpu_millicores),
+         cap_mem_bytes = COALESCE($17, role_instances.cap_mem_bytes),
+         capability_static_score = COALESCE($18, role_instances.capability_static_score),
+         capability_ceiling_score = COALESCE($19, role_instances.capability_ceiling_score),
+         capability_live_score = COALESCE($20, role_instances.capability_live_score),
+         capability_dispatch_score = COALESCE($20, role_instances.capability_dispatch_score),
+         capability_guaranteed_score = COALESCE($21, role_instances.capability_guaranteed_score),
+         capability_updated_at = CASE WHEN $13 IS NULL AND $14 IS NULL
+                                      THEN role_instances.capability_updated_at ELSE app_now() END,
          -- Registration means "a new process has started": the previous process's drain / heartbeat-timeout state is discarded.
          -- Otherwise the DRAINING heartbeat sent when the previous process exits would leave this instance stuck forever.
          state = CASE WHEN role_instances.state IN ('OFFLINE','FAILED','DRAINING','SUSPECT')
@@ -7704,7 +8950,14 @@ async function register(input) {
         input.agent_profile_version ?? null,
         input.api_profile_ids ?? [],
         score,
-        detail === null ? null : JSON.stringify(detail)
+        detail === null ? null : JSON.stringify(detail),
+        mode,
+        capCpu,
+        capMem,
+        split?.static_score ?? null,
+        scoreCeiling,
+        scoreLive,
+        scoreGuaranteed
       ]
     );
     return res.rows[0];
@@ -7723,7 +8976,10 @@ async function heartbeat(input) {
                     END,
             load = COALESCE($3, load),
             capabilities = COALESCE($4, capabilities),
-            config_version = COALESCE($5, config_version)
+            config_version = COALESCE($5, config_version),
+            usage_cpu_millicores = COALESCE($6, usage_cpu_millicores),
+            usage_mem_bytes = COALESCE($7::bigint, usage_mem_bytes),
+            usage_updated_at = CASE WHEN $6 IS NULL AND $7 IS NULL THEN usage_updated_at ELSE app_now() END
       WHERE instance_id = $1
       RETURNING instance_id, state, config_version, host_id`,
     [
@@ -7731,10 +8987,12 @@ async function heartbeat(input) {
       input.state ?? null,
       input.load === void 0 ? null : JSON.stringify(input.load),
       input.capabilities === void 0 ? null : JSON.stringify(input.capabilities),
-      input.config_version ?? null
+      input.config_version ?? null,
+      input.usage?.cpu_millicores === void 0 ? null : nonNeg2(input.usage.cpu_millicores),
+      input.usage?.mem_bytes === void 0 ? null : nonNeg2(input.usage.mem_bytes)
     ]
   );
-  if (!rows.length) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${input.instance_id}`);
+  if (!rows.length) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
   const row = rows[0];
   const host = await q1(
     `SELECT host_state FROM hosts WHERE host_id = $1`,
@@ -7783,13 +9041,13 @@ async function sweepHeartbeats(opts) {
 async function setCapabilities(instanceId, input) {
   return tx(async (c) => {
     const inst = (await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
     const declared = input.declared ?? {};
     const allowed = inst.allowed_task_types ?? [];
     const nextTaskTypes = declared.task_types ?? allowed;
     const extraTypes = nextTaskTypes.filter((t) => !allowed.includes(t));
     if (extraTypes.length) {
-      throw new ApiError(403, "CAPABILITY_MISMATCH", "\u53EA\u80FD\u6536\u7A84\u4EFB\u52A1\u7C7B\u578B\uFF0C\u4E0D\u80FD\u6269\u5927", {
+      throw new ApiError(403, "CAPABILITY_MISMATCH", "task types can only be narrowed, not expanded", {
         extra: extraTypes,
         allowed
       });
@@ -7802,7 +9060,7 @@ async function setCapabilities(instanceId, input) {
     const nextHealthy = declared.capabilities ?? current.healthy ?? [];
     const extraCaps = nextHealthy.filter((x) => !ceiling.includes(x));
     if (extraCaps.length) {
-      throw new ApiError(403, "CAPABILITY_MISMATCH", "\u53EA\u80FD\u6536\u7A84\u80FD\u529B\uFF0C\u4E0D\u80FD\u6269\u5927", {
+      throw new ApiError(403, "CAPABILITY_MISMATCH", "capabilities can only be narrowed, not expanded", {
         extra: extraCaps,
         ceiling
       });
@@ -7831,13 +9089,13 @@ async function setCapabilities(instanceId, input) {
 async function drain(instanceId, input = {}) {
   const seconds = Number(input.timeout_seconds ?? 300);
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new ApiError(400, "BAD_REQUEST", "timeout_seconds \u5FC5\u987B\u662F\u6B63\u6570");
+    throw new ApiError(400, "BAD_REQUEST", "timeout_seconds must be positive");
   }
   return tx(async (c) => {
     const inst = (await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
     if (!["ONLINE", "SUSPECT", "DRAINING"].includes(inst.state)) {
-      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `\u5B9E\u4F8B\u72B6\u6001 ${inst.state}\uFF0C\u4E0D\u80FD drain`);
+      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `instance state is ${inst.state}; cannot drain`);
     }
     const row = (await c.query(
       `UPDATE role_instances
@@ -7866,10 +9124,10 @@ async function drain(instanceId, input = {}) {
 async function resume(instanceId) {
   return tx(async (c) => {
     const inst = (await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
     if (inst.state === "ONLINE") return { instance_id: instanceId, state: "ONLINE", idempotent: true };
     if (inst.state !== "DRAINING") {
-      throw new ApiError(409, "STATE_CONFLICT", `\u5B9E\u4F8B\u72B6\u6001 ${inst.state}\uFF0C\u4E0D\u80FD resume`);
+      throw new ApiError(409, "STATE_CONFLICT", `instance state is ${inst.state}; cannot resume`);
     }
     const row = (await c.query(
       `UPDATE role_instances
@@ -7884,7 +9142,7 @@ async function resume(instanceId) {
 async function deregister(instanceId, input = {}) {
   return tx(async (c) => {
     const inst = (await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
     const active = await c.query(
       `SELECT count(*)::int AS n FROM leases
         WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
@@ -7892,7 +9150,7 @@ async function deregister(instanceId, input = {}) {
     );
     const activeAttempts = active.rows[0].n;
     if (activeAttempts > 0 && !input.force) {
-      throw new ApiError(409, "STATE_CONFLICT", "\u8FD8\u6709\u5728\u9014\u4EFB\u52A1\uFF0C\u4E0D\u80FD\u6CE8\u9500", {
+      throw new ApiError(409, "STATE_CONFLICT", "there are still in-flight tasks; cannot deregister", {
         active_attempts: activeAttempts
       });
     }
@@ -7912,7 +9170,7 @@ async function deregister(instanceId, input = {}) {
 }
 async function syncConfig(instanceId, version) {
   const inst = await q1(`SELECT * FROM role_instances WHERE instance_id = $1`, [instanceId]);
-  if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `\u5B9E\u4F8B\u672A\u6CE8\u518C: ${instanceId}`);
+  if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
   const current = Number(inst.config_version);
   if (version !== void 0 && version !== null && Number(version) === current) return null;
   const cfg = await q1(`SELECT * FROM scheduler_config WHERE id = TRUE`);
@@ -7925,6 +9183,19 @@ async function syncConfig(instanceId, version) {
     },
     api_profiles: inst.api_profile_ids ?? [],
     resource_profile: null,
+    scheduling_mode: inst.scheduling_mode ?? "static",
+    capacity: {
+      cap_cpu_millicores: Number(inst.cap_cpu_millicores ?? 0),
+      cap_mem_bytes: Number(inst.cap_mem_bytes ?? 0)
+    },
+    capability: {
+      schema_version: Number(inst.capability_schema_version ?? 1),
+      static_score: Number(inst.capability_static_score ?? 0),
+      ceiling: Number(inst.capability_ceiling_score ?? inst.capability_score ?? 0),
+      live: Number(inst.capability_live_score ?? inst.capability_score ?? 0),
+      dispatch: Number(inst.capability_dispatch_score ?? inst.capability_score ?? 0),
+      guaranteed: Number(inst.capability_guaranteed_score ?? inst.capability_score ?? 0)
+    },
     allowed_task_types: inst.allowed_task_types,
     capabilities: inst.capabilities,
     drain: {
@@ -8029,13 +9300,62 @@ route(
     const raw = c.query.get("version");
     const version = raw === null ? null : Number(raw);
     if (version !== null && !Number.isFinite(version)) {
-      throw new ApiError(400, "BAD_REQUEST", "version \u5FC5\u987B\u662F\u6570\u5B57");
+      throw new ApiError(400, "BAD_REQUEST", "version must be a number");
     }
     const cfg = await syncConfig(c.params.id, version);
     return cfg ?? NOT_MODIFIED;
   },
   { auth: true, scopes: ["config:read"] }
 );
+route(
+  "GET",
+  "/v1/instances/:id/grant",
+  async (c) => {
+    assertSelf(c.auth, c.params.id);
+    const state = await getInstanceGrantState(c.params.id);
+    if (!state) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${c.params.id}`);
+    return state;
+  },
+  { auth: true, scopes: ["instance:claim"] }
+);
+route(
+  "POST",
+  "/v1/instances/:id/grant/applied",
+  async (c) => {
+    assertSelf(c.auth, c.params.id);
+    const state = await getInstanceGrantState(c.params.id);
+    if (!state) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${c.params.id}`);
+    const generation = Number(c.body?.generation);
+    if (!Number.isFinite(generation) || generation <= 0) {
+      throw new ApiError(400, "BAD_REQUEST", "generation must be a positive integer");
+    }
+    const error = typeof c.body?.error === "string" ? c.body.error.trim() : "";
+    if (error) {
+      await markGrantFailed({
+        host_id: state.host_id,
+        instance_id: c.params.id,
+        generation,
+        error
+      });
+      return { ok: false, state: "FAILED" };
+    }
+    return markGrantApplied({
+      host_id: state.host_id,
+      instance_id: c.params.id,
+      generation,
+      cpu_millicores: c.body?.cpu_millicores,
+      memory_bytes: c.body?.memory_bytes,
+      memory_low_bytes: c.body?.memory_low_bytes,
+      memory_high_bytes: c.body?.memory_high_bytes,
+      cpu_weight: c.body?.cpu_weight
+    });
+  },
+  { auth: true, scopes: ["instance:claim"] }
+);
+route("GET", "/v1/hosts/:id/resource-grants", async (c) => ({
+  host_id: c.params.id,
+  items: await getGrants(c.params.id)
+}));
 route(
   "POST",
   "/v1/claim",
@@ -8083,7 +9403,7 @@ route("GET", "/v1/events", async (c) => {
   const after = Number(c.query.get("after") ?? 0);
   const limit = c.query.get("limit") ? Number(c.query.get("limit")) : void 0;
   if (!Number.isFinite(after) || after < 0) {
-    throw new ApiError(400, "BAD_REQUEST", "after \u5FC5\u987B\u662F\u975E\u8D1F\u6574\u6570");
+    throw new ApiError(400, "BAD_REQUEST", "after must be a non-negative integer");
   }
   const items = await listOutbox(after, limit);
   return { items, next_after: items.length ? Number(items[items.length - 1].event_id) : after };
@@ -8144,12 +9464,12 @@ route("GET", "/v1/nodes", async () => ({
 }));
 route("POST", "/v1/nodes/report", (c) => {
   if (!config.federationToken) {
-    throw new ApiError(503, "FEDERATION_DISABLED", "\u672A\u914D\u7F6E SCHEDULER_FEDERATION_TOKEN");
+    throw new ApiError(503, "FEDERATION_DISABLED", "SCHEDULER_FEDERATION_TOKEN is not configured");
   }
   const raw = c.headers["x-federation-token"];
   const token = Array.isArray(raw) ? raw[0] : raw;
   if (token !== config.federationToken) {
-    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "\u7ED3\u70B9\u4E0A\u62A5\u4EE4\u724C\u65E0\u6548");
+    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "node report token is invalid");
   }
   return upsertNodeReport({ ...c.body, parent_node_id: selfNodeId(), role: "node" });
 });
@@ -8158,12 +9478,12 @@ route("GET", "/v1/federation/parent", async () => ({
 }));
 route("POST", "/v1/federation/parent", async (c) => {
   if (!config.federationToken) {
-    throw new ApiError(503, "FEDERATION_DISABLED", "\u672A\u914D\u7F6E SCHEDULER_FEDERATION_TOKEN");
+    throw new ApiError(503, "FEDERATION_DISABLED", "SCHEDULER_FEDERATION_TOKEN is not configured");
   }
   const raw = c.headers["x-federation-token"];
   const token = Array.isArray(raw) ? raw[0] : raw;
   if (token !== config.federationToken) {
-    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "\u8054\u90A6\u4EE4\u724C\u65E0\u6548");
+    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "federation token is invalid");
   }
   return { parent_url: setFederationParentUrl(c.body?.parent_url) || null };
 });
@@ -8174,7 +9494,7 @@ route("GET", "/readyz", async () => {
     "SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'tasks'"
   );
   const ready = !!db && migrated?.n === 1;
-  if (!ready) throw new ApiError(503, "NOT_READY", "\u6570\u636E\u5E93\u6216 schema \u672A\u5C31\u7EEA");
+  if (!ready) throw new ApiError(503, "NOT_READY", "database or schema is not ready");
   return { ready: true };
 });
 route("GET", "/v1/queue/stats", async () => {
@@ -8244,7 +9564,7 @@ function readRawBody(req, limit) {
     req.on("data", (chunk) => {
       size += chunk.length;
       if (size > limit) {
-        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", `\u8BF7\u6C42\u4F53\u8D85\u8FC7 ${limit} \u5B57\u8282`));
+        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", `request body exceeds ${limit} bytes`));
         req.destroy();
         return;
       }
@@ -8261,7 +9581,7 @@ function readBody(req) {
     req.on("data", (chunk) => {
       size += chunk.length;
       if (size > 2 * 1024 * 1024) {
-        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", "\u8BF7\u6C42\u4F53\u8D85\u8FC7 2MB"));
+        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", "request body exceeds 2MB"));
         req.destroy();
         return;
       }
@@ -8273,7 +9593,7 @@ function readBody(req) {
       try {
         resolve(JSON.parse(raw));
       } catch {
-        reject(new ApiError(400, "BAD_JSON", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5 JSON"));
+        reject(new ApiError(400, "BAD_JSON", "request body is not valid JSON"));
       }
     });
     req.on("error", reject);
@@ -8460,7 +9780,7 @@ async function sweepLeases(limit = 50) {
                   next_attempt_at = app_now() + make_interval(secs => $2),
                   version = version + 1, updated_at = app_now()
             WHERE task_id = $1`,
-          [row.task_id, backoffSeconds(cfg.retry_backoff_seconds, row.attempt_count)]
+          [row.task_id, backoffSeconds2(cfg.retry_backoff_seconds, row.attempt_count)]
         );
         await appendEvent(c, {
           task_id: row.task_id,
@@ -8473,7 +9793,7 @@ async function sweepLeases(limit = 50) {
             cause,
             attempt_count: row.attempt_count,
             max_attempts: row.max_attempts,
-            backoff_seconds: backoffSeconds(cfg.retry_backoff_seconds, row.attempt_count)
+            backoff_seconds: backoffSeconds2(cfg.retry_backoff_seconds, row.attempt_count)
           }
         });
         out.push({ task_id: row.task_id, cause, to: "QUEUED" });
@@ -8495,6 +9815,8 @@ var federationTimer;
 var relayTimer;
 var reporting = false;
 var syncingRelays = false;
+var grantTimer;
+var granting = false;
 async function tick() {
   if (running) return;
   running = true;
@@ -8507,11 +9829,11 @@ async function tick() {
     if (hb.suspect.length) console.log("[heartbeat] SUSPECT", hb.suspect.join(","));
     if (hb.offline.length) console.log("[heartbeat] OFFLINE", hb.offline.join(","));
     const drainedOut = await sweepDrainTimeouts();
-    if (drainedOut.length) console.log("[drain] \u8D85\u65F6 OFFLINE", drainedOut.join(","));
+    if (drainedOut.length) console.log("[drain] timed out; OFFLINE", drainedOut.join(","));
     const r = await sweepLeases();
     if (r.reclaimed.length) {
       console.log(
-        "[lease] \u56DE\u6536",
+        "[lease] reclaimed",
         r.reclaimed.map((x) => `${x.task_id}:${x.cause}->${x.to}`).join(" ")
       );
     }
@@ -8545,18 +9867,43 @@ async function reportUpstream() {
         // The parent needs for relaying: reachable address, max W, idle count, subtree instance roster.
         url: config.advertiseUrl || null,
         max_builder_score: snap.subtree_max_builder_score,
+        mode: snap.mode,
+        // Cross-mode eligibility uses the ceiling; live is only for same-mode ordering (§12.3).
+        max_builder_ceiling: snap.subtree_max_builder_ceiling,
+        max_builder_live: snap.subtree_max_builder_live,
+        guaranteed_score: snap.subtree_guaranteed_score,
+        available_commitment_mem_bytes: snap.subtree_available_commitment_mem_bytes,
+        pressure_state: snap.subtree_pressure_state,
         idle_builder_count: snap.subtree_idle_builder_count,
         instances: snap.instances
       }),
       signal: AbortSignal.timeout(8e3)
     });
     if (!res.ok) {
-      console.warn(`[federation] \u4E0A\u62A5\u5931\u8D25 ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      console.warn(`[federation] Report failed ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
   } catch (e) {
-    console.warn("[federation] \u4E0A\u62A5\u5931\u8D25", e instanceof Error ? e.message : e);
+    console.warn("[federation] Report failed", e instanceof Error ? e.message : e);
   } finally {
     reporting = false;
+  }
+}
+async function grantTick() {
+  if (granting) return;
+  granting = true;
+  try {
+    const hosts = await recomputeAllGrants();
+    const pressured = hosts.filter((h) => h.pressure_state !== "NORMAL");
+    if (pressured.length) {
+      console.log(
+        "[grants] pressure",
+        pressured.map((h) => `${h.host_id}:${h.pressure_state}`).join(" ")
+      );
+    }
+  } catch (e) {
+    console.error("[grants]", e);
+  } finally {
+    granting = false;
   }
 }
 async function relayTick() {
@@ -8564,7 +9911,7 @@ async function relayTick() {
   syncingRelays = true;
   try {
     const r = await syncRelays();
-    if (r.updated) console.log(`[relay] \u540C\u6B65 ${r.checked} \u6761\uFF0C\u72B6\u6001\u66F4\u65B0 ${r.updated} \u6761`);
+    if (r.updated) console.log(`[relay] Synced ${r.checked} items, updated ${r.updated}`);
   } catch (e) {
     console.error("[relay]", e);
   } finally {
@@ -8574,11 +9921,11 @@ async function relayTick() {
 server.listen(config.port, config.host, () => {
   console.log(`scheduler listening on ${config.host}:${config.port}`);
   if (!authEnabled()) {
-    console.warn("[auth] \u672A\u914D\u7F6E PCS \u516C\u94A5\u6216 AUTH_TOKEN\uFF1A\u5B9E\u4F8B/Worker \u63A5\u53E3\u65E0\u9274\u6743\uFF0C\u53EA\u5141\u8BB8\u672C\u5730\u5F00\u53D1\u4F7F\u7528");
+    console.warn("[auth] No PCS public key or AUTH_TOKEN configured: instance/worker endpoints are unauthenticated and must not be exposed");
   } else if (process.env.PCS_PUBLIC_KEY_FILE || process.env.PCS_PUBLIC_KEY) {
-    console.log("[auth] \u5B9E\u4F8B\u9274\u6743\uFF1AES256 JWT \u9A8C\u7B7E");
+    console.log("[auth] Instance auth: ES256 JWT verification");
   } else {
-    console.warn("[auth] \u5B9E\u4F8B\u9274\u6743\uFF1A\u5171\u4EAB AUTH_TOKEN\uFF08\u8FC7\u6E21\u65B9\u6848\uFF09");
+    console.warn("[auth] Instance auth: shared AUTH_TOKEN (transitional)");
   }
   if (config.loops) {
     timer = setInterval(tick, config.tickMs);
@@ -8588,11 +9935,13 @@ server.listen(config.port, config.host, () => {
       void reportUpstream();
     }
     relayTimer = setInterval(relayTick, config.relaySyncMs);
+    grantTimer = setInterval(grantTick, config.grantIntervalMs);
+    void grantTick();
   }
 });
 async function shutdown(signal) {
   console.log(`
-${signal}\uFF0C\u6B63\u5728\u505C\u6B62\u2026`);
+${signal}: shutting down\u2026`);
   if (timer) clearInterval(timer);
   if (federationTimer) clearInterval(federationTimer);
   if (relayTimer) clearInterval(relayTimer);

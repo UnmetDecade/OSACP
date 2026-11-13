@@ -78,13 +78,13 @@ function expectCode(fn: () => unknown, code: string) {
   assert.throws(fn, (e: unknown) => e instanceof CommandRejected && e.code === code);
 }
 
-test("合法签名命令通过", () => {
+test("a validly signed command is accepted", () => {
   const ok = validateCommand(command(), opts);
   assert.equal(ok.command_id, "cmd_test");
   assert.equal(ok.instance?.image, IMAGE);
 });
 
-test("签名后篡改任何字段都失效", () => {
+test("tampering with any field after signing invalidates the command", () => {
   const signed = command();
   const tampered = { ...signed, generation: 2 };
   expectCode(() => validateCommand(tampered, opts), "COMMAND_SIGNATURE_INVALID");
@@ -93,7 +93,7 @@ test("签名后篡改任何字段都失效", () => {
   expectCode(() => validateCommand(badSig, opts), "COMMAND_SIGNATURE_INVALID");
 });
 
-test("命令必须发给本主机且未过期", () => {
+test("commands must target this host and not be expired", () => {
   expectCode(() => validateCommand(command({ host_id: "hst_other" }), opts), "COMMAND_WRONG_HOST");
   expectCode(
     () =>
@@ -109,7 +109,7 @@ test("命令必须发给本主机且未过期", () => {
   );
 });
 
-test("镜像必须固定 digest 且在白名单内", () => {
+test("the image must be pinned by digest and on the allowlist", () => {
   expectCode(
     () => validateCommand(command({ instance: spec({ image: "registry.test/platform/worker:latest" }) }), opts),
     "IMAGE_NOT_PINNED",
@@ -124,7 +124,7 @@ test("镜像必须固定 digest 且在白名单内", () => {
   );
 });
 
-test("网络策略、env 凭据、卷挂载和 command 参数逐项校验", () => {
+test("network policy, env credentials, volume mounts, and command arguments are each validated", () => {
   expectCode(
     () => validateCommand(command({ instance: spec({ network_policy: "host" }) }), opts),
     "NETWORK_POLICY_NOT_ALLOWED",
@@ -159,7 +159,7 @@ test("网络策略、env 凭据、卷挂载和 command 参数逐项校验", () =
   );
 });
 
-test("DEPLOY 必须有 rgr_ grant，generation 必须为正", () => {
+test("DEPLOY must carry an rgr_ grant and a positive generation", () => {
   expectCode(
     () =>
       validateCommand(
@@ -171,7 +171,7 @@ test("DEPLOY 必须有 rgr_ grant，generation 必须为正", () => {
   expectCode(() => validateCommand(command({ generation: 0 }), opts), "INVALID_GENERATION");
 });
 
-test("非 DEPLOY 命令不要求实例规格", () => {
+test("non-DEPLOY commands do not require an instance spec", () => {
   const stop = command({
     command_type: "STOP",
     instance: null,
@@ -180,14 +180,14 @@ test("非 DEPLOY 命令不要求实例规格", () => {
   assert.equal(validateCommand(stop, opts).command_type, "STOP");
 });
 
-test("generation 单调：小于等于已应用值即 STALE", () => {
+test("generation is monotonic: a value at or below the applied one is STALE", () => {
   assert.equal(generationDecision(command({ generation: 3 }), undefined), "APPLY");
   assert.equal(generationDecision(command({ generation: 3 }), 3), "STALE");
   assert.equal(generationDecision(command({ generation: 2 }), 3), "STALE");
   assert.equal(generationDecision(command({ generation: 4 }), 3), "APPLY");
 });
 
-test("容器配置：root + 可写根 + 完整权限，但仍不使用 host 网络 / Binds", () => {
+test("container config: root + writable root + full privileges, but still no host network or Binds", () => {
   const cfg = {
     network_policies: { default: "bridge" },
   } as unknown as RuntimeHostConfig;
@@ -227,11 +227,11 @@ test("容器配置：root + 可写根 + 完整权限，但仍不使用 host 网�
         { deployment_id: "dep", grant_id: "rgr", host_id: hostId, instance: spec() },
         { network_policies: { default: "host" } } as unknown as RuntimeHostConfig,
       ),
-    /不安全的网络模式/,
+    /unsafe network mode/,
   );
 });
 
-test("SSH 端口映射进入容器配置，非法端口在验签阶段拒绝", () => {
+test("SSH port mappings enter the container config and invalid ports are rejected at verification", () => {
   const cfg = { network_policies: { default: "bridge" } } as unknown as RuntimeHostConfig;
   const withPorts = command({
     instance: {
@@ -274,7 +274,7 @@ test("SSH 端口映射进入容器配置，非法端口在验签阶段拒绝", (
           command({ instance: { ...spec(), ports: ports as any } }),
           opts,
         ),
-      /端口映射/,
+      /port mappings/i,
     );
   }
 });

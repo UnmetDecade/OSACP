@@ -169,6 +169,8 @@ export type SchedulerDraft = {
   ssh_port: number;
   cpus: number;
   mem_mb: number;
+  /** Root scheduler only: static keeps the deploy-time budget; dynamic adds the cgroup pool and live grants. */
+  scheduling_mode?: "static" | "dynamic";
 };
 
 export async function deployScheduler(

@@ -71,7 +71,7 @@ wait_run() {
     [[ "$(api_json "$SCHEDULER_URL/v1/workflows/$1" | jget status)" == "$2" ]] && return 0
     sleep 0.25
   done
-  fail "工作流 $1 在 $3s 内没有变成 $2（当前 $(api_json "$SCHEDULER_URL/v1/workflows/$1" | jget status)）"
+  fail "workflow $1 did not reach $2 within $3s (currently $(api_json "$SCHEDULER_URL/v1/workflows/$1" | jget status))"
 }
 create_workflow() { # template ref requirements_json
   api_json -X POST "$SCHEDULER_URL/v1/workflows" -H 'content-type: application/json' \
@@ -98,16 +98,16 @@ kill_port() { # port
 }
 
 # ---- Preflight checks -----------------------------------------------------
-say "前置检查"
+say "Preflight checks"
 for f in "$PCS_PUBLIC_KEY_FILE" "$PCS_ISSUER_DIR/keys/private.pem" \
          "$PLATFORM_DIR/agents/demo-agent.mjs" "$SECRET_STORE_DIR/src/main.ts"; do
-  [[ -f "$f" ]] || fail "缺少 $f"
+  [[ -f "$f" ]] || fail "missing $f"
 done
-[[ -x "$NODE_BIN" ]] || fail "缺少 Node 22：$NODE_BIN"
-ok "公钥、私钥、Agent、Secret Store 源码齐备"
+[[ -x "$NODE_BIN" ]] || fail "Node 22 not found: $NODE_BIN"
+ok "public/private keys, the Agent, and the Secret Store sources are present"
 
 # ---- Reset and infrastructure ---------------------------------------------
-say "重置数据库并启动 PCS / Secret Store / mock upstream"
+say "Reset the database and start PCS / Secret Store / mock upstream"
 (cd "$RUNTIME_DIR" && ./scripts/stop.sh "${AGENTS[@]}" >/dev/null 2>&1 || true)
 sleep 2
 # P4 adds role_instances.agent_profile_version / api_profile_ids (sql/003_profiles.sql)
@@ -120,7 +120,7 @@ kill_port 7901
 (cd "$PCS_ISSUER_DIR" && PCS_ALLOW_INSECURE_API_URLS=1 PCS_IMAGE_ALLOWLIST=registry.example/ \
   setsid -f "$NPM_BIN" start >> "$P4_DIR/pcs.log" 2>&1 < /dev/null &)
 for i in $(seq 1 40); do curl -sf "$PCS_URL/healthz" >/dev/null && break; sleep 0.5; done
-curl -sf "$PCS_URL/healthz" >/dev/null || fail "PCS 没有起来"
+curl -sf "$PCS_URL/healthz" >/dev/null || fail "PCS did not start"
 
 # secrets / policy: 0600, values are not written into any Profile or envelope
 mkdir -p "$P4_DIR/secret-store"
@@ -148,7 +148,7 @@ kill_port 7902
   SECRET_STORE_ADMIN_TOKEN="admin-$RUN_ID" \
   setsid -f "$NPM_BIN" start >> "$P4_DIR/secret-store.log" 2>&1 < /dev/null &)
 for i in $(seq 1 40); do curl -sf "$SECRET_STORE_URL/healthz" >/dev/null && break; sleep 0.5; done
-curl -sf "$SECRET_STORE_URL/healthz" >/dev/null || fail "Secret Store 没有起来"
+curl -sf "$SECRET_STORE_URL/healthz" >/dev/null || fail "Secret Store did not start"
 
 kill_port 18090
 rm -f "$P4_DIR/mock-api.log"
@@ -156,10 +156,10 @@ rm -f "$P4_DIR/mock-api.log"
   MOCK_API_LOG="$P4_DIR/mock-api.log" \
   setsid -f "$NODE_BIN" scripts/p4-mock-upstream.mjs >> "$P4_DIR/mock-api.out" 2>&1 < /dev/null &)
 for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:18090/whoami" && break; sleep 0.5; done
-ok "PCS :7901 / Secret Store :7902 / mock upstream :18090 已启动"
+ok "PCS :7901 / Secret Store :7902 / mock upstream :18090 are up"
 
 # ---- PCS Profile and bindings ---------------------------------------------
-say "创建 Agent / API Profile 并绑定 worker-a"
+say "Create Agent / API Profiles and bind them to worker-a"
 ADMIN_TOKEN=$(cd "$PCS_ISSUER_DIR" && "$NPM_BIN" run --silent pcs -- admin-token --operator "$OPERATOR")
 export PCS_ADMIN_TOKEN="$ADMIN_TOKEN"
 
@@ -223,7 +223,7 @@ create_api api_meta "metadata probe" "https://169.254.169.254" "secret://apis/me
 bind_agent worker-a agp_worker_alpha worker
 bind_api worker-a api_mock
 bind_api worker-a api_meta
-ok "Profile 已创建，worker-a 绑定 agp_worker_alpha + api_mock + api_meta"
+ok "profiles created; worker-a is bound to agp_worker_alpha + api_mock + api_meta"
 
 export_profiles() { # outfile agent id is read from PCS binding
   curl -sf "$PCS_URL/api/v1/platform/instances/worker-a/resolve" \
@@ -277,17 +277,17 @@ json.dump(d, open(cfg_path, "w"), indent=2)
 PY
 
 # ---- Restart scheduler / Runtime / roles ----------------------------------
-say "重启调度机 / Host Runtime / 角色实例"
+say "Restart the scheduler / Host Runtime / role instances"
 (cd "$RUNTIME_DIR" && ./scripts/runtime.sh stop >/dev/null 2>&1 || true)
 (cd "$RUNTIME_DIR" && ./scripts/runtime.sh start | sed 's/^/  /')
 for i in $(seq 1 40); do [[ -S "$HOST_ADMISSION_SOCKET" ]] && break; sleep 0.5; done
-[[ -S "$HOST_ADMISSION_SOCKET" ]] || fail "Host Runtime 准入 socket 未就绪"
+[[ -S "$HOST_ADMISSION_SOCKET" ]] || fail "Host Runtime admission socket is not ready"
 
 kill_port 7801
 (cd "$SCHEDULER_DIR" && PCS_PUBLIC_KEY_FILE="$PCS_PUBLIC_KEY_FILE" \
   setsid -f "$NPM_BIN" start >> "$P4_DIR/scheduler.log" 2>&1 < /dev/null &)
 for i in $(seq 1 40); do curl -sf "$SCHEDULER_URL/healthz" >/dev/null && break; sleep 0.5; done
-curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "调度机没有起来"
+curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "the scheduler did not start"
 
 issue_instance_token worker-a worker host-a
 issue_instance_token worker-b worker host-a
@@ -295,11 +295,11 @@ issue_instance_token reviewer-a reviewer host-b
 issue_instance_token tester-a tester host-a
 issue_instance_token after-a after_sales host-b
 (cd "$RUNTIME_DIR" && ./scripts/start.sh "${AGENTS[@]}" | sed 's/^/  /')
-wait_online worker-a 30 || fail "worker-a 没有 ONLINE；见 $RUNTIME_DIR/run/worker-a.log"
-ok "worker-a 以 Agent 模式 ONLINE"
+wait_online worker-a 30 || fail "worker-a did not come ONLINE; see $RUNTIME_DIR/run/worker-a.log"
+ok "worker-a is ONLINE in Agent mode"
 
 # ---- A. Agent execution + tool/egress policy ------------------------------
-say "A. alpha Agent 执行探针（越权工具、出站默认拒绝、API 经本地代理）"
+say "A. alpha Agent probe (unauthorized tool, default-deny egress, API through the local proxy)"
 REQ_A=$(python3 -c 'import json;print(json.dumps({
   "message":"hello-p4-alpha",
   "probe_forbidden":True,
@@ -309,44 +309,44 @@ REQ_A=$(python3 -c 'import json;print(json.dumps({
 }))')
 RUN_A=$(create_workflow wft_agent_probe "svn://e2e-p4/$RUN_ID/alpha" "$REQ_A")
 wait_run "$RUN_A" COMPLETED 60
-ok "alpha 工作流 COMPLETED"
+ok "alpha workflow COMPLETED"
 
 TASK_A=$(sqls "SELECT task_id FROM tasks WHERE workflow_run_id = '$RUN_A'")
 ART_A=$(sqls "SELECT a.artifact_id FROM artifacts a JOIN tasks t USING (task_id) WHERE t.workflow_run_id = '$RUN_A' AND a.status = 'COMPLETE' ORDER BY a.created_at DESC LIMIT 1")
-[[ -n "$ART_A" ]] || fail "alpha 没有产出制品"
+[[ -n "$ART_A" ]] || fail "alpha produced no artifact"
 curl -sf "$SCHEDULER_URL/v1/artifacts/$ART_A/content" \
   -H "authorization: Bearer $(cat "$INSTANCE_TOKEN_DIR/worker-a.jwt")" > "$TMP/result-alpha.json"
-jget marker < "$TMP/result-alpha.json" | grep -qx alpha || fail "产物 marker 不是 alpha"
+jget marker < "$TMP/result-alpha.json" | grep -qx alpha || fail "the artifact marker is not alpha"
 forbidden=$(jget forbidden < "$TMP/result-alpha.json")
-grep -q "TOOL_NOT_ALLOWED" <<<"$forbidden" || fail "越权 tool 未被拒绝：$forbidden"
+grep -q "TOOL_NOT_ALLOWED" <<<"$forbidden" || fail "an unauthorized tool was not rejected: $forbidden"
 api_status=$(jget api.status < "$TMP/result-alpha.json")
-[[ "$api_status" == "200" ]] || fail "API 调用失败：$(cat "$TMP/result-alpha.json")"
+[[ "$api_status" == "200" ]] || fail "API call failed: $(cat "$TMP/result-alpha.json")"
 meta_err=$(jget api_meta.error < "$TMP/result-alpha.json")
-grep -q "EGRESS_IP_BLOCKED" <<<"$meta_err" || fail "元数据地址没有被默认拒绝：$meta_err"
-ok "alpha 产物：越权工具被拒、API 经代理成功、元数据地址 EGRESS_IP_BLOCKED"
+grep -q "EGRESS_IP_BLOCKED" <<<"$meta_err" || fail "the metadata address was not denied by default: $meta_err"
+ok "alpha artifacts: unauthorized tool rejected, API succeeded through the proxy, metadata address EGRESS_IP_BLOCKED"
 
-grep -q '"auth_ok": *true' "$P4_DIR/mock-api.log" || fail "mock upstream 没有收到带认证的请求"
+grep -q '"auth_ok": *true' "$P4_DIR/mock-api.log" || fail "the mock upstream received no authenticated request"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18090/whoami)" == "401" ]] ||
-  fail "Agent 绕开代理直连本应 401"
-ok "upstream 只接受 API Adapter 注入的认证；直连 401"
+  fail "a direct connection that bypasses the proxy should have returned 401"
+ok "the upstream only accepts credentials injected by the API Adapter; direct access gets 401"
 
 # Audit: tool audit contains ALLOW demo.echo and DENY demo.forbidden
 grep -q '"tool_id":"demo.echo".*"decision":"ALLOW"' "$RUNTIME_DIR/run-live/audit/tool-audit.jsonl" ||
-  fail "缺少 demo.echo 的 ALLOW 审计"
+  fail "missing the ALLOW audit entry for demo.echo"
 grep -q '"tool_id":"demo.forbidden".*"decision":"DENY"' "$RUNTIME_DIR/run-live/audit/tool-audit.jsonl" ||
-  fail "缺少 demo.forbidden 的 DENY 审计"
-ok "工具审计含 ALLOW/Deny，且不含参数正文"
+  fail "missing the DENY audit entry for demo.forbidden"
+ok "tool audit contains ALLOW/DENY and no argument bodies"
 
 # ---- B. Quota and Secret isolation ----------------------------------------
-say "B. 配额 429 与 Secret 实例隔离"
-ADAPTER_URL=$(grep -o 'API Adapter 已启动：http://127.0.0.1:[0-9]*' "$RUNTIME_DIR/run/worker-a.log" |
+say "B. Quota 429 and per-instance secret isolation"
+ADAPTER_URL=$(grep -o 'API Adapter started: http://127.0.0.1:[0-9]*' "$RUNTIME_DIR/run/worker-a.log" |
   tail -1 | sed 's/.*：//')
-[[ -n "$ADAPTER_URL" ]] || fail "worker-a 日志里没有 API Adapter 地址"
+[[ -n "$ADAPTER_URL" ]] || fail "no API Adapter address in the worker-a log"
 code1=$(curl -s -o "$TMP/q1" -w '%{http_code}' "$ADAPTER_URL/api_mock/whoami")
 code2=$(curl -s -o "$TMP/q2" -w '%{http_code}' "$ADAPTER_URL/api_mock/whoami")
 [[ "$code1" == "200" && "$code2" == "429" ]] ||
-  fail "rpm=2 配额应第二次代理调用 429（实际 $code1/$code2：$(cat "$TMP/q2")）"
-ok "本地 API Adapter 配额 rpm=2 生效：$code1 → $code2"
+  fail "with rpm=2 the second proxied call should get 429 (actual $code1/$code2: $(cat "$TMP/q2"))"
+ok "local API Adapter quota rpm=2 enforced: $code1 → $code2"
 
 resolve_secret() { # token ref
   curl -s -o "$TMP/secret.out" -w '%{http_code}' -X POST "$SECRET_STORE_URL/v1/secrets/resolve" \
@@ -355,19 +355,19 @@ resolve_secret() { # token ref
 }
 TOK_A=$(cat "$INSTANCE_TOKEN_DIR/worker-a.jwt")
 TOK_B=$(cat "$INSTANCE_TOKEN_DIR/worker-b.jwt")
-[[ "$(resolve_secret "$TOK_A" "$SECRET_REF")" == "200" ]] || fail "worker-a 解析自己的 secret 失败"
-[[ "$(resolve_secret "$TOK_A" "$SECRET_REF_B")" == "403" ]] || fail "worker-a 不应解析 worker-b 的 secret"
-grep -q "SECRET_NOT_ALLOWED" "$TMP/secret.out" || fail "越权解析应返回 SECRET_NOT_ALLOWED"
-[[ "$(resolve_secret "$TOK_B" "$SECRET_REF_B")" == "200" ]] || fail "worker-b 解析自己的 secret 失败"
+[[ "$(resolve_secret "$TOK_A" "$SECRET_REF")" == "200" ]] || fail "worker-a could not resolve its own secret"
+[[ "$(resolve_secret "$TOK_A" "$SECRET_REF_B")" == "403" ]] || fail "worker-a must not resolve worker-b's secret"
+grep -q "SECRET_NOT_ALLOWED" "$TMP/secret.out" || fail "an unauthorized resolve should return SECRET_NOT_ALLOWED"
+[[ "$(resolve_secret "$TOK_B" "$SECRET_REF_B")" == "200" ]] || fail "worker-b could not resolve its own secret"
 curl -sf -X POST "$SECRET_STORE_URL/v1/secrets/revoke" \
   -H "authorization: Bearer admin-$RUN_ID" -H 'content-type: application/json' \
   -d '{"instance_id":"worker-b"}' >/dev/null
-[[ "$(resolve_secret "$TOK_B" "$SECRET_REF_B")" == "403" ]] || fail "吊销后 worker-b 仍能解析 secret"
-grep -q "INSTANCE_REVOKED" "$TMP/secret.out" || fail "吊销后应返回 INSTANCE_REVOKED"
-ok "Worker A 无法解析 Worker B 的 secret_ref；吊销即时生效"
+[[ "$(resolve_secret "$TOK_B" "$SECRET_REF_B")" == "403" ]] || fail "worker-b could still resolve a secret after revocation"
+grep -q "INSTANCE_REVOKED" "$TMP/secret.out" || fail "revocation should return INSTANCE_REVOKED"
+ok "worker A cannot resolve worker B's secret_ref; revocation takes effect immediately"
 
 # ---- C. Swap Agent without changing code ----------------------------------
-say "C. 同角色换 Agent：alpha → beta（只改 PCS 绑定与实例配置）"
+say "C. Swap the Agent for the same role: alpha → beta (only PCS bindings and instance config change)"
 bind_agent worker-a agp_worker_beta worker
 export_profiles "$RUNTIME_DIR/profiles.p4.json"
 python3 - "$RUNTIME_DIR/runtime.config.json" <<'PY'
@@ -382,7 +382,7 @@ PY
 (cd "$RUNTIME_DIR" && ./scripts/stop.sh worker-a >/dev/null 2>&1 || true)
 sleep 2
 (cd "$RUNTIME_DIR" && ./scripts/start.sh worker-a >/dev/null)
-wait_online worker-a 30 || fail "worker-a 换 Agent 后没有 ONLINE"
+wait_online worker-a 30 || fail "worker-a did not come back ONLINE after the Agent swap"
 
 REQ_B='{"message":"hello-p4-beta","probe_forbidden":false,"probe_api":false}'
 RUN_B=$(create_workflow wft_agent_probe "svn://e2e-p4/$RUN_ID/beta" "$REQ_B")
@@ -390,13 +390,13 @@ wait_run "$RUN_B" COMPLETED 60
 ART_B=$(sqls "SELECT a.artifact_id FROM artifacts a JOIN tasks t USING (task_id) WHERE t.workflow_run_id = '$RUN_B' AND a.status = 'COMPLETE' ORDER BY a.created_at DESC LIMIT 1")
 curl -sf "$SCHEDULER_URL/v1/artifacts/$ART_B/content" \
   -H "authorization: Bearer $(cat "$INSTANCE_TOKEN_DIR/worker-a.jwt")" > "$TMP/result-beta.json"
-jget marker < "$TMP/result-beta.json" | grep -qx beta || fail "换 Agent 后产物 marker 不是 beta"
+jget marker < "$TMP/result-beta.json" | grep -qx beta || fail "the artifact marker is not beta after the Agent swap"
 registered_agent=$(sqls "SELECT agent_profile_id FROM role_instances WHERE instance_id = 'worker-a'")
-[[ "$registered_agent" == "agp_worker_beta" ]] || fail "调度机记录的 Agent 仍是 $registered_agent"
-ok "beta Agent 已接管；调度机只更新 Profile 引用，没有改代码"
+[[ "$registered_agent" == "agp_worker_beta" ]] || fail "the scheduler still records the Agent as $registered_agent"
+ok "the beta Agent has taken over; the scheduler only updated the Profile reference, with no code change"
 
 # ---- D. Agent crash -------------------------------------------------------
-say "D. Agent 崩溃：role-agent 不退出，任务按可重试失败上报"
+say "D. Agent crash: role-agent stays up and the task is reported as a retryable failure"
 REQ_C='{"message":"crash","crash":true}'
 RUN_C=$(create_workflow wft_agent_probe "svn://e2e-p4/$RUN_ID/crash" "$REQ_C")
 CRASHED=""
@@ -407,40 +407,40 @@ for i in $(seq 1 80); do
   [[ "$CRASHED" != "0" ]] && break
   sleep 0.25
 done
-[[ "$CRASHED" != "0" ]] || fail "没有看到 AGENT_CRASHED 失败"
+[[ "$CRASHED" != "0" ]] || fail "no AGENT_CRASHED failure was observed"
 [[ "$(sqls "SELECT state FROM role_instances WHERE instance_id = 'worker-a'")" == "ONLINE" ]] ||
-  fail "Agent 崩溃后 role-agent 不应掉线"
+  fail "role-agent must not go offline after an Agent crash"
 PID_A=$(cat "$RUNTIME_DIR/run/worker-a.pid")
-kill -0 "$PID_A" 2>/dev/null || fail "role-agent 进程已退出"
+kill -0 "$PID_A" 2>/dev/null || fail "the role-agent process exited"
 CRASH_TASK=$(sqls "SELECT task_id FROM tasks WHERE workflow_run_id = '$RUN_C'")
 curl -sf -X POST "$SCHEDULER_URL/v1/tasks/$CRASH_TASK/cancel" -H 'content-type: application/json' \
   -d '{"actor":"e2e-p4"}' >/dev/null || true
-ok "AGENT_CRASHED 已上报，role-agent 仍 ONLINE（pid $PID_A）"
+ok "AGENT_CRASHED reported; role-agent is still ONLINE (pid $PID_A)"
 
 # ---- E. Key and envelope scan ---------------------------------------------
-say "E. 密钥不出现在信封、日志、制品、审计"
+say "E. Secrets never appear in envelopes, logs, artifacts, or audits"
 if grep -R -- "$SECRET_VALUE" "$RUNTIME_DIR/run" "$RUNTIME_DIR/run-live/audit" \
      "$P4_DIR/scheduler.log" "$P4_DIR/pcs.log" "$P4_DIR/secret-store.log" \
      "$RUNTIME_DIR/profiles.p4.json" "$RUNTIME_DIR/runtime.config.json" 2>/dev/null; then
-  fail "日志/配置/信封里出现密钥明文"
+  fail "plaintext secret found in logs/config/envelopes"
 fi
 if sqls "SELECT (SELECT requirements::text FROM tasks WHERE workflow_run_id = '$RUN_A')
               || (SELECT COALESCE(string_agg(outputs::text, ''), '') FROM task_attempts a JOIN tasks t USING (task_id) WHERE t.workflow_run_id = '$RUN_A')" |
    grep -q -- "$SECRET_VALUE"; then
-  fail "任务信封或结果里出现密钥明文"
+  fail "plaintext secret found in the task envelope or result"
 fi
 if grep -q -- "$SECRET_VALUE" "$TMP/result-alpha.json" "$TMP/result-beta.json"; then
-  fail "Agent 产物里出现密钥明文"
+  fail "plaintext secret found in Agent artifacts"
 fi
-ok "扫描通过：密钥只存在于 Secret Store 数据文件与 API Adapter 内存"
+ok "scan passed: secrets exist only in Secret Store data files and API Adapter memory"
 
 # ---- F. PCS audit ---------------------------------------------------------
-say "F. Profile 绑定与密钥访问有审计"
+say "F. Profile bindings and secret access are audited"
 audit_rows=$(sqlp "SELECT count(*) FROM pcs_audit_logs")
-[[ "$audit_rows" -ge 2 ]] || fail "PCS 审计记录不足：$audit_rows"
-grep -q '"decision":"ALLOW"' "$P4_DIR/secret-store/audit.jsonl" || fail "Secret Store 缺少访问审计"
-grep -q '"decision":"DENY"' "$P4_DIR/secret-store/audit.jsonl" || fail "Secret Store 缺少拒绝审计"
-ok "PCS 审计 $audit_rows 条；Secret Store ALLOW/DENY 均已记录"
+[[ "$audit_rows" -ge 2 ]] || fail "not enough PCS audit rows: $audit_rows"
+grep -q '"decision":"ALLOW"' "$P4_DIR/secret-store/audit.jsonl" || fail "Secret Store is missing access audit entries"
+grep -q '"decision":"DENY"' "$P4_DIR/secret-store/audit.jsonl" || fail "Secret Store is missing deny audit entries"
+ok "$audit_rows PCS audit rows; Secret Store ALLOW/DENY are both recorded"
 
-printf '\nP4 验收通过（RUN=%s）\n' "$RUN_ID"
-printf '产物与日志保留在 %s\n' "$P4_DIR"
+printf '\nP4 acceptance passed (RUN=%s)\n' "$RUN_ID"
+printf 'Artifacts and logs are kept in %s\n' "$P4_DIR"

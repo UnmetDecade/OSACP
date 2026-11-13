@@ -52,10 +52,10 @@ function makeCtx(workspaceDir = BASE): ExecContext {
 }
 
 describe("chat executor", () => {
-  it("返回确定性回复并标记 mode", async () => {
+  it("returns a deterministic reply and marks mode", async () => {
     const task = assignment({
       requirements: {
-        chat: { message: "你绑定了哪个 Agent？", session_id: "s1", history: [] },
+        chat: { message: "Which Agent are you bound to?", session_id: "s1", history: [] },
       },
     });
     const out = await chatExecutorFor("builder")(task, makeCtx());
@@ -65,33 +65,33 @@ describe("chat executor", () => {
     assert.equal(outputs.role, "builder");
   });
 
-  it("空消息拒绝", async () => {
+  it("empty messages are rejected", async () => {
     await assert.rejects(
       () => chatExecutorFor("builder")(assignment({ requirements: { chat: { message: "  " } } }), makeCtx()),
       (e: unknown) => e instanceof TaskFailed && e.code === "CHAT_MESSAGE_EMPTY",
     );
   });
 
-  it("调度机器人使用自己的身份", async () => {
+  it("the scheduler bot uses its own identity", async () => {
     const out = await chatExecutorFor("scheduler")(
       assignment({
         task_type: "task.chat.scheduler",
-        requirements: { chat: { message: "队列怎么样？" } },
+        requirements: { chat: { message: "How is the queue?" } },
       }),
       makeCtx(),
     );
     const outputs = out.outputs as Record<string, unknown>;
     assert.equal(outputs.role, "scheduler");
-    assert.match(String(outputs.reply), /派令/);
+    assert.match(String(outputs.reply), /Relay/);
   });
 });
 
-describe("console executor（完整 shell）", () => {
+describe("console executor (full shell)", () => {
   beforeEach(() => {
-    fs.writeFileSync(path.join(BASE, "hello.txt"), "你好，容器\n");
+    fs.writeFileSync(path.join(BASE, "hello.txt"), "hello, container\n");
   });
 
-  it("执行任意 shell，包括管道与复合命令", async () => {
+  it("runs arbitrary shell, including pipes and compound commands", async () => {
     const out = await consoleExecutorFor("builder")(
       assignment({
         task_type: "task.console.builder",
@@ -106,17 +106,17 @@ describe("console executor（完整 shell）", () => {
     assert.equal(o.role, "builder");
   });
 
-  it("工作目录是任务 workspace", async () => {
+  it("the working directory is the task workspace", async () => {
     const out = await consoleExecutorFor("builder")(
       assignment({ requirements: { console: { command: "cat hello.txt && pwd" } } }),
       makeCtx(),
     );
     const stdout = String((out.outputs as any).stdout);
-    assert.match(stdout, /你好/);
+    assert.match(stdout, /hello/);
     assert.match(stdout, new RegExp(BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
-  it("返回 stderr 与真实退出码", async () => {
+  it("returns stderr and the real exit code", async () => {
     const out = await consoleExecutorFor("builder")(
       assignment({ requirements: { console: { command: "echo bad >&2; exit 7" } } }),
       makeCtx(),
@@ -126,7 +126,7 @@ describe("console executor（完整 shell）", () => {
     assert.match(String(o.stderr), /bad/);
   });
 
-  it("不再限制路径：可以读取工作区外（容器内完整权限）", async () => {
+  it("paths are no longer restricted: reads outside the workspace are allowed (full privileges inside the container)", async () => {
     const out = await consoleExecutorFor("builder")(
       assignment({ requirements: { console: { command: "cd / && ls . >/dev/null && echo outside-ok" } } }),
       makeCtx(),
@@ -134,7 +134,7 @@ describe("console executor（完整 shell）", () => {
     assert.match(String((out.outputs as any).stdout), /outside-ok/);
   });
 
-  it("平台令牌不进入命令环境", async () => {
+  it("platform tokens do not enter the command environment", async () => {
     process.env.PLATFORM_TOOL_TOKEN = "super-secret-token";
     try {
       const out = await consoleExecutorFor("builder")(
@@ -149,7 +149,7 @@ describe("console executor（完整 shell）", () => {
     }
   });
 
-  it("console 任务永不路由到外部 Agent", () => {
+  it("console tasks are never routed to external Agents", () => {
     assert.equal(mustUseDeterministicExecutor("task.console.builder"), true);
     assert.equal(mustUseDeterministicExecutor("task.chat.builder"), false);
   });

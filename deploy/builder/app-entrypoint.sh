@@ -14,7 +14,7 @@ if [[ ! -x "$NODE" ]]; then
   NODE="$(command -v node || true)"
 fi
 if [[ -z "$NODE" ]]; then
-  echo "主机缓存里没有 Node：$CACHE/node/bin/node；请在主机 ~/.platform/cache/node 放一份 Node 22" >&2
+  echo "Node is not in the host cache: $CACHE/node/bin/node; place a Node 22 build in ~/.platform/cache/node on the host" >&2
   exit 1
 fi
 # The Agent CLI (claude / codex) is placed in the cache directory as needed; the instance runtime finds them via PATH.
@@ -27,8 +27,8 @@ for b in claude codex; do
   [[ -x "$CACHE/agents/$b" ]] && ln -sf "$CACHE/agents/$b" /usr/local/bin/$b
 done
 
-: "${SCHEDULER_URL:?缺少 SCHEDULER_URL}"
-: "${INSTANCE_ID:?缺少 INSTANCE_ID}"
+: "${SCHEDULER_URL:?SCHEDULER_URL is required}"
+: "${INSTANCE_ID:?INSTANCE_ID is required}"
 ROLE_ID="${ROLE_ID:-builder}"
 HOST_ID="${HOST_ID:-docker-host-01}"
 AGENT_PROFILE_ID="${AGENT_PROFILE_ID:-agp_builder}"
@@ -46,7 +46,7 @@ if ! command -v sshd >/dev/null || ! command -v ssh >/dev/null; then
   if compgen -G "$CACHE/openssh/*.deb" >/dev/null; then
     DEBIAN_FRONTEND=noninteractive dpkg -i "$CACHE"/openssh/*.deb
   else
-    echo "缺少 ssh/sshd，且主机缓存里没有 $CACHE/openssh/*.deb" >&2
+    echo "ssh/sshd is missing and the host cache has no $CACHE/openssh/*.deb" >&2
     exit 1
   fi
 fi
@@ -99,17 +99,17 @@ apt_restore() {
   [[ -n "${missing//[$'\n']/}" ]] || return 0
   names="$(printf '%s\n' "$missing" | sed 's/=.*//' | tr '\n' ' ')"
   export DEBIAN_FRONTEND=noninteractive
-  echo "[builder] 恢复已装软件包：$(printf '%s\n' "$names" | wc -w) 个" >&2
+  echo "[builder] Restoring installed packages: $(printf '%s\n' "$names" | wc -w)" >&2
   # Install from the shared cache at the original versions first; if the cache is incomplete, fetch from the network, and only fall back to installing the latest version by package name.
   if ! apt-get install -y -o Dpkg::Options::=--force-confold --no-download $missing >/dev/null 2>&1; then
     if getent hosts archive.ubuntu.com >/dev/null 2>&1; then
       apt-get update -qq >/dev/null 2>&1 || true
       apt-get install -y -o Dpkg::Options::=--force-confold $missing >/dev/null 2>&1 \
         || apt-get install -y -o Dpkg::Options::=--force-confold $names >/dev/null 2>&1 \
-        || echo "[builder] 部分软件包恢复失败，构建机可稍后自行补装" >&2
+        || echo "[builder] Some packages failed to restore; the builder can reinstall them later" >&2
     fi
   fi
-  echo "[builder] 软件包恢复完成" >&2
+  echo "[builder] Package restore complete" >&2
 }
 
 apt_watch() {

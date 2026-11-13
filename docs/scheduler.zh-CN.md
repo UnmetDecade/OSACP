@@ -4,6 +4,7 @@
 
 > 版本：v4.3 · 2026-11-12
 > 调度机是唯一的状态权威。它只做四件事：收任务、排队、派发、记账。
+> 分配与调度数学（`W`、注水、并发、压力）见 [scheduling-algorithm.zh-CN.md](scheduling-algorithm.zh-CN.md)。
 
 ---
 

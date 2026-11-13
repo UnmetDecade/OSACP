@@ -17,6 +17,7 @@ import {
   validateCommand,
   type CommandPayload,
 } from "./command-verify.js";
+import { CgroupManager, type AppliedGrant } from "./cgroup.js";
 import { DockerEngine } from "./docker-engine.js";
 import { buildReport } from "./host-report.js";
 import { hostInfo, loadIdentity, saveIdentity, tokenUsable, type HostIdentity } from "./identity.js";
@@ -51,13 +52,14 @@ fs.mkdirSync(cfg.identity_dir, { recursive: true, mode: 0o700 });
 const commandPublicKey = readPem(cfg.command_public_key_file);
 if (!commandPublicKey) {
   console.error(
-    "缺少 PCS 命令公钥（command_public_key_file / PCS_COMMAND_PUBLIC_KEY_FILE）。" +
-      "没有公钥就无法验签，拒绝启动。",
+    "Missing the PCS command public key (command_public_key_file / PCS_COMMAND_PUBLIC_KEY_FILE). " +
+      "Commands cannot be verified without it; refusing to start.",
   );
   process.exit(1);
 }
 
 const engine = new DockerEngine(cfg.docker_socket, cfg.docker_timeout_ms);
+const cgroup = new CgroupManager(cfg.resource_pool, log);
 const state = new RuntimeState(cfg.state_dir);
 const contactFile = path.join(cfg.state_dir, "pcs-last-seen.json");
 const watchdogFile = path.join(cfg.state_dir, "host-state.json");
@@ -115,7 +117,7 @@ async function refreshEngineHealth(): Promise<void> {
     engineHealthy = false;
     if (lastEngineErrorAt < Date.now() - 60_000) {
       lastEngineErrorAt = Date.now();
-      log(`容器引擎不可用：${e instanceof Error ? e.message : String(e)}`);
+      log(`Container engine unavailable: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
@@ -124,7 +126,7 @@ async function ensureIdentity(): Promise<void> {
   let saved = loadIdentity(cfg.identity_dir);
   if (saved && !saved.pcs_url) saved = { ...saved, pcs_url: cfg.pcs_url };
   if (saved && saved.pcs_url !== cfg.pcs_url) {
-    log(`身份属于 ${saved.pcs_url}，与当前 PCS ${cfg.pcs_url} 不一致，重新注册`);
+    log(`Identity belongs to ${saved.pcs_url}, not the current PCS ${cfg.pcs_url}; re-enrolling`);
     saved = null;
   }
 
@@ -136,7 +138,7 @@ async function ensureIdentity(): Promise<void> {
 
   if (saved && tokenUsable(saved)) {
     identity = saved;
-    log(`身份 ${saved.host_id}（令牌有效至 ${saved.expires_at}）`);
+    log(`Identity ${saved.host_id} (token valid until ${saved.expires_at})`);
     return;
   }
 
@@ -146,18 +148,18 @@ async function ensureIdentity(): Promise<void> {
       identity = { ...saved, ...renewed };
       saveIdentity(cfg.identity_dir, identity);
       client.setToken(identity.host_token);
-      log(`主机令牌已续期至 ${identity.expires_at}`);
+      log(`Host token renewed until ${identity.expires_at}`);
       return;
     } catch (e) {
       const msg = e instanceof PcsClientError ? `${e.code}: ${e.message}` : String(e);
-      log(`令牌续期失败：${msg}`);
+      log(`Token renewal failed: ${msg}`);
     }
   }
 
   if (!cfg.enrollment_token) {
     throw new Error(
-      "没有本机身份，也没有提供一次性注册令牌。" +
-        "在 PCS 上创建主机后，用 PCS_ENROLLMENT_TOKEN 重新启动。",
+      "No local identity and no one-time enrollment token. " +
+        "Create the host in PCS, then restart with PCS_ENROLLMENT_TOKEN.",
     );
   }
 
@@ -187,7 +189,7 @@ async function ensureIdentity(): Promise<void> {
   };
   saveIdentity(cfg.identity_dir, identity);
   client.setToken(identity.host_token);
-  log(`注册成功 host_id=${identity.host_id}，令牌至 ${identity.expires_at}`);
+  log(`Enrolled host_id=${identity.host_id}, token valid until ${identity.expires_at}`);
 }
 
 async function renewIdentity(): Promise<boolean> {
@@ -198,10 +200,10 @@ async function renewIdentity(): Promise<boolean> {
     saveIdentity(cfg.identity_dir, identity);
     client.setToken(identity.host_token);
     markContact();
-    log(`主机令牌已续期至 ${identity.expires_at}`);
+    log(`Host token renewed until ${identity.expires_at}`);
     return true;
   } catch (e) {
-    log(`令牌续期失败：${describePcsError(e)}`);
+    log(`Token renewal failed: ${describePcsError(e)}`);
     return false;
   }
 }
@@ -226,21 +228,24 @@ function notePcsError(e: unknown): void {
   if (e instanceof PcsClientError && e.isRevoked) {
     if (!revoked) {
       revoked = true;
-      log("主机已被 PCS 吊销：停止领取命令与启动新容器；已运行容器不杀");
+      log("Host revoked by PCS: stopping command polling and new containers; running containers are left alone");
     }
     return;
   }
   if (Date.now() - lastPcsErrorAt > 30_000) {
     lastPcsErrorAt = Date.now();
-    log(`PCS 调用失败：${describePcsError(e)}`);
+    log(`PCS call failed: ${describePcsError(e)}`);
   }
 }
+
+/** Scheduler endpoint used to pull per-instance grants; learned from the heartbeat response. */
+let grantBaseUrl: string | null = null;
 
 async function heartbeatLoop(): Promise<void> {
   while (running && !revoked) {
     try {
       if (identity && !tokenUsable(identity)) await renewIdentity();
-      await withAuthRetry(() =>
+      const hb = await withAuthRetry(() =>
         client!.heartbeat({
           runtime: {
             version: RUNTIME_VERSION,
@@ -256,6 +261,14 @@ async function heartbeatLoop(): Promise<void> {
           },
         }),
       );
+      const root = (hb?.schedulers ?? []).find((s) => (s.role ?? "root") === "root") ??
+        (hb?.schedulers ?? [])[0];
+      if (root?.url) {
+        if (grantBaseUrl !== root.url) {
+          log(`Dynamic scheduling: using scheduler ${root.url} (mode ${root.scheduling_mode ?? "static"})`);
+        }
+        grantBaseUrl = String(root.url).replace(/\/+$/, "");
+      }
       markContact();
     } catch (e) {
       notePcsError(e);
@@ -282,6 +295,7 @@ async function reportLoop(): Promise<void> {
         hostState: wd?.state ?? "UNKNOWN",
         engineHealthy,
         deployments: reconcilerInstance?.nativeReports() ?? [],
+        pool: cgroup.snapshot() as unknown as Record<string, unknown>,
       });
       await withAuthRetry(() => client!.report(report));
       markContact();
@@ -292,6 +306,55 @@ async function reportLoop(): Promise<void> {
   }
 }
 
+/**
+ * Dynamic scheduling: pull grants from the scheduler and apply them to each builder scope.
+ * The applied generation is reported back with the next host report, which moves the grant to APPLIED.
+ * Failure leaves the previous values in place; the scheduler keeps the grant PENDING and admission waits.
+ */
+let lastGrantErrorAt = 0;
+
+async function grantLoop(): Promise<void> {
+  while (running && !revoked) {
+    const base = grantBaseUrl;
+    if (base && cgroup.ready && identity?.host_id) {
+      try {
+        const res = await fetch(
+          `${base}/v1/hosts/${encodeURIComponent(identity.host_id)}/resource-grants`,
+          { signal: AbortSignal.timeout(5000) },
+        );
+        if (res.ok) {
+          const body = (await res.json()) as { items?: any[] };
+          for (const grant of body.items ?? []) {
+            if (!grant?.instance_id) continue;
+            const applied: AppliedGrant = cgroup.applyGrant({
+              instance_id: String(grant.instance_id),
+              generation: Number(grant.generation) || 1,
+              cpu_millicores: Number(grant.cpu_millicores) || 0,
+              memory_bytes: Number(grant.memory_bytes) || 0,
+              memory_low_bytes: Number(grant.memory_low_bytes) || 0,
+              memory_high_bytes: Number(grant.memory_high_bytes) || 0,
+              cpu_weight: Number(grant.cpu_weight) || 1,
+              cap_cpu_millicores: Number(grant.cap_cpu_millicores) || 0,
+              cap_memory_bytes: Number(grant.cap_mem_bytes) || 0,
+            });
+            if (applied.applied) cgroup.recordApplied(applied);
+            else if (lastGrantErrorAt < Date.now() - 60_000) {
+              lastGrantErrorAt = Date.now();
+              log(`Failed to apply grant ${applied.instance_id} g${applied.generation}: ${applied.error}`);
+            }
+          }
+        }
+      } catch (e) {
+        if (lastGrantErrorAt < Date.now() - 60_000) {
+          lastGrantErrorAt = Date.now();
+          log(`Failed to fetch grants: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    await sleep(Math.max(2, cfg.grant_poll_seconds) * 1000);
+  }
+}
+
 async function ack(commandId: string, ok: boolean, result: Record<string, unknown>): Promise<void> {
   try {
     await withAuthRetry(() => client!.ack(commandId, ok, result));
@@ -299,7 +362,7 @@ async function ack(commandId: string, ok: boolean, result: Record<string, unknow
   } catch (e) {
     // The command will be redelivered; processed_commands guarantees it is not executed twice
     notePcsError(e);
-    log(`ack ${commandId} 失败：${describePcsError(e)}`);
+    log(`ack ${commandId} failed: ${describePcsError(e)}`);
   }
 }
 
@@ -311,6 +374,8 @@ const reconciler = () =>
     broker,
     readWatchdog,
     log,
+    poolScope: (instanceId) => (cgroup.ready ? cgroup.ensureScope(instanceId) : null),
+    releasePoolScope: (instanceId) => cgroup.removeScope(instanceId),
   });
 
 let reconcilerInstance: Reconciler | null = null;
@@ -329,7 +394,7 @@ async function handleCommand(command: CommandPayload): Promise<void> {
       });
     } catch (e) {
       const code = e instanceof CommandRejected ? e.code : "COMMAND_REJECTED";
-      log(`拒绝命令 ${command?.command_id ?? "?"}：${code}`);
+      log(`Rejected command ${command?.command_id ?? "?"}: ${code}`);
       if (command?.command_id) {
         await ack(command.command_id, false, {
           code,
@@ -341,7 +406,7 @@ async function handleCommand(command: CommandPayload): Promise<void> {
 
     const processed = state.processed(checked.command_id);
     if (processed) {
-      log(`命令 ${checked.command_id} 已执行过，幂等 ack`);
+      log(`Command ${checked.command_id} was already executed; idempotent ack`);
       await ack(checked.command_id, processed.ok, processed.result);
       return;
     }
@@ -353,8 +418,8 @@ async function handleCommand(command: CommandPayload): Promise<void> {
         generation: checked.generation,
       };
       log(
-        `丢弃过期 generation 命令 ${checked.command_id} ` +
-          `gen=${checked.generation} 已应用=${state.appliedGeneration(checked.instance_id!)}`,
+        `Dropping stale generation command ${checked.command_id} ` +
+          `gen=${checked.generation} applied=${state.appliedGeneration(checked.instance_id!)}`,
       );
       state.recordProcessed(checked.command_id, true, result);
       state.save();
@@ -399,7 +464,7 @@ async function reconcileLoop(): Promise<void> {
     try {
       await reconcilerInstance!.reconcile(pcsReachable());
     } catch (e) {
-      log(`对账失败：${e instanceof Error ? e.message : String(e)}`);
+      log(`Reconcile failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     await sleep(15_000);
   }
@@ -407,8 +472,8 @@ async function reconcileLoop(): Promise<void> {
 
 async function main(): Promise<void> {
   log(
-    `启动：PCS=${cfg.pcs_url} docker=${cfg.docker_socket} ` +
-      `socket=${cfg.admission_socket} 镜像白名单=${cfg.image_allowlist.join(",") || "(空，拒绝全部部署)"}`,
+    `Starting: PCS=${cfg.pcs_url} docker=${cfg.docker_socket} ` +
+      `socket=${cfg.admission_socket} image allowlist=${cfg.image_allowlist.join(",") || "(empty: all deployments rejected)"}`,
   );
   const wd = readWatchdog();
   const wdDecision = containerAdmission(
@@ -418,18 +483,18 @@ async function main(): Promise<void> {
     "DEPLOY",
   );
   if (!wdDecision.allowed) {
-    log(`看门狗状态不可用（${wdDecision.reason}）：重启后暂不创建新容器，先启动 watchdog`);
+    log(`Watchdog state unavailable (${wdDecision.reason}): not creating new containers until the watchdog runs`);
   }
 
   admissionServer = await startAdmissionServer(broker, cfg.admission_socket);
-  log(`本机准入 socket 已监听 ${cfg.admission_socket}（0600）`);
+  log(`Local admission socket listening at ${cfg.admission_socket} (0600)`);
 
   while (running) {
     try {
       await ensureIdentity();
       break;
     } catch (e) {
-      log(`注册未完成：${e instanceof Error ? e.message : String(e)}；10s 后重试`);
+      log(`Enrollment not complete: ${e instanceof Error ? e.message : String(e)}; retrying in 10s`);
       await sleep(10_000);
     }
   }
@@ -437,17 +502,20 @@ async function main(): Promise<void> {
 
   reconcilerInstance = reconciler();
   await refreshEngineHealth();
+  // Pool capacity is the host total; the scheduler treats this same number as C_mem/C_cpu.
+  cgroup.init(os.totalmem(), os.cpus().length * 1000);
 
   void heartbeatLoop();
   void reportLoop();
   void commandLoop();
   void reconcileLoop();
+  void grantLoop();
 }
 
 async function shutdown(signal: string): Promise<void> {
   if (!running) return;
   running = false;
-  log(`${signal}：停止领取命令；已运行容器保持运行`);
+  log(`${signal}: stopping command polling; running containers keep running`);
   admissionServer?.close();
   try {
     fs.unlinkSync(cfg.admission_socket);
@@ -463,6 +531,6 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 main().catch((e) => {
-  console.error("[runtime] 启动失败", e);
+  console.error("[runtime] failed to start", e);
   process.exit(1);
 });

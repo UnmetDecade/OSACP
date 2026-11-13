@@ -15,12 +15,12 @@
 # This is a test script for the reference implementation; production certificates should be issued by an enterprise CA or a controlled internal CA.
 set -euo pipefail
 
-OUT="${1:?用法: pki.sh OUTDIR [额外 DNS 名...]}"
+OUT="${1:?Usage: pki.sh OUTDIR [extra DNS names...]}"
 shift || true
 mkdir -p "$OUT"
 chmod 700 "$OUT"
 
-openssl version >/dev/null 2>&1 || { echo "需要 openssl" >&2; exit 1; }
+openssl version >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 1; }
 
 SAN="DNS:localhost,IP:127.0.0.1"
 for name in "$@"; do
@@ -41,20 +41,20 @@ EOF
 
 gen_ca() {
   if [[ -f "$OUT/ca.key" && -f "$OUT/ca.crt" ]]; then
-    echo "CA 已存在，复用 $OUT/ca.crt"
+    echo "CA exists, reusing $OUT/ca.crt"
     return
   fi
   openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 3650 \
     -subj "/CN=platform-internal-ca" \
     -keyout "$OUT/ca.key" -out "$OUT/ca.crt" >/dev/null 2>&1
   chmod 600 "$OUT/ca.key"
-  echo "生成 CA $OUT/ca.crt"
+  echo "Generating CA $OUT/ca.crt"
 }
 
 gen_server() {
   local name="$1"
   if [[ -f "$OUT/$name.key" && -f "$OUT/$name.crt" ]]; then
-    echo "服务端证书已存在，复用 $OUT/$name.crt"
+    echo "Server certificate exists, reusing $OUT/$name.crt"
     return
   fi
   local csr="$OUT/.$name.csr" ext
@@ -65,12 +65,12 @@ gen_server() {
     -CAcreateserial -days 825 -sha256 -extfile "$ext" -out "$OUT/$name.crt" >/dev/null 2>&1
   chmod 600 "$OUT/$name.key"
   rm -f "$csr"
-  echo "生成服务端证书 $OUT/$name.crt"
+  echo "Generating server certificate $OUT/$name.crt"
 }
 
 gen_client() {
   if [[ -f "$OUT/client.key" && -f "$OUT/client.crt" ]]; then
-    echo "客户端证书已存在，复用 $OUT/client.crt"
+    echo "Client certificate exists, reusing $OUT/client.crt"
     return
   fi
   local csr="$OUT/.client.csr" ext
@@ -81,7 +81,7 @@ gen_client() {
     -CAcreateserial -days 825 -sha256 -extfile "$ext" -out "$OUT/client.crt" >/dev/null 2>&1
   chmod 600 "$OUT/client.key"
   rm -f "$csr"
-  echo "生成客户端证书 $OUT/client.crt"
+  echo "Generating client certificate $OUT/client.crt"
 }
 
 gen_ca
@@ -90,4 +90,4 @@ gen_server scheduler
 gen_server secret-store
 gen_client
 rm -f "$OUT/.ext-serverAuth.cnf" "$OUT/.ext-clientAuth.cnf"
-echo "完成。服务端 SAN：$SAN"
+echo "Done. Server SAN: $SAN"

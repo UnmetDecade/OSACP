@@ -81,7 +81,7 @@ export class StdioAdapter {
 
   async start(): Promise<void> {
     const [rawCmd, ...baseArgs] = this.profile.entrypoint;
-    if (!rawCmd) throw new AdapterCrash("AGENT_PROFILE_INVALID", "Agent Profile 缺少 entrypoint");
+    if (!rawCmd) throw new AdapterCrash("AGENT_PROFILE_INVALID", "Agent Profile is missing entrypoint");
     const cmd = this.nativePath(rawCmd);
     const args = [...baseArgs.map((a) => this.nativePath(a)), ...(this.profile.args ?? []).map((a) => this.nativePath(a))];
     this.child = spawn(cmd, args, {
@@ -98,7 +98,7 @@ export class StdioAdapter {
     this.child.on("error", (e) => this.failAll(new AdapterCrash("AGENT_CRASHED", e.message)));
     this.child.on("exit", (code, signal) => {
       this.closed = true;
-      const msg = `Adapter 退出（code=${code ?? "null"}, signal=${signal ?? "null"}）`;
+      const msg = `Adapter exited (code=${code ?? "null"}, signal=${signal ?? "null"})`;
       this.failAll(new AdapterCrash("AGENT_CRASHED", msg));
     });
 
@@ -138,7 +138,7 @@ export class StdioAdapter {
         p.reject(
           new AdapterCrash(
             String(msg.error.code ?? "AGENT_RPC_ERROR"),
-            String(msg.error.message ?? "Adapter 返回错误"),
+            String(msg.error.message ?? "Adapter returned an error"),
           ),
         );
       } else {
@@ -166,7 +166,7 @@ export class StdioAdapter {
       this.hooks.onEvent({ type, name: params.name, path: params.path });
       return;
     }
-    this.hooks.onLog(`未知 agent.event 类型：${type}`);
+    this.hooks.onLog(`Unknown agent.event type: ${type}`);
   }
 
   private async handleToolRequest(msg: any): Promise<void> {
@@ -188,13 +188,13 @@ export class StdioAdapter {
 
   request(method: string, params: unknown, timeoutMs: number): Promise<any> {
     if (this.closed) {
-      return Promise.reject(new AdapterCrash("AGENT_CRASHED", "Adapter 已退出"));
+      return Promise.reject(new AdapterCrash("AGENT_CRASHED", "Adapter has exited"));
     }
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new AdapterCrash("AGENT_TIMEOUT", `${method} 超时（${timeoutMs}ms）`));
+        reject(new AdapterCrash("AGENT_TIMEOUT", `${method} timed out (${timeoutMs}ms)`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params });
@@ -235,7 +235,7 @@ export class StdioAdapter {
     this.closed = true;
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
-      p.reject(new AdapterCrash("AGENT_CANCELLED", "Adapter 已停止"));
+      p.reject(new AdapterCrash("AGENT_CANCELLED", "Adapter has stopped"));
     }
     this.pending.clear();
     if (this.child && !this.child.killed) this.child.kill("SIGKILL");

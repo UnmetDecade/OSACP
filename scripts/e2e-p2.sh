@@ -59,7 +59,7 @@ wait_task_status() { # task_id status timeout_s
     [[ "$(sql "SELECT status FROM tasks WHERE task_id = '$1'")" == "$2" ]] && return 0
     sleep 0.2
   done
-  fail "任务 $1 在 $3s 内没有变成 $2（当前 $(sql "SELECT status FROM tasks WHERE task_id = '$1'")）"
+  fail "task $1 did not reach $2 within $3s (currently $(sql "SELECT status FROM tasks WHERE task_id = '$1'"))"
 }
 
 wait_attempt_count() { # task_id n timeout_s
@@ -68,23 +68,23 @@ wait_attempt_count() { # task_id n timeout_s
     [[ "$(sql "SELECT count(*) FROM task_attempts WHERE task_id = '$1'")" == "$2" ]] && return 0
     sleep 0.2
   done
-  fail "任务 $1 在 $3s 内没有第 $2 个 attempt"
+  fail "task $1 did not reach attempt #$2 within $3s"
 }
 
 workers_stop() { (cd "$RUNTIME_DIR" && ./scripts/stop.sh "${WORKERS[@]}" >/dev/null 2>&1 || true); sleep 1; }
 workers_start() { (cd "$RUNTIME_DIR" && ./scripts/start.sh "${WORKERS[@]}" | sed 's/^/  /'); }
 
 # ---- Preflight checks -----------------------------------------------------
-say "前置检查"
-curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "调度机不可用：$SCHEDULER_URL"
-[[ -S "$HOST_ADMISSION_SOCKET" ]] || fail "Host Runtime 准入 socket 不存在：$HOST_ADMISSION_SOCKET"
+say "Preflight checks"
+curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "scheduler unavailable: $SCHEDULER_URL"
+[[ -S "$HOST_ADMISSION_SOCKET" ]] || fail "Host Runtime admission socket not found: $HOST_ADMISSION_SOCKET"
 for w in "${WORKERS[@]}"; do
-  [[ -f "$INSTANCE_TOKEN_DIR/$w.jwt" ]] || fail "缺少实例令牌：$INSTANCE_TOKEN_DIR/$w.jwt"
+  [[ -f "$INSTANCE_TOKEN_DIR/$w.jwt" ]] || fail "missing instance token: $INSTANCE_TOKEN_DIR/$w.jwt"
 done
-ok "调度机、准入 socket、实例令牌齐备"
+ok "scheduler, admission socket, and instance tokens are all present"
 
 # ---- A. Concurrent claim by multiple instances -----------------------------
-say "A. 两个实例并发领取 6 个任务"
+say "A. Two instances claim 6 tasks concurrently"
 workers_stop
 workers_start
 # A crashed instance should release the leftover task grant from last time on startup; otherwise available capacity is falsely occupied
@@ -93,8 +93,8 @@ for i in $(seq 1 20); do
   [[ "$g" == "0" ]] && break
   sleep 0.5
 done
-[[ "$g" == "0" ]] || fail "启动对账后仍有 $g 个 task grant 未释放"
-ok "启动对账释放了残留 task grant"
+[[ "$g" == "0" ]] || fail "$g task grants are still held after startup reconcile"
+ok "startup reconcile released the leftover task grants"
 
 for i in 1 2 3 4 5 6; do create_task "burst-$i" >/dev/null; done
 for i in $(seq 1 150); do
@@ -102,24 +102,24 @@ for i in $(seq 1 150); do
   [[ "$left" == "0" ]] && break
   sleep 1
 done
-[[ "$left" == "0" ]] || fail "6 个任务在 150s 内没有全部终结"
+[[ "$left" == "0" ]] || fail "not all 6 tasks finished within 150s"
 ok_n=$(sql "SELECT count(*) FROM tasks WHERE payload_ref LIKE '$E2E_REF/burst-%' AND status = 'SUCCEEDED'")
-[[ "$ok_n" == "6" ]] || fail "应全部成功，实际成功 $ok_n/6"
+[[ "$ok_n" == "6" ]] || fail "all 6 should succeed; $ok_n/6 succeeded"
 # Admission rejection is not duplicate execution; the criterion is exactly one genuinely successful execution per task
 bad=$(sql "SELECT count(*) FROM (SELECT t.task_id FROM tasks t JOIN task_attempts a USING (task_id)
             WHERE t.payload_ref LIKE '$E2E_REF/burst-%' GROUP BY t.task_id
            HAVING count(*) FILTER (WHERE a.status = 'SUCCEEDED') <> 1) x")
-[[ "$bad" == "0" ]] || fail "有 $bad 个任务出现了重复执行"
-ok "6 个任务全部成功，每个恰好一次执行"
+[[ "$bad" == "0" ]] || fail "$bad tasks were executed more than once"
+ok "all 6 tasks succeeded, each executed exactly once"
 denied=$(sql "SELECT count(*) FROM task_attempts a JOIN tasks t USING (task_id)
                WHERE t.payload_ref LIKE '$E2E_REF/burst-%' AND a.status = 'FAILED'")
-echo "  准入拒绝产生的 attempt：$denied（允许，不计重复执行）"
+echo "  attempts caused by admission rejections: $denied (allowed, not counted as duplicate execution)"
 used=$(sql "SELECT count(DISTINCT a.instance_id) FROM task_attempts a JOIN tasks t USING (task_id)
              WHERE t.payload_ref LIKE '$E2E_REF/burst-%'")
-echo "  参与执行的实例数：$used（调度可能集中在一个实例，不强制均分）"
+echo "  instances that executed work: $used (dispatch may concentrate on one instance; even spread is not required)"
 
 # ---- B. Host Runtime admission rejection -----------------------------------
-say "B. 准入拒绝：不消耗重试、不原地刷 attempt"
+say "B. Admission rejection: no retry consumption, no attempt churn"
 workers_stop
 cp "$RUNTIME_DIR/runtime.config.json" "$RUNTIME_DIR/runtime.config.e2e-bak.json"
 restore_config() {
@@ -139,22 +139,22 @@ EOF
 DENY_TASK=$(create_task deny)
 sleep 8
 st=$(sql "SELECT status || '|' || attempt_count FROM tasks WHERE task_id = '$DENY_TASK'")
-[[ "$st" == "QUEUED|0" ]] || fail "准入拒绝后任务应保持 QUEUED 且 attempt_count=0，实际 $st"
+[[ "$st" == "QUEUED|0" ]] || fail "after an admission rejection the task must stay QUEUED with attempt_count=0; got $st"
 n=$(sql "SELECT count(*) FROM task_attempts WHERE task_id = '$DENY_TASK'")
-[[ "$n" -ge 1 && "$n" -le 6 ]] || fail "8s 内 attempt 数应在 1..6（claim 间隔退避），实际 $n"
+[[ "$n" -ge 1 && "$n" -le 6 ]] || fail "attempts within 8s must be 1..6 (claim backoff); got $n"
 rej=$(sql "SELECT count(*) FROM task_events WHERE task_id = '$DENY_TASK' AND event_type = 'ADMISSION_REJECTED'")
-[[ "$rej" -ge 1 ]] || fail "缺少 ADMISSION_REJECTED 事件"
-ok "任务回队、attempt_count=0、8s 内只产生 $n 个 attempt"
+[[ "$rej" -ge 1 ]] || fail "missing ADMISSION_REJECTED event"
+ok "task requeued, attempt_count=0, only $n attempts within 8s"
 workers_stop
 restore_config
 
-say "B2. 恢复配置后任务正常完成"
+say "B2. The task completes normally after the config is restored"
 workers_start
 wait_task_status "$DENY_TASK" SUCCEEDED 60
-ok "准入拒绝过的任务最终成功"
+ok "a task that was admission-rejected eventually succeeds"
 
 # ---- C. kill -9 + lease reclaim + fencing ----------------------------------
-say "C. kill -9 角色实例，租约回收后由另一实例重领"
+say "C. kill -9 a role instance; after lease reclaim another instance takes over"
 workers_stop
 (cd "$RUNTIME_DIR" && ./scripts/start.sh builder-ubuntu22-a | sed 's/^/  /')
 CRASH_TASK=$(create_task crash)
@@ -164,21 +164,21 @@ IFS='|' read -r OLD_ATT OLD_LEASE OLD_FENCE <<<"$(
          FROM task_attempts a JOIN leases l USING (attempt_id)
         WHERE a.task_id = '$CRASH_TASK' AND l.released_at IS NULL"
 )" || true
-[[ -n "${OLD_ATT:-}" ]] || fail "找不到在途 attempt"
+[[ -n "${OLD_ATT:-}" ]] || fail "no in-flight attempt found"
 (cd "$RUNTIME_DIR" && ./scripts/stop.sh --force builder-ubuntu22-a | sed 's/^/  /')
 advance 301000 # Expire the lease (lease_seconds=300)
 wait_task_status "$CRASH_TASK" QUEUED 15
 [[ "$(sql "SELECT status FROM task_attempts WHERE attempt_id = '$OLD_ATT'")" == "TIMEOUT" ]] ||
-  fail "旧 attempt 应被标记 TIMEOUT"
+  fail "the old attempt should be marked TIMEOUT"
 [[ "$(sql "SELECT state || '|' || close_reason FROM resource_reservations WHERE attempt_id = '$OLD_ATT'")" == "RECLAIMED|LEASE_EXPIRED" ]] ||
-  fail "旧预留应按 LEASE_EXPIRED 回收"
-ok "旧 attempt TIMEOUT、预留 RECLAIMED"
+  fail "the old reservation should be reclaimed as LEASE_EXPIRED"
+ok "old attempt TIMEOUT, reservation RECLAIMED"
 
 advance 301000 # Skip the retry backoff
 (cd "$RUNTIME_DIR" && ./scripts/start.sh builder-ubuntu24-a | sed 's/^/  /')
 wait_attempt_count "$CRASH_TASK" 2 20
 NEW_FENCE=$(sql "SELECT fencing_token FROM leases WHERE task_id = '$CRASH_TASK' AND released_at IS NULL")
-[[ "$NEW_FENCE" == "$((OLD_FENCE + 1))" ]] || fail "新租约 fencing 应为 $((OLD_FENCE + 1))，实际 $NEW_FENCE"
+[[ "$NEW_FENCE" == "$((OLD_FENCE + 1))" ]] || fail "new lease fencing should be $((OLD_FENCE + 1)); got $NEW_FENCE"
 
 code=$(curl -s -o /tmp/e2e-stale.json -w '%{http_code}' -X POST \
   "$SCHEDULER_URL/v1/attempts/$OLD_ATT/result" \
@@ -186,38 +186,38 @@ code=$(curl -s -o /tmp/e2e-stale.json -w '%{http_code}' -X POST \
   -H "authorization: Bearer $(cat "$INSTANCE_TOKEN_DIR/builder-ubuntu22-a.jwt")" \
   -d "{\"status\":\"SUCCEEDED\",\"instance_id\":\"builder-ubuntu22-a\",
        \"lease_token\":\"$OLD_LEASE\",\"fencing_token\":$OLD_FENCE,\"summary\":\"zombie\"}")
-[[ "$code" == "409" ]] || fail "旧 attempt 的迟到结果应返回 409，实际 $code"
-grep -q FENCING_STALE /tmp/e2e-stale.json || fail "旧 attempt 的结果没有被 FENCING_STALE 挡住"
-ok "新租约 fencing=$NEW_FENCE，旧结果 409 FENCING_STALE"
+[[ "$code" == "409" ]] || fail "a late result from the old attempt should return 409; got $code"
+grep -q FENCING_STALE /tmp/e2e-stale.json || fail "the old attempt's result was not blocked by FENCING_STALE"
+ok "new lease fencing=$NEW_FENCE; the old result got 409 FENCING_STALE"
 wait_task_status "$CRASH_TASK" SUCCEEDED 60
-ok "崩溃任务由另一实例完成"
+ok "the crashed task was completed by another instance"
 
 # ---- D. Scheduler restart --------------------------------------------------
-say "D. 调度机在任务执行中重启"
+say "D. The scheduler restarts while a task is running"
 RESTART_TASK=$(create_task restart)
 wait_task_status "$RESTART_TASK" RUNNING 20
 SPID=$(ss -ltnp 2>/dev/null | grep ':7801' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-[[ -n "$SPID" ]] || fail "找不到调度机进程"
+[[ -n "$SPID" ]] || fail "scheduler process not found"
 kill "$SPID"
 sleep 1
 # setsid: new session + detach from this script; otherwise non-interactive bash waits for this background child process on exit
 (cd "$SCHEDULER_DIR" && PCS_PUBLIC_KEY_FILE="$PCS_PUBLIC_KEY_FILE" \
   setsid npm start >> server.log 2>&1 < /dev/null &)
 for i in $(seq 1 40); do curl -sf "$SCHEDULER_URL/healthz" >/dev/null && break; sleep 0.5; done
-curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "调度机没有重新起来"
+curl -sf "$SCHEDULER_URL/healthz" >/dev/null || fail "the scheduler did not come back up"
 wait_task_status "$RESTART_TASK" SUCCEEDED 60
 [[ "$(sql "SELECT count(*) FROM task_attempts WHERE task_id = '$RESTART_TASK'")" == "1" ]] ||
-  fail "调度机重启后不得产生第二个 attempt"
+  fail "no second attempt may be created after the scheduler restarts"
 [[ "$(sql "SELECT count(*) FROM task_events WHERE task_id = '$RESTART_TASK' AND event_type = 'TASK_ASSIGNED'")" == "1" ]] ||
-  fail "调度机重启后不得重复派发"
-ok "重启后任务照常完成，只有一个 attempt、一次派发"
+  fail "no duplicate dispatch may occur after the scheduler restarts"
+ok "the task still completes after the restart with one attempt and one dispatch"
 
 # ---- E. Orphaned reservations ----------------------------------------------
 live=$(sql "SELECT count(*) FROM resource_reservations WHERE state IN ('HELD','ACTIVE')")
-[[ "$live" == "0" ]] || fail "仍有 $live 条 HELD/ACTIVE 预留"
-ok "没有孤儿预留"
+[[ "$live" == "0" ]] || fail "$live HELD/ACTIVE reservations remain"
+ok "no orphaned reservations"
 
-say "恢复：启动两个 worker"
+say "Cleanup: start two workers"
 workers_start
 
-say "P2 验收全部通过"
+say "P2 acceptance passed"

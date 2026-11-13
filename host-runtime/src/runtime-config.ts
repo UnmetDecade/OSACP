@@ -27,8 +27,23 @@ export interface AdmissionConfig {
   grant_ttl_seconds: number;
 }
 
+export interface ResourcePoolRuntimeConfig {
+  /** Enabled by default; the manager still degrades to "unavailable" when cgroup v2 is missing. */
+  enabled: boolean;
+  base_path: string;
+  pool_id: string;
+  platform_memory_min_bytes: number;
+  /** 0 = host total memory. */
+  pool_memory_max_bytes: number;
+  cpu_period_us: number;
+}
+
 export interface RuntimeHostConfig {
   pcs_url: string;
+  /** Dynamic scheduling pool; disabled leaves static-mode containers untouched. */
+  resource_pool: ResourcePoolRuntimeConfig;
+  /** How often to pull per-instance grants from the scheduler (seconds). */
+  grant_poll_seconds: number;
   enrollment_token?: string;
   /** P6: internal CA used to verify the PCS server certificate */
   pcs_ca_file?: string;
@@ -75,6 +90,15 @@ export interface RuntimeHostConfig {
 
 const DEFAULTS: RuntimeHostConfig = {
   pcs_url: "http://127.0.0.1:7901",
+  resource_pool: {
+    enabled: true,
+    base_path: "/sys/fs/cgroup",
+    pool_id: "osacp.slice/pool.slice",
+    platform_memory_min_bytes: 512 * 1024 ** 2,
+    pool_memory_max_bytes: 0,
+    cpu_period_us: 100_000,
+  },
+  grant_poll_seconds: 5,
   identity_dir: "run/identity",
   state_dir: "run/state",
   image_allowlist: [],
@@ -140,10 +164,10 @@ export function loadRuntimeHostConfig(configPath?: string): RuntimeHostConfig {
   cfg.pcs_client_cert_file = process.env.PCS_CLIENT_CERT_FILE ?? cfg.pcs_client_cert_file;
   cfg.pcs_client_key_file = process.env.PCS_CLIENT_KEY_FILE ?? cfg.pcs_client_key_file;
   if (Boolean(cfg.pcs_client_cert_file) !== Boolean(cfg.pcs_client_key_file)) {
-    throw new Error("pcs_client_cert_file 与 pcs_client_key_file 必须同时配置");
+    throw new Error("pcs_client_cert_file and pcs_client_key_file must be configured together");
   }
   for (const f of [cfg.pcs_ca_file, cfg.pcs_client_cert_file, cfg.pcs_client_key_file]) {
-    if (f && !fs.existsSync(path.resolve(f))) throw new Error(`找不到 TLS 文件：${f}`);
+    if (f && !fs.existsSync(path.resolve(f))) throw new Error(`TLS file not found: ${f}`);
   }
   cfg.docker_socket = process.env.DOCKER_SOCKET ?? cfg.docker_socket;
   cfg.agent_env_file = process.env.PLATFORM_AGENT_ENV_FILE ?? cfg.agent_env_file;

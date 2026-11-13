@@ -11,6 +11,8 @@ export interface ContainerSpecInput {
   grant_id: string;
   host_id: string;
   instance: InstanceSpec;
+  /** cgroup v2 path under the host pool; omitted keeps Docker's default cgroup placement. */
+  cgroup_parent?: string;
 }
 
 export function containerName(instanceId: string): string {
@@ -44,7 +46,7 @@ export function buildContainerConfig(
   const profile = spec.resource_profile;
   const networkMode = cfg.network_policies[spec.network_policy] ?? "bridge";
   if (networkMode === "host" || networkMode.startsWith("container:")) {
-    throw new Error(`网络策略 ${spec.network_policy} 映射到了不安全的网络模式 ${networkMode}`);
+    throw new Error(`Network policy ${spec.network_policy} maps to an unsafe network mode ${networkMode}`);
   }
 
   const mounts: Array<Record<string, unknown>> = (spec.volumes ?? []).map((v) => ({
@@ -100,6 +102,11 @@ export function buildContainerConfig(
   };
   if (profile.memory_reservation_bytes) {
     hostConfig.MemoryReservation = Math.round(profile.memory_reservation_bytes);
+  }
+  // Dynamic builds live under the host pool; grants edit this scope (memory.low/max, cpu.weight),
+  // while Docker's NanoCpus/Memory enforce the deployment cap inside it.
+  if (input.cgroup_parent) {
+    hostConfig.CgroupParent = input.cgroup_parent;
   }
 
   const ports = spec.ports ?? [];

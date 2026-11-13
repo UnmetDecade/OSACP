@@ -80,7 +80,7 @@ export async function pipeToSsh(
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
         source.unpipe?.(child.stdin);
-        resolve({ code: 124, stdout, stderr: `${stderr}\nSSH 传输超时` });
+        resolve({ code: 124, stdout, stderr: `${stderr}\nSSH transfer timed out` });
       }, timeoutMs);
       source.pipe(child.stdin);
       child.stdin.on("error", () => {
@@ -208,7 +208,7 @@ export async function probeSsh(target: SshTarget, timeoutMs = PROBE_TIMEOUT_MS):
       return {
         ok: false,
         checked_at: checkedAt,
-        error: conciseError(out.stderr) || `ssh 退出码 ${out.code}`,
+        error: conciseError(out.stderr) || `ssh exited with code ${out.code}`,
       };
     }
     const values = parseKeyValues(out.stdout);
@@ -235,7 +235,7 @@ export async function probeLocal(timeoutMs = PROBE_TIMEOUT_MS): Promise<SshProbe
   try {
     const out = await run("sh", ["-c", REMOTE_SCRIPT], timeoutMs);
     if (out.code !== 0) {
-      return { ok: false, checked_at: checkedAt, error: conciseError(out.stderr) || `退出码 ${out.code}` };
+      return { ok: false, checked_at: checkedAt, error: conciseError(out.stderr) || `exit code ${out.code}` };
     }
     const values = parseKeyValues(out.stdout);
     return {
@@ -275,8 +275,8 @@ function conciseError(stderr: string): string {
 function describe(e: unknown): string {
   if (e instanceof Error) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return "本机找不到 ssh 客户端";
-    if (code === "ETIMEDOUT") return "SSH 连接超时";
+    if (code === "ENOENT") return "ssh client not found on this machine";
+    if (code === "ETIMEDOUT") return "SSH connection timed out";
     return e.message;
   }
   return String(e);
@@ -298,7 +298,7 @@ function run(
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      resolve({ code: 124, stdout, stderr: `${stderr}\nSSH 超时` });
+      resolve({ code: 124, stdout, stderr: `${stderr}\nSSH timed out` });
     }, timeoutMs);
     child.stdin.end(input ?? "");
     child.stdout.on("data", (d: Buffer) => {

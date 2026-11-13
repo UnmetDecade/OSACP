@@ -19,16 +19,16 @@ export function verifyInstanceToken(
   nowSeconds = Math.floor(Date.now() / 1000),
 ): InstanceClaims {
   const parts = token.split(".");
-  if (parts.length !== 3) throw new Error("令牌格式非法");
+  if (parts.length !== 3) throw new Error("Invalid token format");
   let header: any;
   let claims: InstanceClaims;
   try {
     header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
     claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
   } catch {
-    throw new Error("令牌不是合法 JSON");
+    throw new Error("Token is not valid JSON");
   }
-  if (header.alg !== "ES256") throw new Error(`不支持的算法：${header.alg}`);
+  if (header.alg !== "ES256") throw new Error(`Unsupported algorithm: ${header.alg}`);
   const key = createPublicKey(publicKeyPem);
   const ok = verify(
     "sha256",
@@ -36,11 +36,11 @@ export function verifyInstanceToken(
     { key, dsaEncoding: "ieee-p1363" },
     Buffer.from(parts[2], "base64url"),
   );
-  if (!ok) throw new Error("签名校验失败");
+  if (!ok) throw new Error("Signature verification failed");
   const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-  if (!aud.includes(audience)) throw new Error("令牌受众不匹配");
-  if (!claims.sub) throw new Error("令牌缺少 sub");
-  if (claims.exp !== undefined && claims.exp <= nowSeconds) throw new Error("令牌已过期");
-  if (claims.nbf !== undefined && claims.nbf > nowSeconds + 30) throw new Error("令牌尚未生效");
+  if (!aud.includes(audience)) throw new Error("Token audience mismatch");
+  if (!claims.sub) throw new Error("Token is missing sub");
+  if (claims.exp !== undefined && claims.exp <= nowSeconds) throw new Error("Token has expired");
+  if (claims.nbf !== undefined && claims.nbf > nowSeconds + 30) throw new Error("Token is not valid yet");
   return claims;
 }

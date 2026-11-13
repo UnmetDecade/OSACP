@@ -4,16 +4,16 @@ import { LocalAdmission } from "../src/admission.js";
 
 const GB = 1024 ** 3;
 
-describe("本机二次准入", () => {
-  it("容量只够一个槽位时，并发申请只有一个通过", async () => {
+describe("local admission", () => {
+  it("with capacity for only one slot, only one concurrent request is granted", async () => {
     const adm = new LocalAdmission(() => 3 * GB, 2 * GB);
     const [a, b] = await Promise.all([adm.tryAcquire(), adm.tryAcquire()]);
     const allowed = [a, b].filter((r) => r.allowed).length;
-    assert.equal(allowed, 1, "两个任务同时看到同一份可用内存就是超卖");
+    assert.equal(allowed, 1, "two tasks seeing the same available memory at once is oversubscription");
     assert.equal(adm.reservedBytes, 2 * GB);
   });
 
-  it("释放后可以再次申请", async () => {
+  it("capacity can be requested again after release", async () => {
     const adm = new LocalAdmission(() => 3 * GB, 2 * GB);
     assert.equal((await adm.tryAcquire()).allowed, true);
     assert.equal((await adm.tryAcquire()).allowed, false);
@@ -21,7 +21,7 @@ describe("本机二次准入", () => {
     assert.equal((await adm.tryAcquire()).allowed, true);
   });
 
-  it("拒绝时带上可观测值，便于解释原因", async () => {
+  it("rejections carry observability values that explain the reason", async () => {
     const adm = new LocalAdmission(() => 1 * GB, 2 * GB);
     const r = await adm.tryAcquire();
     assert.equal(r.allowed, false);

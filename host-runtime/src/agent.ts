@@ -88,10 +88,10 @@ export class Agent {
       const { items } = await listHostGrants(socket);
       const mine = items.filter((g) => g.instance_id === this.id);
       for (const g of mine) await releaseHostAdmission(socket, g.grant_id);
-      if (mine.length) this.log(`启动对账：释放 ${mine.length} 个残留 task grant`);
+      if (mine.length) this.log(`Startup reconcile: releasing ${mine.length} leftover task grants`);
     } catch (e) {
       // The Runtime may not be up yet; admission still fails closed and does not block startup
-      this.log(`启动对账跳过：${e instanceof Error ? e.message : String(e)}`);
+      this.log(`Startup reconcile skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -112,7 +112,7 @@ export class Agent {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       fs.appendFileSync(path.join(dir, file), `${JSON.stringify(record)}\n`, { mode: 0o600 });
     } catch (e) {
-      this.log(`审计写入失败（${file}）：${e instanceof Error ? e.message : String(e)}`);
+      this.log(`Audit write failed (${file}): ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -120,7 +120,7 @@ export class Agent {
     const profiles = this.tuning.profiles;
     if (!profiles || profiles.api.size === 0) return;
     if (!this.tuning.secretStoreUrl) {
-      throw new Error("实例绑定了 API Profile，但没有配置 secret_store_url（失败关闭）");
+      throw new Error("Instance has an API Profile bound but secret_store_url is not configured (failing closed)");
     }
     this.secretClient = new SecretClient({
       url: this.tuning.secretStoreUrl,
@@ -138,7 +138,7 @@ export class Agent {
       audit: (r) => this.audit("api-audit.jsonl", r),
     });
     await this.apiAdapter.start();
-    this.log(`API Adapter 已启动：${this.apiAdapter.url}（${profiles.api.size} 个绑定）`);
+    this.log(`API Adapter started: ${this.apiAdapter.url} (${profiles.api.size} bindings)`);
   }
 
   async start(): Promise<void> {
@@ -163,15 +163,15 @@ export class Agent {
         if (cfg) {
           this.configVersion = cfg.config_version;
           this.log(
-            `配置同步 v${cfg.config_version}：任务类型 ` +
-              `${cfg.allowed_task_types?.join(",") || "-"}${cfg.drain?.requested ? "（drain 中）" : ""}`,
+            `Config sync v${cfg.config_version}: task types ` +
+              `${cfg.allowed_task_types?.join(",") || "-"}${cfg.drain?.requested ? " (draining)" : ""}`,
           );
         }
       } catch (e) {
         if (e instanceof SchedulerError && e.status === 401) {
-          this.log("配置同步被拒（401），检查 SCHEDULER_TOKEN 是否与调度机 AUTH_TOKEN 一致");
+          this.log("Config sync rejected (401); check that SCHEDULER_TOKEN matches the scheduler's AUTH_TOKEN");
         } else {
-          this.log(`配置同步失败：${e instanceof Error ? e.message : String(e)}`);
+          this.log(`Config sync failed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
       await sleep(this.tuning.configSyncSeconds * 1000);
@@ -201,12 +201,12 @@ export class Agent {
             : {}),
           ...(this.cfg.capability_detail ? { capability_detail: this.cfg.capability_detail } : {}),
         });
-        this.log("已注册");
+        this.log("Registered");
         return;
       } catch (e) {
         attempt++;
         const msg = e instanceof Error ? e.message : String(e);
-        this.log(`注册失败（第 ${attempt} 次）：${msg}，2s 后重试`);
+        this.log(`Registration failed (attempt ${attempt}): ${msg}; retrying in 2s`);
         await sleep(2000);
       }
     }
@@ -222,7 +222,7 @@ export class Agent {
       });
     } catch (e) {
       // A heartbeat failure does not stop in-flight tasks (§11: running containers keep running when disconnected from PCS)
-      this.log(`心跳失败：${e instanceof Error ? e.message : String(e)}`);
+      this.log(`Heartbeat failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -246,7 +246,7 @@ export class Agent {
           await sleep(3000);
           continue;
         }
-        this.log(`领取失败：${e instanceof Error ? e.message : String(e)}`);
+        this.log(`Claim failed: ${e instanceof Error ? e.message : String(e)}`);
         await sleep(2000);
         continue;
       }
@@ -256,7 +256,7 @@ export class Agent {
       }
       void this.run(assignment);
     }
-    this.log("claim 循环已停止");
+    this.log("Claim loop stopped");
   }
 
   private async run(a: Assignment): Promise<void> {
@@ -275,7 +275,7 @@ export class Agent {
           assertEnvelopeAllowed(this.tuning.profiles, a);
         } catch (e) {
           const msg = e instanceof ProfileRejected ? `${e.code}: ${e.message}` : String(e);
-          this.log(`${a.task_id} Profile 不匹配（${msg}），任务回队`);
+          this.log(`${a.task_id} profile mismatch (${msg}); task requeued`);
           await this.client.startAck(a.attempt_id, {
             ...proof,
             instance_id: this.id,
@@ -306,9 +306,9 @@ export class Agent {
           });
           if (!ha.allowed) {
             this.log(
-              `${a.task_id} Host Runtime 准入拒绝：${ha.reason ?? "INSUFFICIENT_MEMORY"}，` +
-                `可用 ${gb(ha.observed.mem_available_bytes)} 需要 ${gb(ha.observed.requested_bytes)}；` +
-                `放回队列且不消耗重试`,
+              `${a.task_id} Host Runtime admission rejected: ${ha.reason ?? "INSUFFICIENT_MEMORY"}, ` +
+                `available ${gb(ha.observed.mem_available_bytes)} required ${gb(ha.observed.requested_bytes)}; ` +
+                `returned to the queue without consuming a retry`,
             );
             await this.client.startAck(a.attempt_id, {
               ...proof,
@@ -322,8 +322,8 @@ export class Agent {
         } catch (e) {
           // Fail closed when the local admission endpoint is unavailable: rather reject than bypass the live headroom check
           this.log(
-            `${a.task_id} Host Runtime 准入接口不可用（${e instanceof Error ? e.message : String(e)}），` +
-              `按失败关闭拒绝该 assignment`,
+            `${a.task_id} Host Runtime admission endpoint unavailable (${e instanceof Error ? e.message : String(e)}), ` +
+              `rejecting this assignment by failing closed`,
           );
           await this.client.startAck(a.attempt_id, {
             ...proof,
@@ -339,8 +339,8 @@ export class Agent {
       const adm = await this.admission.tryAcquire();
       if (!adm.allowed) {
         this.log(
-          `${a.task_id} 本机准入拒绝：可用 ${gb(adm.observed.mem_available_bytes)} ` +
-            `< 需要 ${gb(adm.observed.requested_bytes)}，放回队列且不消耗重试`,
+          `${a.task_id} local admission rejected: available ${gb(adm.observed.mem_available_bytes)} ` +
+            `< required ${gb(adm.observed.requested_bytes)}, returned to the queue without consuming a retry`,
         );
         await this.client.startAck(a.attempt_id, {
           ...proof,
@@ -358,7 +358,7 @@ export class Agent {
         instance_id: this.id,
         accepted: true,
       });
-      this.log(`开始 ${a.task_id}（attempt ${a.attempt_number}，fencing ${a.fencing_token}）`);
+      this.log(`Starting ${a.task_id} (attempt ${a.attempt_number}, fencing ${a.fencing_token})`);
 
       // 3. Lease renewal
       const renewTimer = setInterval(() => void this.renew(a, proof, controller), this.tuning.leaseRenewSeconds * 1000);
@@ -377,7 +377,7 @@ export class Agent {
         : false;
       if (useAgent) {
         this.log(
-          `${a.task_id} 由 Agent ${profiles!.agent.agent_profile_id}@${profiles!.agent.version} 执行（${profiles!.agent.adapter}）`,
+          `${a.task_id} executed by Agent ${profiles!.agent.agent_profile_id}@${profiles!.agent.version} (${profiles!.agent.adapter})`,
         );
       }
       let outcome: { summary: string; outputs?: Record<string, unknown> };
@@ -411,10 +411,10 @@ export class Agent {
               size_bytes: buf.length,
               media_type: mediaType,
             });
-            if (!meta) throw new Error("调度机未返回制品记录");
+            if (!meta) throw new Error("Scheduler did not return an artifact record");
             await this.client.uploadArtifactContent(meta.artifact_id, buf);
             await this.client.completeArtifact(meta.artifact_id);
-            this.log(`  ${a.task_id}: 制品 ${meta.artifact_id} 已校验（${sha256.slice(0, 19)}…）`);
+            this.log(`  ${a.task_id}: artifact ${meta.artifact_id} verified (${sha256.slice(0, 19)}…)`);
             return { artifact_id: meta.artifact_id, sha256, size_bytes: buf.length };
           },
         });
@@ -432,20 +432,20 @@ export class Agent {
         summary: outcome.summary,
         outputs: outcome.outputs,
       });
-      this.log(`完成 ${a.task_id}：${outcome.summary}${describeResult(r)}`);
+      this.log(`Finished ${a.task_id}: ${outcome.summary}${describeResult(r)}`);
     } catch (e) {
       if (e instanceof SchedulerError && e.isFencingLost) {
         // The lease was reclaimed or transferred to another instance: report no result, let it expire naturally
-        this.log(`${a.task_id} 租约已失效（${e.code}），放弃本 attempt`);
+        this.log(`${a.task_id} lease expired (${e.code}); abandoning this attempt`);
       } else {
-        this.log(`${a.task_id} 执行异常：${e instanceof Error ? e.message : String(e)}`);
+        this.log(`${a.task_id} execution error: ${e instanceof Error ? e.message : String(e)}`);
       }
     } finally {
       if (workspaceDir && !this.tuning.keepWorkspace) {
         try {
           fs.rmSync(workspaceDir, { recursive: true, force: true });
         } catch (e) {
-          this.log(`${a.task_id} 工作目录清理失败：${e instanceof Error ? e.message : String(e)}`);
+          this.log(`${a.task_id} workspace cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
       if (acquired) this.admission.release();
@@ -462,13 +462,13 @@ export class Agent {
     if (e instanceof TaskAborted) {
       if (e.reason === "cancelled") {
         await this.client
-          .result(a.attempt_id, { ...proof, status: "CANCELLED", summary: "按取消请求停止" })
+          .result(a.attempt_id, { ...proof, status: "CANCELLED", summary: "Stopped on cancellation request" })
           .catch(() => {});
-        this.log(`${a.task_id} 已按取消请求停止`);
+        this.log(`${a.task_id} stopped on cancellation request`);
       } else if (e.reason === "lease_lost") {
-        this.log(`${a.task_id} 租约失效或已被回收，停止执行且不上报结果`);
+        this.log(`${a.task_id} lease expired or was reclaimed; stopping without reporting a result`);
       } else {
-        this.log(`${a.task_id} 进程退出前未完成，留给调度机回收`);
+        this.log(`${a.task_id} did not finish before shutdown; leaving it to the scheduler to reclaim`);
       }
       return;
     }
@@ -477,20 +477,20 @@ export class Agent {
     const message = e instanceof Error ? e.message : String(e);
     await this.client
       .result(a.attempt_id, { ...proof, status: "FAILED", error: { code, message } })
-      .catch((err) => this.log(`${a.task_id} 上报失败结果时出错：${String(err)}`));
-    this.log(`${a.task_id} 失败（${code}）：${message}`);
+      .catch((err) => this.log(`${a.task_id} failed to report the failure result: ${String(err)}`));
+    this.log(`${a.task_id} failed (${code}): ${message}`);
   }
 
   private async renew(a: Assignment, proof: { lease_token: string; fencing_token: number }, controller: AbortController) {
     try {
       const r = await this.client.renew(a.attempt_id, proof);
-      this.log(`${a.task_id} 续租至 ${r?.lease_expires_at ?? "未知"}`);
+      this.log(`${a.task_id} lease renewed until ${r?.lease_expires_at ?? "unknown"}`);
     } catch (e) {
       if (e instanceof SchedulerError && e.isFencingLost) {
         controller.abort("lease_lost");
       } else {
         // Network blip: do not stop immediately; the lease still has headroom, and the next round retries
-        this.log(`${a.task_id} 续租失败：${e instanceof Error ? e.message : String(e)}`);
+        this.log(`${a.task_id} lease renewal failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -512,14 +512,14 @@ export class Agent {
     this.draining = true;
     if (this.hbTimer) clearInterval(this.hbTimer);
     await this.beat();
-    this.log(`开始 drain，在途 ${this.running.size} 个`);
+    this.log(`Starting drain with ${this.running.size} in flight`);
 
     const deadline = Date.now() + waitMs;
     while (this.running.size > 0 && Date.now() < deadline) {
       await sleep(200);
     }
     if (this.running.size > 0) {
-      this.log(`drain 超时，放弃 ${this.running.size} 个在途任务（等租约过期后由调度机回收）`);
+      this.log(`Drain timed out; abandoning ${this.running.size} in-flight tasks (the scheduler reclaims them when leases expire)`);
       for (const { controller } of this.running.values()) controller.abort("shutdown");
     }
 
@@ -529,9 +529,9 @@ export class Agent {
         reason: "shutdown",
         force: this.running.size > 0,
       });
-      this.log(`已注销（${out?.state ?? "OFFLINE"}）`);
+      this.log(`Deregistered (${out?.state ?? "OFFLINE"})`);
     } catch (e) {
-      this.log(`注销失败（不影响退出）：${e instanceof Error ? e.message : String(e)}`);
+      this.log(`Deregistration failed (exit continues): ${e instanceof Error ? e.message : String(e)}`);
     }
     await this.apiAdapter?.close().catch(() => {});
     this.apiAdapter = undefined;
@@ -543,6 +543,6 @@ function gb(n: number): string {
 }
 
 function describeResult(r: unknown): string {
-  if (r && typeof r === "object" && "idempotent" in r) return "（幂等重放）";
+  if (r && typeof r === "object" && "idempotent" in r) return " (idempotent replay)";
   return "";
 }

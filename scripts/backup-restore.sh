@@ -82,20 +82,20 @@ counts_for() { # database tables...
 }
 
 backup() {
-  [[ -n "$BACKUP_ROOT" ]] || fail "用法：backup OUTDIR"
+  [[ -n "$BACKUP_ROOT" ]] || fail "usage: backup OUTDIR"
   local ts dir
   ts=$(date -u +%Y%m%dT%H%M%SZ)
   dir="$BACKUP_ROOT/$ts"
   mkdir -p "$dir"
   chmod 700 "$BACKUP_ROOT" "$dir"
-  say "备份数据库到 $dir"
+  say "Backing up databases to $dir"
   dump_db "$SCHED_DB" > "$dir/scheduler.dump"
   dump_db "$PCS_DB" > "$dir/platform_control.dump"
-  [[ -s "$dir/scheduler.dump" && -s "$dir/platform_control.dump" ]] || fail "pg_dump 输出为空"
+  [[ -s "$dir/scheduler.dump" && -s "$dir/platform_control.dump" ]] || fail "pg_dump produced no output"
 
   if [[ -d "$ARTIFACT_DIR" ]]; then
     tar -C "$(dirname "$ARTIFACT_DIR")" -czf "$dir/artifacts.tar" "$(basename "$ARTIFACT_DIR")"
-    ok "制品目录 $(find "$ARTIFACT_DIR" -type f | wc -l) 个文件"
+    ok "artifact directory: $(find "$ARTIFACT_DIR" -type f | wc -l) files"
   fi
 
   python3 - "$dir/manifest.json" \
@@ -111,15 +111,15 @@ PY
   [[ -f "$dir/artifacts.tar" ]] && files+=" artifacts.tar"
   (cd "$dir" && sha256sum $files > SHA256SUMS)
   chmod 600 "$dir"/*
-  ok "备份完成：$dir"
+  ok "backup complete: $dir"
   echo "$dir"
 }
 
 restore() {
-  [[ -n "$BACKUP_ROOT" ]] || fail "用法：restore BACKUP_DIR [后缀]"
+  [[ -n "$BACKUP_ROOT" ]] || fail "usage: restore BACKUP_DIR [suffix]"
   local dir="$BACKUP_ROOT"
-  [[ -f "$dir/scheduler.dump" && -f "$dir/platform_control.dump" ]] || fail "备份目录缺少 dump"
-  say "恢复为独立目标库（原库不动）"
+  [[ -f "$dir/scheduler.dump" && -f "$dir/platform_control.dump" ]] || fail "the backup directory is missing dumps"
+  say "Restoring into separate target databases (the originals are untouched)"
   local sched_target="${SCHED_DB}${SUFFIX}" pcs_target="${PCS_DB}${SUFFIX}"
   for pair in "$sched_target:$dir/scheduler.dump" "$pcs_target:$dir/platform_control.dump"; do
     local db="${pair%%:*}" file="${pair#*:}"
@@ -128,7 +128,7 @@ restore() {
     fi
     psql_db postgres "CREATE DATABASE \"$db\"" >/dev/null
     restore_db "$db" < "$file"
-    ok "已恢复 $db"
+    ok "restored $db"
   done
 
   local sched_now pcs_now
@@ -143,16 +143,16 @@ for name, want, got in (("scheduler", m["scheduler"], s), ("platform_control", m
         if got.get(k) != v:
             bad.append(f"{name}.{k}: {v} -> {got.get(k)}")
 if bad:
-    raise SystemExit("行数不一致：" + "; ".join(bad))
-print("ok - 关键表行数与备份一致")
+    raise SystemExit("row counts differ: " + "; ".join(bad))
+print("ok - row counts of key tables match the backup")
 PY
   echo "$sched_target $pcs_target"
 }
 
 verify() {
-  [[ -n "$BACKUP_ROOT" ]] || fail "用法：verify BACKUP_DIR"
+  [[ -n "$BACKUP_ROOT" ]] || fail "usage: verify BACKUP_DIR"
   local dir="$BACKUP_ROOT"
-  (cd "$dir" && sha256sum -c SHA256SUMS) || fail "备份文件校验和失败"
+  (cd "$dir" && sha256sum -c SHA256SUMS) || fail "backup checksum verification failed"
   python3 - "$dir/manifest.json" \
     "$(counts_for "$SCHED_DB" "${SCHED_TABLES[@]}")" \
     "$(counts_for "$PCS_DB" "${PCS_TABLES[@]}")" <<'PY'
@@ -160,9 +160,9 @@ import json, sys
 m, s, p = json.load(open(sys.argv[1])), json.loads(sys.argv[2]), json.loads(sys.argv[3])
 for name, backed, now in (("scheduler", m["scheduler"], s), ("platform_control", m["platform_control"], p)):
     if backed != now:
-        print(f"warn - {name} 与备份时行数不同（备份后仍在写入）：{backed} vs {now}")
+        print(f"warn - {name} row count differs from the backup (still writing after the backup): {backed} vs {now}")
     else:
-        print(f"ok - {name} 行数与备份一致")
+        print(f"ok - {name} row count matches the backup")
 PY
 }
 
@@ -170,5 +170,5 @@ case "$MODE" in
   backup) backup ;;
   restore) restore ;;
   verify) verify ;;
-  *) echo "用法: $0 {backup OUTDIR|restore BACKUP_DIR [后缀]|verify BACKUP_DIR}" >&2; exit 1 ;;
+  *) echo "usage: $0 {backup OUTDIR|restore BACKUP_DIR [suffix]|verify BACKUP_DIR}" >&2; exit 1 ;;
 esac

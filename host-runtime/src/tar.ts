@@ -10,13 +10,13 @@ const MAX_SIZE = 1024 * 1024;
 
 function octal(value: number, length: number): string {
   const text = Math.max(0, Math.floor(value)).toString(8);
-  if (text.length > length - 1) throw new Error(`tar 字段溢出：${value}`);
+  if (text.length > length - 1) throw new Error(`tar field overflow: ${value}`);
   return `${text.padStart(length - 1, "0")}\0`;
 }
 
 function writeString(buf: Buffer, offset: number, length: number, value: string): void {
   const bytes = Buffer.from(value, "utf8");
-  if (bytes.length > length) throw new Error(`tar 字段过长：${value.slice(0, 40)}`);
+  if (bytes.length > length) throw new Error(`tar field too long: ${value.slice(0, 40)}`);
   bytes.copy(buf, offset);
 }
 
@@ -54,9 +54,9 @@ export function buildTar(files: TarFile[]): Buffer {
 
   for (const file of files) {
     const name = file.path.replace(/^\/+/, "");
-    if (!name || name.includes("..")) throw new Error(`tar 路径非法：${file.path}`);
+    if (!name || name.includes("..")) throw new Error(`Invalid tar path: ${file.path}`);
     const data = Buffer.from(file.content, "utf8");
-    if (data.length > MAX_SIZE) throw new Error(`tar 文件超过 1MiB：${file.path}`);
+    if (data.length > MAX_SIZE) throw new Error(`tar file exceeds 1MiB: ${file.path}`);
 
     // Add parent directories first so Docker's unpack does not fail on missing directories.
     const parts = name.split("/");

@@ -128,8 +128,13 @@ export function Dashboard() {
     failed: hostTasks.filter((t) => t.state === "FAILED").length,
   };
   const schedulerReady = Boolean(scheduler);
+  // The onboarding checklist describes this host only. A builder folded in from a merged host (or a stale
+  // registration on another host) must not tick "deploy builder" while this host's studio still shows it missing.
+  const hostBuilders = db.instances.filter(
+    (i) => i.role === "builder" && (!host || i.host_id === host.id),
+  );
   // A bare-metal builder can register with another scheduler directly; the host no longer needs a scheduler first.
-  const buildersReady = builders.length > 0;
+  const buildersReady = hostBuilders.length > 0;
   const steps: {
     title: string;
     desc: string;

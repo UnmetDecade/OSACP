@@ -85,7 +85,7 @@ tick();
 const timer = setInterval(tick, cfg.watchdog.sample_seconds * 1000);
 
 function stop(signal: string): void {
-  console.log(`${signal}，看门狗停止（保留最后一次状态供 supervisor 判断新鲜度）`);
+  console.log(`${signal}: watchdog stopping (last state is kept for the supervisor's freshness check)`);
   clearInterval(timer);
   process.exit(0);
 }

@@ -23,6 +23,10 @@ export interface ReconcilerDeps {
   broker: AdmissionBroker;
   readWatchdog: () => WatchdogStateFile | null;
   log: (message: string) => void;
+  /** Returns the builder's cgroup scope (creating it) or null when the pool is unavailable. */
+  poolScope?: (instanceId: string) => string | null;
+  /** Drops a scope after the container is removed. */
+  releasePoolScope?: (instanceId: string) => void;
   now?: () => number;
 }
 
@@ -48,7 +52,7 @@ export class Reconciler {
   execute(command: CommandPayload, pcsReachable: boolean): Promise<CommandOutcome> {
     return this.serialize(async () => {
       const label = `${command.command_type} ${command.deployment_id ?? command.instance_id}`;
-      this.deps.log(`执行 ${label} gen=${command.generation}`);
+      this.deps.log(`Executing ${label} gen=${command.generation}`);
       try {
         const { state } = this.deps;
         const deploymentId = command.deployment_id!;
@@ -56,10 +60,10 @@ export class Reconciler {
 
         if (command.command_type === "DEPLOY") {
           if (!command.instance) {
-            return fail("INVALID_COMMAND", "DEPLOY 缺少实例规格");
+            return fail("INVALID_COMMAND", "DEPLOY is missing the instance spec");
           }
           const grantId = command.resource_grant?.grant_id;
-          if (!grantId) return fail("INVALID_GRANT", "DEPLOY 缺少 resource_grant");
+          if (!grantId) return fail("INVALID_GRANT", "DEPLOY is missing resource_grant");
           // A new deployment for the same instance supersedes the old one: drop the old local record, otherwise reconciliation keeps
           // rebuilding the container from the old image and fights the new deployment over the same container name.
           for (const other of state.listDeployments()) {
@@ -86,7 +90,7 @@ export class Reconciler {
         const dep = state.deployment(deploymentId);
 
         if (command.command_type === "START" || command.command_type === "RESTART") {
-          if (!dep) return fail("DEPLOYMENT_UNKNOWN", "本机没有这个部署的期望态，拒绝 START");
+          if (!dep) return fail("DEPLOYMENT_UNKNOWN", "This host has no desired state for this deployment; refusing START");
           state.setDesired(deploymentId, "RUNNING", command.generation);
           state.save();
           const out = await this.startDeployment(
@@ -154,15 +158,15 @@ export class Reconciler {
           return ok({ container_id: existing?.id ?? null, state: "REMOVED" });
         }
 
-        return fail("COMMAND_TYPE_NOT_ALLOWED", `不支持 ${command.command_type}`);
+        return fail("COMMAND_TYPE_NOT_ALLOWED", `Unsupported ${command.command_type}`);
       } catch (e) {
-        this.deps.log(`${label} 失败：${describe(e)}`);
+        this.deps.log(`${label} failed: ${describe(e)}`);
         return fail(
           e instanceof DockerError ? e.code : "RUNTIME_ERROR",
           describe(e),
         );
       } finally {
-        await this.refreshDeploymentGrants().catch((e) => this.deps.log(`更新部署占用失败：${describe(e)}`));
+        await this.refreshDeploymentGrants().catch((e) => this.deps.log(`Failed to refresh deployment reservations: ${describe(e)}`));
       }
     });
   }
@@ -228,7 +232,7 @@ export class Reconciler {
         : f.path.replace(/^\/+/, "");
       const target = path.resolve(root, rel);
       if (!target.startsWith(`${root}${path.sep}`)) {
-        throw new Error(`文件路径越界：${f.path}`);
+        throw new Error(`File path escapes the boundary: ${f.path}`);
       }
       fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
       fs.writeFileSync(target, f.content, { mode: 0o600 });
@@ -289,7 +293,7 @@ export class Reconciler {
     pcsReachable: boolean,
   ): Promise<CommandOutcome> {
     const gate = this.gate(action, pcsReachable);
-    if (!gate.allowed) return fail(gate.reason!, `本机当前不允许启动角色进程：${gate.reason}`);
+    if (!gate.allowed) return fail(gate.reason!, `This host does not currently allow starting role processes: ${gate.reason}`);
 
     const root = this.nativeRoot(dep.instance_id);
     const agentEntry = path.join(root, "app", "agent-runtime.mjs");
@@ -309,13 +313,13 @@ export class Reconciler {
     if (!fs.existsSync(agentEntry)) {
       return fail(
         "NATIVE_AGENT_MISSING",
-        "主机上没有构建机运行时；请在主机页重新「启动 runtime」后再试",
+        "No builder runtime on this host; start the runtime again from the host page and retry",
         { path: agentEntry },
       );
     }
     const env = dep.spec.env ?? {};
     if (!env.SCHEDULER_URL) {
-      return fail("SCHEDULER_URL_MISSING", "裸机构建机缺少调度机地址");
+      return fail("SCHEDULER_URL_MISSING", "Native builder is missing the scheduler URL");
     }
     const configPath = path.join(root, "runtime.config.json");
     fs.writeFileSync(configPath, JSON.stringify(this.nativeConfig(dep, root), null, 2), {
@@ -328,7 +332,7 @@ export class Reconciler {
       dep.spec.resource_profile.memory_limit_bytes,
     );
     if (!admission.allowed) {
-      return fail("ADMISSION_DENIED_BY_HOST", "本机实时余量不足，拒绝启动构建机", {
+      return fail("ADMISSION_DENIED_BY_HOST", "Insufficient live headroom on this host; refusing to start the builder", {
         observed: admission.observed,
         reason: admission.reason,
       });
@@ -375,7 +379,7 @@ export class Reconciler {
       fs.closeSync(out);
     }
     if (!child?.pid) {
-      return fail("NATIVE_SPAWN_FAILED", "构建机进程启动失败");
+      return fail("NATIVE_SPAWN_FAILED", "Builder process failed to start");
     }
     child.unref();
     fs.writeFileSync(this.nativePidFile(root), String(child.pid), { mode: 0o600 });
@@ -383,7 +387,7 @@ export class Reconciler {
     // A process that exits shortly after starting (missing Node dependencies, bad config) must be reported on the spot, not left for the scheduler to time out.
     await new Promise((r) => setTimeout(r, 800));
     if (!this.nativeProcess(root)?.alive) {
-      return fail("NATIVE_PROCESS_EXITED", "构建机进程启动后立即退出", {
+      return fail("NATIVE_PROCESS_EXITED", "Builder process exited immediately after starting", {
         pid: child.pid,
         log: this.tailLog(logPath),
       });
@@ -451,7 +455,7 @@ export class Reconciler {
     pcsReachable: boolean,
   ): Promise<CommandOutcome> {
     const gate = this.gate(action, pcsReachable);
-    if (!gate.allowed) return fail(gate.reason!, `本机当前不允许启动容器：${gate.reason}`);
+    if (!gate.allowed) return fail(gate.reason!, `This host does not currently allow starting containers: ${gate.reason}`);
 
     // The network a container references may not exist on this host (new host, network deleted).
     // Starting an existing container also fails with "network not found", so fill in the network before any start.
@@ -466,11 +470,11 @@ export class Reconciler {
         // When an instance is redeployed (new image / new spec), the new deployment takes over the container name;
         // only a container belonging to another instance is a real conflict, otherwise remove the old one and rebuild to the new spec.
         if (existing.labels["platform.instance_id"] !== dep.instance_id) {
-          return fail("CONTAINER_NAME_CONFLICT", `${name} 已被其他部署占用`, {
+          return fail("CONTAINER_NAME_CONFLICT", `${name} is already in use by another deployment`, {
             owner,
           });
         }
-        this.deps.log(`${name} 属于旧部署 ${owner}，由 ${dep.deployment_id} 接管`);
+        this.deps.log(`${name} belonged to the previous deployment ${owner}; now owned by ${dep.deployment_id}`);
         await this.deps.engine.remove(name, true);
         if (owner) this.deps.state.removeDeployment(owner);
         this.deps.state.save();
@@ -500,7 +504,7 @@ export class Reconciler {
       dep.spec.resource_profile.memory_limit_bytes,
     );
     if (!admission.allowed) {
-      return fail("ADMISSION_DENIED_BY_HOST", "本机实时余量不足，拒绝创建容器", {
+      return fail("ADMISSION_DENIED_BY_HOST", "Insufficient live headroom on this host; refusing to create the container", {
         observed: admission.observed,
         reason: admission.reason,
       });
@@ -509,12 +513,16 @@ export class Reconciler {
     await this.ensureImage(dep.spec);
     // The cache directory must exist, otherwise Docker rejects the bind mount; its contents are delivered by the control plane on demand.
     if (this.deps.cfg.cache_dir) fs.mkdirSync(this.deps.cfg.cache_dir, { recursive: true });
+    // Only builders share the pool; schedulers and platform containers stay outside it.
+    const cgroupParent =
+      dep.spec.role_id === "builder" ? (this.deps.poolScope?.(dep.instance_id) ?? undefined) : undefined;
     const config = buildContainerConfig(
       {
         deployment_id: dep.deployment_id,
         grant_id: dep.grant_id,
         host_id: dep.host_id,
         instance: dep.spec,
+        cgroup_parent: cgroupParent,
       },
       this.deps.cfg,
       this.readAgentEnv(dep.spec),
@@ -525,7 +533,7 @@ export class Reconciler {
       if (e instanceof DockerError && e.status === 409) {
         existing = await this.deps.engine.inspect(name);
         if (existing?.labels["platform.deployment_id"] !== dep.deployment_id) {
-          return fail("CONTAINER_NAME_CONFLICT", `${name} 已被其他容器占用`);
+          return fail("CONTAINER_NAME_CONFLICT", `${name} is already in use by another container`);
         }
       } else {
         throw e;
@@ -542,7 +550,7 @@ export class Reconciler {
     const files = spec.files ?? [];
     if (!files.length) return;
     await this.deps.engine.putArchive(name, "/", buildTar(files));
-    this.deps.log(`写入容器配置 ${files.map((f) => f.path).join(", ")}`);
+    this.deps.log(`Writing container config ${files.map((f) => f.path).join(", ")}`);
   }
 
   /**
@@ -555,7 +563,7 @@ export class Reconciler {
     const file =
       this.deps.cfg.agent_env_file ?? path.join(os.homedir(), ".config", "platform", "agent-env");
     if (!fs.existsSync(file)) {
-      throw new Error(`主机缺少凭据文件 ${file}：部署需要 ${names.join(", ")}`);
+      throw new Error(`Host is missing credential file ${file}: the deployment requires ${names.join(", ")}`);
     }
     const values = new Map<string, string>();
     for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
@@ -565,7 +573,7 @@ export class Reconciler {
     }
     const missing = names.filter((n) => !values.get(n));
     if (missing.length) {
-      throw new Error(`凭据文件 ${file} 缺少 ${missing.join(", ")}`);
+      throw new Error(`Credential file ${file} is missing ${missing.join(", ")}`);
     }
     return Object.fromEntries(names.map((n) => [n, values.get(n)!]));
   }
@@ -584,17 +592,17 @@ export class Reconciler {
       this.assertDigest(spec.image, inspected.repo_digests);
       return;
     }
-    this.deps.log(`拉取镜像 ${spec.image}`);
+    this.deps.log(`Pulling image ${spec.image}`);
     await this.deps.engine.pull(spec.image);
     const again = await this.deps.engine.inspectImage(spec.image);
-    if (!again) throw new DockerError(500, "IMAGE_PULL_INCOMPLETE", "拉取后仍找不到镜像");
+    if (!again) throw new DockerError(500, "IMAGE_PULL_INCOMPLETE", "Image still not found after pulling");
     this.assertDigest(spec.image, again.repo_digests);
   }
 
   private assertDigest(image: string, repoDigests: string[]): void {
     const digest = image.slice(image.indexOf("@") + 1);
     if (repoDigests.length && !repoDigests.some((d) => d.endsWith(`@${digest}`))) {
-      throw new DockerError(409, "IMAGE_DIGEST_MISMATCH", `本地镜像 digest 与部署意图不一致：${image}`);
+      throw new DockerError(409, "IMAGE_DIGEST_MISMATCH", `Local image digest does not match the deployment intent: ${image}`);
     }
   }
 
@@ -622,7 +630,7 @@ export class Reconciler {
         }
         const name = containerName(dep.instance_id);
         let existing = await engine.inspect(name).catch((e) => {
-          log(`对账 ${name} 失败：${describe(e)}`);
+          log(`Reconcile ${name} failed: ${describe(e)}`);
           return null;
         });
 
@@ -640,13 +648,14 @@ export class Reconciler {
           }
           state.removeDeployment(dep.deployment_id);
           state.save();
+          if (dep.spec.role_id === "builder") this.deps.releasePoolScope?.(dep.instance_id);
           continue;
         }
 
         if (dep.desired_state === "STOPPED") {
           if (existing?.state === "running") {
             await engine.stop(name, this.deps.cfg.container_stop_timeout_seconds).catch((e) =>
-              log(`停止 ${name} 失败：${describe(e)}`),
+              log(`Stop ${name} failed: ${describe(e)}`),
             );
           }
           continue;
@@ -663,13 +672,13 @@ export class Reconciler {
           const out = await this.ensureRunning(dep, action, pcsReachable);
           if (!out.ok) {
             if (!existing) this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
-            log(`对账 ${name} 未完成：${String(out.result.code)}`);
+            log(`Reconcile ${name} incomplete: ${String(out.result.code)}`);
           } else {
             this.retryAfter.delete(dep.deployment_id);
           }
         } catch (e) {
           if (!existing) this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
-          log(`对账 ${name} 失败：${describe(e)}`);
+          log(`Reconcile ${name} failed: ${describe(e)}`);
         }
       }
       await this.refreshDeploymentGrants();
@@ -728,13 +737,13 @@ export class Reconciler {
       const out = await this.ensureNativeRunning(dep, "DEPLOY", pcsReachable);
       if (!out.ok) {
         this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
-        log(`对账 ${dep.instance_id} 未完成：${String(out.result.code)}`);
+        log(`Reconcile ${dep.instance_id} incomplete: ${String(out.result.code)}`);
       } else {
         this.retryAfter.delete(dep.deployment_id);
       }
     } catch (e) {
       this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
-      log(`对账 ${dep.instance_id} 失败：${describe(e)}`);
+      log(`Reconcile ${dep.instance_id} failed: ${describe(e)}`);
     }
   }
 

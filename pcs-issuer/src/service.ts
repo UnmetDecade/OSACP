@@ -281,7 +281,7 @@ function unique(values: string[]): string[] {
 function promptField(value: unknown, field: string, max: number): string {
   const text = String(value ?? "").trim();
   if (text.length > max) {
-    throw new PcsError(400, "INVALID_PROFILE", `${field} 超过 ${max} 字符`);
+    throw new PcsError(400, "INVALID_PROFILE", `${field} exceeds ${max} characters`);
   }
   return text;
 }
@@ -302,7 +302,7 @@ function normalizeLimits(input?: Record<string, unknown>): Record<string, unknow
     }
     const n = Number(raw);
     if (!Number.isInteger(n) || n < 1 || n > max) {
-      throw new PcsError(400, "INVALID_LIMITS", `${key} 必须是 1–${max} 的整数`);
+      throw new PcsError(400, "INVALID_LIMITS", `${key} must be an integer in 1–${max}`);
     }
     out[key] = n;
   }
@@ -351,7 +351,7 @@ function instanceIdFromName(raw: string): string {
 function normalizePorts(input?: PortMapping[]): PortMapping[] {
   if (!input?.length) return [];
   if (!Array.isArray(input) || input.length > 8) {
-    throw new PcsError(400, "INVALID_PORTS", "端口映射最多 8 条");
+    throw new PcsError(400, "INVALID_PORTS", "at most 8 port mappings are allowed");
   }
   const seenContainer = new Set<number>();
   const seenHost = new Set<number>();
@@ -366,10 +366,10 @@ function normalizePorts(input?: PortMapping[]): PortMapping[] {
       host < 1 ||
       host > 65535
     ) {
-      throw new PcsError(400, "INVALID_PORTS", `端口必须是 1–65535 的整数：${JSON.stringify(p)}`);
+      throw new PcsError(400, "INVALID_PORTS", `port must be an integer between 1 and 65535: ${JSON.stringify(p)}`);
     }
     if (seenContainer.has(container) || seenHost.has(host)) {
-      throw new PcsError(400, "INVALID_PORTS", `端口重复：${JSON.stringify(p)}`);
+      throw new PcsError(400, "INVALID_PORTS", `duplicate port: ${JSON.stringify(p)}`);
     }
     seenContainer.add(container);
     seenHost.add(host);
@@ -381,12 +381,12 @@ function normalizeQuota(quota?: { rpm?: number; daily_calls?: number }): Record<
   const out: Record<string, number> = {};
   if (quota?.rpm !== undefined) {
     const n = Number(quota.rpm);
-    if (!Number.isInteger(n) || n <= 0) throw new PcsError(400, "INVALID_QUOTA", "rpm 必须是正整数");
+    if (!Number.isInteger(n) || n <= 0) throw new PcsError(400, "INVALID_QUOTA", "rpm must be a positive integer");
     out.rpm = n;
   }
   if (quota?.daily_calls !== undefined) {
     const n = Number(quota.daily_calls);
-    if (!Number.isInteger(n) || n <= 0) throw new PcsError(400, "INVALID_QUOTA", "daily_calls 必须是正整数");
+    if (!Number.isInteger(n) || n <= 0) throw new PcsError(400, "INVALID_QUOTA", "daily_calls must be a positive integer");
     out.daily_calls = n;
   }
   return out;
@@ -457,6 +457,8 @@ export interface CreateDeploymentInput {
   capability_detail?: CapabilityDetail;
   /** Scheduler identity. When omitted: root if the host has no root scheduler yet, otherwise it must be node. */
   scheduler_role?: "root" | "node";
+  /** Root scheduler deployment mode; node schedulers and builders inherit it. */
+  scheduling_mode?: "static" | "dynamic";
   /** The deployment_id of the parent scheduler for a node scheduler. */
   parent_scheduler_id?: string;
   /** Which scheduler the builder registers with (deployment_id); defaults to this host's root scheduler when omitted. */
@@ -487,6 +489,8 @@ export interface CreateDeploymentPlanInput {
   capability_detail?: CapabilityDetail;
   /** Scheduler identity: root = this host's root scheduler (at most one per host), node = a node hanging under a parent scheduler. */
   scheduler_role?: "root" | "node";
+  /** Only meaningful for a root scheduler; node schedulers and builders inherit the root's mode. */
+  scheduling_mode?: "static" | "dynamic";
   /** The parent scheduler's deployment_id for a node scheduler (must be on this host). */
   parent_scheduler_id?: string;
   /** The deployment_id of the scheduler the builder is associated with; defaults to this host's root scheduler when omitted. */
@@ -602,14 +606,14 @@ export class PcsService {
     const mediaType =
       String(input.media_type ?? "").trim().slice(0, 120) || "application/octet-stream";
     const raw = String(input.data_base64 ?? "").replace(/^data:[^,]*,/, "");
-    if (!raw) throw new PcsError(400, "ATTACHMENT_EMPTY", "附件内容为空");
+    if (!raw) throw new PcsError(400, "ATTACHMENT_EMPTY", "attachment content is empty");
     if (!/^[A-Za-z0-9+/=\r\n]+$/.test(raw)) {
-      throw new PcsError(400, "ATTACHMENT_INVALID", "附件必须是 base64");
+      throw new PcsError(400, "ATTACHMENT_INVALID", "attachment must be base64");
     }
     const data = Buffer.from(raw, "base64");
-    if (!data.length) throw new PcsError(400, "ATTACHMENT_EMPTY", "附件内容为空");
+    if (!data.length) throw new PcsError(400, "ATTACHMENT_EMPTY", "attachment content is empty");
     if (data.length > MAX_TASK_ATTACHMENT_BYTES) {
-      throw new PcsError(413, "ATTACHMENT_TOO_LARGE", "附件超过 24MiB");
+      throw new PcsError(413, "ATTACHMENT_TOO_LARGE", "attachment exceeds 24MiB");
     }
 
     const attachmentId = newId("att");
@@ -658,12 +662,12 @@ export class PcsService {
         [attachmentId],
       )
     ).rows[0];
-    if (!row) throw notFound("ATTACHMENT_NOT_FOUND", "附件不存在或已过期");
+    if (!row) throw notFound("ATTACHMENT_NOT_FOUND", "attachment not found or expired");
     const want = createHash("sha256").update(token).digest("hex");
     const ok =
       row.token_hash.length === want.length &&
       timingSafeEqual(Buffer.from(row.token_hash), Buffer.from(want));
-    if (!ok) throw forbidden("ATTACHMENT_TOKEN_INVALID", "附件令牌无效");
+    if (!ok) throw forbidden("ATTACHMENT_TOKEN_INVALID", "invalid attachment token");
     return { name: row.name, media_type: row.media_type, data: row.data };
   }
 
@@ -685,9 +689,9 @@ export class PcsService {
       typ: "host",
     });
     const host = await this.getHost(String(claims.sub ?? ""));
-    if (!host) throw new PcsError(401, "TOKEN_INVALID", "主机不存在");
+    if (!host) throw new PcsError(401, "TOKEN_INVALID", "host not found");
     if (host.status === "REVOKED") {
-      throw forbidden("HOST_REVOKED", "主机已被吊销：拒绝一切命令与新容器");
+      throw forbidden("HOST_REVOKED", "host has been revoked: all commands and new containers are rejected");
     }
     return host;
   }
@@ -738,7 +742,7 @@ export class PcsService {
     enrollment_token: string;
     expires_at: string;
   }> {
-    if (!input.name?.trim()) throw new PcsError(400, "INVALID_HOST", "缺少主机显示名");
+    if (!input.name?.trim()) throw new PcsError(400, "INVALID_HOST", "host display name is required");
     const hostId = newId("hst");
     const token = `enr_${randomBytes(24).toString("base64url")}`;
     const expiresAt = iso(nowMs() + this.cfg.enrollmentTtlSeconds * 1000);
@@ -764,9 +768,9 @@ export class PcsService {
     expires_at: string;
     command_public_key: string;
   }> {
-    if (!input.enrollment_token) throw new PcsError(400, "ENROLLMENT_TOKEN_REQUIRED", "缺少注册令牌");
+    if (!input.enrollment_token) throw new PcsError(400, "ENROLLMENT_TOKEN_REQUIRED", "enrollment token is required");
     for (const field of ["hostname", "os", "arch", "fingerprint"] as const) {
-      if (!input[field]?.trim()) throw new PcsError(400, "INVALID_HOST", `缺少 ${field}`);
+      if (!input[field]?.trim()) throw new PcsError(400, "INVALID_HOST", `${field} is required`);
     }
 
     const hostId = await tx(async (c) => {
@@ -780,10 +784,10 @@ export class PcsService {
         )
       ).rows;
       const tok = rows[0];
-      if (!tok) throw new PcsError(401, "ENROLLMENT_TOKEN_INVALID", "注册令牌无效");
-      if (tok.used_at) throw conflict("ENROLLMENT_TOKEN_USED", "注册令牌已被使用");
+      if (!tok) throw new PcsError(401, "ENROLLMENT_TOKEN_INVALID", "invalid enrollment token");
+      if (tok.used_at) throw conflict("ENROLLMENT_TOKEN_USED", "enrollment token has already been used");
       if (new Date(tok.expires_at).getTime() <= nowMs()) {
-        throw new PcsError(401, "ENROLLMENT_TOKEN_EXPIRED", "注册令牌已过期");
+        throw new PcsError(401, "ENROLLMENT_TOKEN_EXPIRED", "enrollment token has expired");
       }
 
       await c.query(`UPDATE pcs_enrollment_tokens SET used_at = now() WHERE token_hash = $1`, [
@@ -860,13 +864,13 @@ export class PcsService {
     const name = String(input.name ?? "").trim() || address;
 
     if (!isSafeHost(address)) {
-      throw new PcsError(400, "INVALID_HOST_ADDRESS", "地址只能是主机名或 IP，不能带协议、路径或空格");
+      throw new PcsError(400, "INVALID_HOST_ADDRESS", "the address must be a hostname or IP without scheme, path, or spaces");
     }
     if (!/^[a-z_][a-z0-9_-]{0,31}$/i.test(user)) {
-      throw new PcsError(400, "INVALID_SSH_USER", "SSH 用户名不合法");
+      throw new PcsError(400, "INVALID_SSH_USER", "invalid SSH username");
     }
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new PcsError(400, "INVALID_SSH_PORT", "SSH 端口必须在 1–65535 之间");
+      throw new PcsError(400, "INVALID_SSH_PORT", "SSH port must be between 1 and 65535");
     }
     const privateKey = (input.private_key ?? "").trim();
     const password = input.password ?? "";
@@ -981,13 +985,13 @@ export class PcsService {
     warning?: string;
   }> {
     const cred = await this.getHostCredential(hostId);
-    if (!cred) throw notFound("HOST_NOT_FOUND", "主机不存在");
+    if (!cred) throw notFound("HOST_NOT_FOUND", "host not found");
     const before = await this.getHost(hostId);
     const previousRole = before?.role_mode ?? "containers";
 
     if (input.role_mode !== undefined) {
       if (!["containers", "builder", "scheduler"].includes(input.role_mode)) {
-        throw new PcsError(400, "INVALID_HOST_ROLE", "role_mode 只能是 containers / builder / scheduler");
+        throw new PcsError(400, "INVALID_HOST_ROLE", "role_mode must be one of containers / builder / scheduler");
       }
       // Bare-metal roles and containers are mutually exclusive: if containers are still running, have the user resolve that first, avoiding silently killing working instances.
       if (input.role_mode !== previousRole) {
@@ -1002,15 +1006,15 @@ export class PcsService {
           if (containers.length) {
             throw conflict(
               "HOST_HAS_CONTAINER_DEPLOYMENTS",
-              "主机上还有容器实例，先删除它们再改成裸机构建机",
-              { deployments: containers.map((d) => `${d.instance_id}（${d.role_id}）`) },
+              "the host still has container instances; remove them before switching to a bare-metal builder",
+              { deployments: containers.map((d) => `${d.instance_id} (${d.role_id})`) },
             );
           }
         }
         if (input.role_mode === "scheduler") {
           throw conflict(
             "NATIVE_SCHEDULER_NOT_SUPPORTED",
-            "裸机调度机还没有执行路径；目前只支持裸机构建机",
+            "bare-metal schedulers have no execution path yet; only bare-metal builders are supported",
           );
         }
       }
@@ -1029,7 +1033,7 @@ export class PcsService {
 
     if (cred.transport === "local") {
       if (address || user || privateKey || password || input.port !== undefined) {
-        throw new PcsError(400, "HOST_NOT_SSH", "本地主机不需要地址、端口或凭据");
+        throw new PcsError(400, "HOST_NOT_SSH", "the local host does not need an address, port, or credentials");
       }
       if (name) {
         await query(`UPDATE pcs_hosts SET hostname=$2, updated_at=now() WHERE host_id=$1`, [
@@ -1054,13 +1058,13 @@ export class PcsService {
     const nextPort = input.port === undefined ? cred.ssh_port : Number(input.port);
 
     if (!isSafeHost(nextAddress)) {
-      throw new PcsError(400, "INVALID_HOST_ADDRESS", "地址只能是主机名或 IP，不能带协议、路径或空格");
+      throw new PcsError(400, "INVALID_HOST_ADDRESS", "the address must be a hostname or IP without scheme, path, or spaces");
     }
     if (!/^[a-z_][a-z0-9_-]{0,31}$/i.test(nextUser)) {
-      throw new PcsError(400, "INVALID_SSH_USER", "SSH 用户名不合法");
+      throw new PcsError(400, "INVALID_SSH_USER", "invalid SSH username");
     }
     if (!Number.isInteger(nextPort) || nextPort < 1 || nextPort > 65535) {
-      throw new PcsError(400, "INVALID_SSH_PORT", "SSH 端口必须在 1–65535 之间");
+      throw new PcsError(400, "INVALID_SSH_PORT", "SSH port must be between 1 and 65535");
     }
     const nextAuth = resolveAuthType(privateKey, password, { optional: true });
     const sealed = nextAuth
@@ -1173,9 +1177,9 @@ export class PcsService {
     operator: string,
   ): Promise<{ deployment_id: string; created: boolean; status: string }> {
     const host = await this.getHost(hostId);
-    if (!host) throw notFound("HOST_NOT_FOUND", "主机不存在");
+    if (!host) throw notFound("HOST_NOT_FOUND", "host not found");
     if (host.role_mode !== "builder") {
-      throw conflict("HOST_NOT_NATIVE_BUILDER", "先把主机角色改成「裸机构建机」");
+      throw conflict("HOST_NOT_NATIVE_BUILDER", "first set the host role to bare-metal builder");
     }
     const existing = (await this.activeNativeBuilders(hostId))[0];
     if (existing && existing.status !== "FAILED" && existing.actual_state !== "MISSING") {
@@ -1203,7 +1207,7 @@ export class PcsService {
       throw new PcsError(
         409,
         "SCHEDULER_URL_MISSING",
-        "裸机构建机需要调度机地址：先部署一台调度机，或配置 PCS_SCHEDULER_URL",
+        "a bare-metal builder needs a scheduler address: deploy a scheduler first, or set PCS_SCHEDULER_URL",
       );
     }
 
@@ -1251,6 +1255,11 @@ export class PcsService {
       ...(Object.keys(capability.detail).length
         ? { CAPABILITY_DETAIL: JSON.stringify(capability.detail) }
         : {}),
+      // Native processes have no cgroup pool, so they always run in static mode; the budget below is
+      // enforced by the builder's own admission rather than by the kernel.
+      SCHEDULING_MODE: "static",
+      RESOURCE_CPU_MILLICORES: String(Math.round(cpu * 1000)),
+      RESOURCE_MEMORY_BYTES: String(memoryLimit),
       MAX_CONCURRENCY: "1",
       ...(delivery?.env ?? {}),
     };
@@ -1330,7 +1339,7 @@ export class PcsService {
       return { host_id: hostId, transport: "local", probe, created: false };
     }
     const hostId = newId("hst");
-    const name = String(input.name ?? "").trim() || "本地主机";
+    const name = String(input.name ?? "").trim() || "local host";
     await tx(async (c) => {
       await c.query(
         `INSERT INTO pcs_hosts (host_id, hostname, status, labels)
@@ -1349,7 +1358,7 @@ export class PcsService {
   /** Probe connectivity and record the result; the result is also written into the UI's last_probe. */
   async probeHost(hostId: string): Promise<SshProbe> {
     const cred = await this.getHostCredential(hostId);
-    if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "主机没有接入信息");
+    if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "host has no access information");
     let probe: SshProbe;
     if (cred.transport === "local") {
       probe = await probeLocal();
@@ -1399,16 +1408,16 @@ export class PcsService {
       [hostId, instanceId],
     );
     const dep = r.rows[0];
-    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "这台主机上没有该实例");
+    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "no such instance on this host");
     if (dep.desired_state === "REMOVED" || dep.status === "REMOVED") {
-      throw notFound("DEPLOYMENT_REMOVED", "实例已移除");
+      throw notFound("DEPLOYMENT_REMOVED", "instance has been removed");
     }
     if (
       dep.desired_state !== "RUNNING" ||
       dep.status === "STOPPED" ||
       dep.status === "ROLLED_BACK"
     ) {
-      throw conflict("INSTANCE_STOPPED", "实例未运行，先启动再打开终端");
+      throw conflict("INSTANCE_STOPPED", "instance is not running; start it before opening a terminal");
     }
     // Keep in sync with containerName in host-runtime/src/container-spec.ts.
     const container = `platform-${instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48)}`;
@@ -1463,10 +1472,10 @@ export class PcsService {
     warning?: string;
   }> {
     const host = await this.getHost(hostId);
-    if (!host) throw notFound("HOST_NOT_FOUND", "主机不存在");
-    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "主机已被吊销，不能引导");
+    if (!host) throw notFound("HOST_NOT_FOUND", "host not found");
+    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "host has been revoked and cannot be bootstrapped");
     const cred = await this.getHostCredential(hostId);
-    if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "主机没有接入信息");
+    if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "host has no access information");
     const dockerRequired = (host.role_mode ?? "containers") === "containers";
 
     const pcsUrl =
@@ -1475,7 +1484,7 @@ export class PcsService {
       throw new PcsError(
         409,
         "RUNTIME_URL_MISSING",
-        "远程主机需要配置 PCS_RUNTIME_URL，填这台主机能访问到的 PCS 地址",
+        "remote hosts require PCS_RUNTIME_URL; set it to a PCS address this host can reach",
       );
     }
 
@@ -1522,7 +1531,7 @@ export class PcsService {
       throw new PcsError(
         502,
         "BOOTSTRAP_FAILED",
-        detail || `引导脚本退出码 ${result.code}`,
+        detail || `bootstrap script exited with code ${result.code}`,
       );
     }
 
@@ -1563,7 +1572,7 @@ export class PcsService {
     const file = this.cfg.agentEnvFile;
     if (!file) return undefined;
     if (!fs.existsSync(file)) {
-      console.log(`[bootstrap] 没有主机凭据文件 ${file}：绑定模型的实例将因缺少密钥而拒绝启动`);
+      console.log(`[bootstrap] No host credential file ${file}: instances bound to a model will refuse to start without a key`);
       return undefined;
     }
     return fs.readFileSync(file, "utf8");
@@ -1593,7 +1602,7 @@ export class PcsService {
       throw new PcsError(
         502,
         "BOOTSTRAP_ENV_FAILED",
-        "远程环境准备超时（10 分钟）：检查目标主机的网络与 apt 源",
+        "remote environment setup timed out (10 minutes): check the target host network and apt sources",
       );
     }
     const node = /^PCS_NODE_PATH=(.+)$/m.exec(out);
@@ -1602,7 +1611,7 @@ export class PcsService {
       throw new PcsError(
         502,
         "BOOTSTRAP_ENV_FAILED",
-        detail || `环境准备脚本退出码 ${result.code}`,
+        detail || `environment setup script exited with code ${result.code}`,
       );
     }
     return node[1].trim();
@@ -1649,7 +1658,7 @@ export class PcsService {
   private async sshTarget(hostId: string): Promise<SshTarget> {
     const cred = await this.getHostCredential(hostId);
     if (!cred || cred.transport !== "ssh") {
-      throw notFound("HOST_TRANSPORT_UNKNOWN", "主机不是 SSH 接入");
+      throw notFound("HOST_TRANSPORT_UNKNOWN", "host is not connected over SSH");
     }
     const key = this.requireCredentialKey();
     const raw = await query<{
@@ -1664,7 +1673,7 @@ export class PcsService {
     );
     const sealed = raw.rows[0];
     if (!sealed?.key_ciphertext) {
-      throw notFound("HOST_CREDENTIAL_MISSING", "主机没有保存 SSH 凭据");
+      throw notFound("HOST_CREDENTIAL_MISSING", "no SSH credential is stored for this host");
     }
     const secret = openSecret(key, {
       ciphertext: sealed.key_ciphertext,
@@ -1686,7 +1695,7 @@ export class PcsService {
       throw new PcsError(
         503,
         "CREDENTIAL_KEY_MISSING",
-        "未配置 PCS_CREDENTIAL_KEY_FILE，无法加密保存 SSH 密码或私钥",
+        "PCS_CREDENTIAL_KEY_FILE is not configured; cannot encrypt and store SSH passwords or private keys",
       );
     }
     return this.credentialKey;
@@ -1720,16 +1729,16 @@ export class PcsService {
     parentHostId: string,
     operator: string,
   ): Promise<{ host_id: string; parent_host_id: string | null; role_mode: string }> {
-    if (!parentHostId?.trim()) throw new PcsError(400, "PARENT_REQUIRED", "缺少 parent_host_id");
+    if (!parentHostId?.trim()) throw new PcsError(400, "PARENT_REQUIRED", "parent_host_id is required");
     if (hostId === parentHostId) {
-      throw new PcsError(400, "HOST_MERGE_SELF", "主机不能并入自己");
+      throw new PcsError(400, "HOST_MERGE_SELF", "a host cannot be merged into itself");
     }
     const child = await this.getHost(hostId);
-    if (!child) throw notFound("HOST_NOT_FOUND", "主机不存在");
+    if (!child) throw notFound("HOST_NOT_FOUND", "host not found");
     const parent = await this.getHost(parentHostId);
-    if (!parent) throw notFound("PARENT_HOST_NOT_FOUND", "上级主机不存在");
+    if (!parent) throw notFound("PARENT_HOST_NOT_FOUND", "parent host not found");
     if (child.status === "REVOKED" || parent.status === "REVOKED") {
-      throw forbidden("HOST_REVOKED", "主机已被吊销，不能并入");
+      throw forbidden("HOST_REVOKED", "host has been revoked and cannot be merged");
     }
     const hasScheduler = async (id: string) =>
       Boolean(
@@ -1746,7 +1755,7 @@ export class PcsService {
     // Merging is allowed even if the child has no root scheduler: bare-metal builders can exist independently,
     // and once a scheduler is deployed there later, syncFederationParent in the host report adds federation reporting.
     if (!(await hasScheduler(parentHostId))) {
-      throw conflict("PARENT_SCHEDULER_MISSING", "上级主机还没有根调度机，不能接收结点");
+      throw conflict("PARENT_SCHEDULER_MISSING", "the parent host has no root scheduler yet and cannot accept nodes");
     }
 
     // Walk up the parent chain: hitting yourself means the target is in your own subtree, which would form a cycle.
@@ -1754,7 +1763,7 @@ export class PcsService {
     const seen = new Set<string>();
     while (cursor) {
       if (cursor === hostId) {
-        throw conflict("HOST_MERGE_CYCLE", "不能并入自己的下级主机");
+        throw conflict("HOST_MERGE_CYCLE", "cannot merge into one of your own descendant hosts");
       }
       if (seen.has(cursor)) break;
       seen.add(cursor);
@@ -1784,7 +1793,7 @@ export class PcsService {
     operator: string,
   ): Promise<{ host_id: string; parent_host_id: null }> {
     const host = await this.getHost(hostId);
-    if (!host) throw notFound("HOST_NOT_FOUND", "主机不存在");
+    if (!host) throw notFound("HOST_NOT_FOUND", "host not found");
     await query(
       `UPDATE pcs_hosts SET parent_host_id=NULL, updated_at=now() WHERE host_id=$1`,
       [hostId],
@@ -1886,7 +1895,7 @@ export class PcsService {
         WHERE host_id=$1 RETURNING host_id, status`,
       [hostId],
     );
-    if (!r.rowCount) throw notFound("HOST_NOT_FOUND", "主机不存在");
+    if (!r.rowCount) throw notFound("HOST_NOT_FOUND", "host not found");
     console.log(`[audit] revoke host ${hostId} by ${operator}`);
     return r.rows[0];
   }
@@ -1900,14 +1909,14 @@ export class PcsService {
   async deleteHost(hostId: string, operator: string): Promise<{ host_id: string; deleted: true }> {
     await tx(async (c) => {
       const host = await c.query(`SELECT host_id FROM pcs_hosts WHERE host_id=$1 FOR UPDATE`, [hostId]);
-      if (!host.rowCount) throw notFound("HOST_NOT_FOUND", "主机不存在");
+      if (!host.rowCount) throw notFound("HOST_NOT_FOUND", "host not found");
       const active = await c.query(
         `SELECT count(*)::int AS n FROM pcs_deployments
           WHERE host_id=$1 AND status <> 'REMOVED'`,
         [hostId],
       );
       if (Number(active.rows[0]?.n ?? 0) > 0) {
-        throw conflict("HOST_HAS_DEPLOYMENTS", "主机上还有未移除的容器，先删除容器");
+        throw conflict("HOST_HAS_DEPLOYMENTS", "the host still has containers that have not been removed; remove them first");
       }
       // These two tables have no foreign keys, so this host's bindings must be deleted first.
       await c.query(`DELETE FROM role_agent_bindings WHERE host_id=$1`, [hostId]);
@@ -1926,7 +1935,19 @@ export class PcsService {
     return this.issueHostToken(host.host_id);
   }
 
-  async heartbeat(host: HostRow, body: Record<string, any>): Promise<{ ok: true; server_time: string }> {
+  async heartbeat(
+    host: HostRow,
+    body: Record<string, any>,
+  ): Promise<{
+    ok: true;
+    server_time: string;
+    schedulers: Array<{
+      deployment_id: string;
+      role: string;
+      url: string;
+      scheduling_mode: string;
+    }>;
+  }> {
     const state = String(body.host_state ?? "NORMAL");
     await tx(async (c) => {
       await c.query(
@@ -1938,7 +1959,30 @@ export class PcsService {
       );
       await this.upsertRuntime(c, host.host_id, body.runtime ?? {});
     });
-    return { ok: true, server_time: iso(nowMs()) };
+    // The host-runtime pulls dynamic grants from the scheduler directly; it learns the addresses here
+    // because schedulers may be deployed after the host was bootstrapped.
+    const schedulers = (
+      await query<{
+        deployment_id: string;
+        instance_id: string;
+        scheduler_role: string | null;
+        scheduler_url: string | null;
+        env: Record<string, string> | null;
+      }>(
+        `SELECT deployment_id, instance_id, scheduler_role, scheduler_url, env
+           FROM pcs_deployments
+          WHERE host_id=$1 AND role_id='scheduler' AND status IN ('STARTING','HEALTHY')
+            AND scheduler_url IS NOT NULL
+          ORDER BY CASE WHEN scheduler_role = 'root' THEN 0 ELSE 1 END, created_at`,
+        [host.host_id],
+      )
+    ).rows.map((r) => ({
+      deployment_id: r.deployment_id,
+      role: r.scheduler_role ?? "root",
+      url: String(r.scheduler_url ?? ""),
+      scheduling_mode: String(r.env?.SCHEDULING_MODE ?? this.cfg.schedulingMode),
+    }));
+    return { ok: true, server_time: iso(nowMs()), schedulers: schedulers.filter((s) => s.url) };
   }
 
   private async upsertRuntime(
@@ -2063,7 +2107,7 @@ export class PcsService {
 
     if (role === "root") {
       if (root && root.instance_id !== instanceId) {
-        throw conflict("ROOT_SCHEDULER_EXISTS", `主机 ${hostId} 已有根调度机 ${root.instance_id}`, {
+        throw conflict("ROOT_SCHEDULER_EXISTS", `host ${hostId} already has root scheduler ${root.instance_id}`, {
           existing_instance_id: root.instance_id,
         });
       }
@@ -2073,7 +2117,7 @@ export class PcsService {
     if (!parentId) {
       throw conflict(
         "SCHEDULER_PARENT_REQUIRED",
-        "这台主机已经有根调度机，结点调度机必须选择父调度机",
+        "this host already has a root scheduler; a node scheduler must select a parent scheduler",
         { host_id: hostId },
       );
     }
@@ -2081,7 +2125,7 @@ export class PcsService {
     if (!parent) {
       throw notFound(
         "PARENT_SCHEDULER_NOT_FOUND",
-        `父调度机不存在或已停止（引用 ${parentId}）`,
+        `parent scheduler does not exist or is stopped (reference ${parentId})`,
       );
     }
     // Walk up the parent chain: the new position must not appear in your own descendants.
@@ -2091,7 +2135,7 @@ export class PcsService {
       if (seen.has(cursor)) break;
       seen.add(cursor);
       if (cursor === existing?.deployment_id) {
-        throw conflict("SCHEDULER_TREE_CYCLE", "不能把调度机挂到自己的下级");
+        throw conflict("SCHEDULER_TREE_CYCLE", "cannot attach a scheduler under one of its own descendants");
       }
       cursor = active.find((d) => d.deployment_id === cursor)?.parent_deployment_id ?? null;
     }
@@ -2112,12 +2156,12 @@ export class PcsService {
   ): void {
     if (execution === "native") {
       if (roleId !== "builder") {
-        throw conflict("NATIVE_ROLE_NOT_SUPPORTED", "目前只有裸机构建机可以直接跑在主机上");
+        throw conflict("NATIVE_ROLE_NOT_SUPPORTED", "only bare-metal builders can currently run directly on the host");
       }
       if (host.role_mode !== "builder") {
         throw conflict(
           "HOST_NOT_NATIVE_BUILDER",
-          "这台主机不是裸机构建机：先在主机设置里把角色改成「裸机构建机」",
+          "this host is not a bare-metal builder: first change its role in host settings to bare-metal builder",
         );
       }
       return;
@@ -2125,11 +2169,11 @@ export class PcsService {
     if (host.role_mode === "builder") {
       throw conflict(
         "HOST_ROLE_CONFLICT",
-        "该主机是裸机构建机，不能再部署容器；要恢复容器宿主请先改回主机角色",
+        "this host is a bare-metal builder and cannot deploy containers; to restore it as a container host, change the host role back first",
       );
     }
     if (host.role_mode === "scheduler") {
-      throw conflict("HOST_ROLE_CONFLICT", "该主机是裸机调度机，不能再部署容器");
+      throw conflict("HOST_ROLE_CONFLICT", "this host is a bare-metal scheduler and cannot deploy containers");
     }
   }
 
@@ -2141,9 +2185,9 @@ export class PcsService {
     command_id: string;
   }> {
     const host = await this.getHost(input.host_id);
-    if (!host) throw notFound("HOST_NOT_FOUND", "目标主机不存在");
-    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "目标主机已被吊销");
-    if (!input.role_id?.trim()) throw new PcsError(400, "INVALID_ROLE", "缺少 role_id");
+    if (!host) throw notFound("HOST_NOT_FOUND", "target host not found");
+    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "target host has been revoked");
+    if (!input.role_id?.trim()) throw new PcsError(400, "INVALID_ROLE", "role_id is required");
     const execution = input.execution ?? "container";
     this.assertExecutionAllowed(host, input.role_id, execution);
     const image = input.image ?? "";
@@ -2164,7 +2208,7 @@ export class PcsService {
           : active.find((d) => (d.scheduler_role ?? "root") === "root") ?? active[0] ?? null
         : null;
     if (input.role_id === "builder" && input.scheduler_id && !schedulerRef) {
-      throw notFound("SCHEDULER_NOT_FOUND", "选择的调度机不存在或已停止");
+      throw notFound("SCHEDULER_NOT_FOUND", "the selected scheduler does not exist or is stopped");
     }
     const schedulerUrl =
       input.role_id === "scheduler"
@@ -2208,7 +2252,7 @@ export class PcsService {
     const profile = normalizeResourceProfile(input.resource_profile ?? {});
     const policy = input.network_policy ?? "default";
     if (!this.cfg.networkPolicies.includes(policy)) {
-      throw new PcsError(400, "NETWORK_POLICY_NOT_ALLOWED", `网络策略不在白名单：${policy}`, {
+      throw new PcsError(400, "NETWORK_POLICY_NOT_ALLOWED", `network policy is not in the allowlist: ${policy}`, {
         allowlist: this.cfg.networkPolicies,
       });
     }
@@ -2235,7 +2279,7 @@ export class PcsService {
       ).rows[0];
       const generation = Number(max.g) + 1;
       if (opts.expected_generation !== undefined && generation !== opts.expected_generation) {
-        throw conflict("PLAN_CHANGED", "实例 generation 已变化，部署计划失效，请重新预览", {
+        throw conflict("PLAN_CHANGED", "instance generation has changed; the deployment plan is stale, please preview again", {
           expected_generation: opts.expected_generation,
           current_generation: generation,
         });
@@ -2421,7 +2465,7 @@ export class PcsService {
         [input.deploymentId],
       );
       console.log(
-        `[image-sync] ${input.image} → ${input.hostId} 完成（${Math.round((Date.now() - started) / 1000)}s）`,
+        `[image-sync] ${input.image} → ${input.hostId} complete (${Math.round((Date.now() - started) / 1000)}s)`,
       );
     } catch (e) {
       await query(
@@ -2429,13 +2473,13 @@ export class PcsService {
           WHERE deployment_id=$1`,
         [input.deploymentId],
       ).catch(() => undefined);
-      console.warn(`[image-sync] ${input.image} → ${input.hostId} 失败：${(e as Error).message}`);
+      console.warn(`[image-sync] ${input.image} → ${input.hostId} failed: ${(e as Error).message}`);
     }
   }
 
   private async transferImageToHost(hostId: string, image: string): Promise<void> {
     const cred = await this.getHostCredential(hostId);
-    if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "主机没有接入信息");
+    if (!cred) throw notFound("HOST_TRANSPORT_UNKNOWN", "host has no access information");
     // The source image is on the control plane's host; save it as repo:tag so the target can resolve the repo digest after loading.
     const src = await runCommand("docker", ["image", "inspect", image, "--format", "{{index .RepoTags 0}}"]);
     const repoTag = src.code === 0 ? src.stdout.trim() : "";
@@ -2443,7 +2487,7 @@ export class PcsService {
       throw new PcsError(
         409,
         "IMAGE_NOT_ON_CONTROL_PLANE",
-        `控制面所在主机没有镜像 ${image}，无法同步到目标主机：先在控制面主机 docker load 该镜像再重试`,
+        `the control-plane host does not have image ${image}; cannot sync to the target host: docker load the image on the control-plane host and retry`,
       );
     }
     if (cred.transport === "local") return;
@@ -2475,11 +2519,11 @@ export class PcsService {
     }
     await saveDone;
     if (saveCode !== 0) {
-      throw new PcsError(502, "IMAGE_SAVE_FAILED", saveErr.trim().slice(-400) || "docker save 失败");
+      throw new PcsError(502, "IMAGE_SAVE_FAILED", saveErr.trim().slice(-400) || "docker save failed");
     }
     if (loaded.code !== 0) {
       const detail = (loaded.stderr || loaded.stdout).trim().slice(-400);
-      throw new PcsError(502, "IMAGE_TRANSFER_FAILED", detail || `docker load 退出码 ${loaded.code}`);
+      throw new PcsError(502, "IMAGE_TRANSFER_FAILED", detail || `docker load exited with code ${loaded.code}`);
     }
     // A locally built image may have only a tag and no repo digest after loading; tag it once so digest references resolve.
     const fixed = await execSsh(
@@ -2506,7 +2550,7 @@ export class PcsService {
         throw new PcsError(
           502,
           "IMAGE_TRANSFER_INCOMPLETE",
-          `镜像已传到目标主机，但按 digest 引用不到：${image}`,
+          `the image was transferred to the target host but cannot be resolved by digest: ${image}`,
         );
       }
     }
@@ -2514,21 +2558,21 @@ export class PcsService {
 
   private validateVolume(v: { name: string; mount: string }): { name: string; mount: string } {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,40}$/.test(v.name ?? "")) {
-      throw new PcsError(400, "INVALID_VOLUME", `卷名不合法：${v.name}`);
+      throw new PcsError(400, "INVALID_VOLUME", `invalid volume name: ${v.name}`);
     }
     if (!v.mount?.startsWith("/opt/platform/") || v.mount.includes("..")) {
-      throw new PcsError(400, "INVALID_VOLUME", `卷挂载点必须在 /opt/platform/ 下：${v.mount}`);
+      throw new PcsError(400, "INVALID_VOLUME", `volume mount point must be under /opt/platform/: ${v.mount}`);
     }
     return { name: v.name, mount: v.mount };
   }
 
   private validateCommand(command: string[]): string[] {
     if (!Array.isArray(command) || command.length === 0 || command.length > 64) {
-      throw new PcsError(400, "INVALID_COMMAND", "command 必须是非空字符串数组（≤64 项）");
+      throw new PcsError(400, "INVALID_COMMAND", "command must be a non-empty array of strings (≤64 items)");
     }
     for (const part of command) {
       if (typeof part !== "string" || part.length > 4096 || part.includes("\0")) {
-        throw new PcsError(400, "INVALID_COMMAND", "command 含非法参数");
+        throw new PcsError(400, "INVALID_COMMAND", "command contains an invalid argument");
       }
     }
     return command;
@@ -2553,18 +2597,27 @@ export class PcsService {
           deploymentId,
         ])
       ).rows[0] as DeploymentRow | undefined;
-      if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "部署不存在");
-      if (dep.status === "REMOVED" || dep.desired_state === "REMOVED") {
-        throw conflict("DEPLOYMENT_REMOVED", "部署已被移除");
+      if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "deployment not found");
+      // Removing is idempotent. A REMOVE whose acknowledgement failed or timed out leaves the deployment
+      // with desired_state='REMOVED' but status!='REMOVED'; rejecting retries would strand the container
+      // in the UI forever, so a repeated remove is re-dispatched instead of answered with 409.
+      if (dep.status === "REMOVED") {
+        if (action === "remove") {
+          return { command_id: "", deployment_id: deploymentId, generation: Number(dep.generation) };
+        }
+        throw conflict("DEPLOYMENT_REMOVED", "deployment has been removed");
+      }
+      if (dep.desired_state === "REMOVED" && action !== "remove") {
+        throw conflict("DEPLOYMENT_REMOVED", "deployment has been removed");
       }
       const hostStatus = (
         await c.query(`SELECT status FROM pcs_hosts WHERE host_id=$1`, [dep.host_id])
       ).rows[0]?.status;
       if (hostStatus === "REVOKED") {
-        throw forbidden("HOST_REVOKED", "主机已被吊销：不再下发任何命令");
+        throw forbidden("HOST_REVOKED", "host has been revoked: no further commands will be dispatched");
       }
       if (action === "start" && dep.actual_state === "RUNNING") {
-        throw conflict("ALREADY_RUNNING", "容器已在运行");
+        throw conflict("ALREADY_RUNNING", "container is already running");
       }
 
       const generation = Number(dep.generation) + 1;
@@ -2644,15 +2697,15 @@ export class PcsService {
     body: unknown,
   ): Promise<unknown> {
     const dep = await this.getDeployment(deploymentId);
-    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "部署不存在");
+    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "deployment not found");
     if (dep.role_id !== "scheduler") {
-      throw new PcsError(400, "NOT_A_SCHEDULER", "只有调度机部署可以走这个代理");
+      throw new PcsError(400, "NOT_A_SCHEDULER", "only scheduler deployments can use this proxy");
     }
     const base =
       String(dep.scheduler_url ?? "").trim() ||
       this.cfg.schedulerUrls[dep.host_id] ||
       this.cfg.schedulerUrl;
-    if (!base) throw new PcsError(503, "SCHEDULER_URL_MISSING", "没有可用的调度机地址");
+    if (!base) throw new PcsError(503, "SCHEDULER_URL_MISSING", "no scheduler address is available");
     const pathPart = pathname.startsWith("/") ? pathname : `/${pathname}`;
     const qs = search ? (search.startsWith("?") ? search : `?${search}`) : "";
     const target = `${base.replace(/\/+$/, "")}${pathPart}${qs}`;
@@ -2669,7 +2722,7 @@ export class PcsService {
       throw new PcsError(
         502,
         "SCHEDULER_UNREACHABLE",
-        `调度机不可达：${e instanceof Error ? e.message : String(e)}`,
+        `scheduler unreachable: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     const text = await res.text();
@@ -2686,7 +2739,7 @@ export class PcsService {
       throw new PcsError(
         res.status,
         String(err.code ?? "SCHEDULER_ERROR"),
-        String(err.message ?? `调度机返回 ${res.status}`),
+        String(err.message ?? `scheduler returned ${res.status}`),
         err.detail,
       );
     }
@@ -2714,7 +2767,7 @@ export class PcsService {
       throw new PcsError(
         409,
         "AGENT_REQUIRES_SECRET_STORE",
-        `Agent ${agent.agent_profile_id} 引用了 API Profile（${declared.join(", ")}），但容器还没有 Secret Store 实例身份；请先解绑 API Profile 再部署`,
+        `Agent ${agent.agent_profile_id} references API Profiles (${declared.join(", ")}), but the container has no Secret Store instance identity yet; unbind the API Profiles before deploying`,
       );
     }
     const file = JSON.stringify(
@@ -2776,12 +2829,12 @@ export class PcsService {
   private roleAppFiles(role: "scheduler" | "builder"): Array<{ path: string; content: string }> {
     const dir = role === "scheduler" ? this.cfg.schedulerAppDir : this.cfg.builderAppDir;
     const code = role === "scheduler" ? "SCHEDULER_APP_MISSING" : "BUILDER_APP_MISSING";
-    const label = role === "scheduler" ? "调度机" : "构建机";
+    const label = role === "scheduler" ? "scheduler" : "builder";
     if (!fs.existsSync(dir)) {
       throw new PcsError(
         409,
         code,
-        `${label}部署载荷不存在：${dir}（先运行 scripts/build-app-payload.mjs，再同步到控制面）`,
+        `${label} deployment payload does not exist: ${dir} (run scripts/build-app-payload.mjs and sync it to the control plane first)`,
       );
     }
     const files: Array<{ path: string; content: string }> = [];
@@ -2808,7 +2861,7 @@ export class PcsService {
     };
     walk(dir, "");
     if (!files.length) {
-      throw new PcsError(409, code, `${label}部署载荷目录为空：${dir}`);
+      throw new PcsError(409, code, `${label} deployment payload directory is empty: ${dir}`);
     }
     // The deployment channel's hard limits (≤16 files, 1MiB each) are validated here first, so a preview does not pass and then fail only on apply.
     validateFilesAndAgentEnv(files, undefined, {});
@@ -2828,9 +2881,9 @@ export class PcsService {
     operator: string,
   ): Promise<DeploymentPlanView> {
     const host = await this.getHost(input.host_id);
-    if (!host) throw notFound("HOST_NOT_FOUND", "目标主机不存在");
-    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "目标主机已被吊销");
-    if (!input.role_id?.trim()) throw new PcsError(400, "INVALID_ROLE", "缺少 role_id");
+    if (!host) throw notFound("HOST_NOT_FOUND", "target host not found");
+    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "target host has been revoked");
+    if (!input.role_id?.trim()) throw new PcsError(400, "INVALID_ROLE", "role_id is required");
 
     // Deployment plans describe containers only; bare-metal roles are created directly from host settings and do not go through a plan.
     this.assertExecutionAllowed(host, input.role_id, "container");
@@ -2842,7 +2895,7 @@ export class PcsService {
         : { score: 0, detail: {} };
 
     const count = Math.max(1, Math.min(Number(input.count ?? 1), 4));
-    if (!Number.isInteger(count)) throw new PcsError(400, "INVALID_COUNT", "count 必须是 1–4");
+    if (!Number.isInteger(count)) throw new PcsError(400, "INVALID_COUNT", "count must be between 1 and 4");
 
     // Names may be Chinese and are stored as display_name; the instance id is derived from it (container names/volume names/node id/database names all use the id).
     // Callers that pass instance_id directly are accepted in both forms: an already valid ASCII id is used as-is,
@@ -2850,10 +2903,10 @@ export class PcsService {
     const rawDisplayName = (input.display_name ?? "").trim();
     const rawInstanceId = (input.instance_id ?? "").trim();
     if (rawDisplayName.length > 32 || rawInstanceId.length > 64) {
-      throw new PcsError(400, "INVALID_INSTANCE_NAME", "名称最长 32 个字符");
+      throw new PcsError(400, "INVALID_INSTANCE_NAME", "name must be at most 32 characters");
     }
     if (/[\u0000-\u001f\u007f]/.test(rawDisplayName) || /[\u0000-\u001f\u007f]/.test(rawInstanceId)) {
-      throw new PcsError(400, "INVALID_INSTANCE_NAME", "名称不能包含控制字符");
+      throw new PcsError(400, "INVALID_INSTANCE_NAME", "name must not contain control characters");
     }
     const explicitName = rawInstanceId
       ? /^[a-z0-9][a-z0-9-]{0,47}$/.test(rawInstanceId)
@@ -2867,12 +2920,12 @@ export class PcsService {
       ? await this.getAgentProfile(String(input.agent_profile_id))
       : null;
     if (input.agent_profile_id && !agent) {
-      throw notFound("AGENT_PROFILE_NOT_FOUND", "Agent Profile 不存在");
+      throw notFound("AGENT_PROFILE_NOT_FOUND", "Agent Profile not found");
     }
     if (agent) {
-      if (!agent.enabled) throw conflict("AGENT_PROFILE_DISABLED", "Agent Profile 已停用");
+      if (!agent.enabled) throw conflict("AGENT_PROFILE_DISABLED", "Agent Profile is disabled");
       if (agent.role_id !== input.role_id) {
-        throw forbidden("AGENT_PROFILE_NOT_ALLOWED", "Agent Profile 与实例角色不匹配", {
+        throw forbidden("AGENT_PROFILE_NOT_ALLOWED", "Agent Profile does not match the instance role", {
           agent_role: agent.role_id,
           instance_role: input.role_id,
         });
@@ -2883,8 +2936,8 @@ export class PcsService {
     const apis: ApiProfileRow[] = [];
     for (const id of apiIds) {
       const p = await this.getApiProfile(id);
-      if (!p) throw notFound("API_PROFILE_NOT_FOUND", `API Profile 不存在：${id}`);
-      if (!p.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile 已停用：${id}`);
+      if (!p) throw notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${id}`);
+      if (!p.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile is disabled: ${id}`);
       apis.push(p);
     }
 
@@ -2904,10 +2957,10 @@ export class PcsService {
         400,
         "IMAGE_REQUIRED",
         input.role_id === "scheduler"
-          ? "缺少调度机镜像：给 Agent Profile 配置 artifact_image，或设置 PCS_SCHEDULER_IMAGE"
+          ? "scheduler image is required: set artifact_image on the Agent Profile, or set PCS_SCHEDULER_IMAGE"
           : input.builder_os && Object.keys(this.cfg.builderImages).length
-            ? `构建机系统 ${input.builder_os} 没有配置镜像：设置 PCS_BUILDER_IMAGES=${input.builder_os}=<ubuntu@sha256:…>`
-            : "缺少镜像，且所选 Agent Profile 没有镜像",
+            ? `no image is configured for builder OS ${input.builder_os}: set PCS_BUILDER_IMAGES=${input.builder_os}=<ubuntu@sha256:…>`
+            : "image is required, and the selected Agent Profile has no image",
       );
     }
     assertPinnedImage(image, this.cfg.imageAllowlist);
@@ -2930,10 +2983,11 @@ export class PcsService {
         parent_deployment_id: string | null;
         scheduler_url: string | null;
         scheduler_deployment_id: string | null;
+        env: Record<string, string> | null;
       }>(
         `SELECT deployment_id, instance_id, display_name, role_id, generation,
                 actual_state, desired_state, status, scheduler_role,
-                parent_deployment_id, scheduler_url, scheduler_deployment_id
+                parent_deployment_id, scheduler_url, scheduler_deployment_id, env
            FROM pcs_deployments
           WHERE host_id=$1 AND status <> 'REMOVED'
           ORDER BY created_at DESC`,
@@ -2943,7 +2997,7 @@ export class PcsService {
 
     // Only one scheduler can be added at a time: the root is unique, and each node gets its own container.
     if (input.role_id === "scheduler" && count !== 1) {
-      throw new PcsError(400, "INVALID_COUNT", "调度机一次只能部署 1 台");
+      throw new PcsError(400, "INVALID_COUNT", "only one scheduler can be deployed at a time");
     }
 
     const used = new Set(active.map((r) => r.instance_id));
@@ -2966,7 +3020,7 @@ export class PcsService {
 
     const ports = normalizePorts(input.ports);
     if (ports.some((p) => p.host + count - 1 > 65535)) {
-      throw new PcsError(400, "INVALID_PORTS", "多实例分配的宿主端口越界");
+      throw new PcsError(400, "INVALID_PORTS", "host ports allocated for multiple instances are out of range");
     }
 
     // Position resolution: the root scheduler is unique; a node hangs under an existing scheduler on the same host.
@@ -2984,7 +3038,7 @@ export class PcsService {
             null
         : null;
     if (input.role_id === "builder" && input.scheduler_id && !builderScheduler) {
-      throw notFound("SCHEDULER_NOT_FOUND", "选择的调度机不存在或已停止");
+      throw notFound("SCHEDULER_NOT_FOUND", "the selected scheduler does not exist or is stopped");
     }
     const builderSchedulerUrl =
       builderScheduler?.scheduler_url ??
@@ -2995,13 +3049,31 @@ export class PcsService {
         ? await this.schedulerUrlFor(host.host_id, ports)
         : null;
 
+    // Scheduling mode is chosen once, on the root scheduler, and inherited by node schedulers and builders
+    // on the same host. A builder without a scheduler falls back to the control-plane default.
+    const modeOf = (d: any): "static" | "dynamic" | null => {
+      const raw = String(d?.env?.SCHEDULING_MODE ?? "").toLowerCase();
+      return raw === "dynamic" ? "dynamic" : raw === "static" ? "static" : null;
+    };
+    const rootScheduler = activeSchedulers.find((r) => (r.scheduler_role ?? "root") === "root") ?? null;
+    const inheritedSchedulingMode: "static" | "dynamic" =
+      input.role_id === "scheduler"
+        ? schedulerPlacement?.role === "root"
+          ? (input.scheduling_mode ?? this.cfg.schedulingMode)
+          : (modeOf(schedulerPlacement?.parent) ??
+            modeOf(rootScheduler) ??
+            this.cfg.schedulingMode)
+        : input.role_id === "builder"
+          ? (modeOf(builderScheduler) ?? modeOf(rootScheduler) ?? this.cfg.schedulingMode)
+          : this.cfg.schedulingMode;
+
     const env: Record<string, string> = { ...(input.env ?? {}) };
     assertNoSecretsInEnv(env);
     const volumes = (input.volumes ?? []).map((v) => this.validateVolume(v));
     const profile = normalizeResourceProfile(input.resource_profile ?? {});
     const policy = input.network_policy ?? "default";
     if (!this.cfg.networkPolicies.includes(policy)) {
-      throw new PcsError(400, "NETWORK_POLICY_NOT_ALLOWED", `网络策略不在白名单：${policy}`, {
+      throw new PcsError(400, "NETWORK_POLICY_NOT_ALLOWED", `network policy is not in the allowlist: ${policy}`, {
         allowlist: this.cfg.networkPolicies,
       });
     }
@@ -3040,6 +3112,12 @@ export class PcsService {
         }
         // The builder registers with the selected scheduler; if none is selected, use this host's root scheduler, falling back to the control plane config.
         if (builderSchedulerUrl) instanceEnv.SCHEDULER_URL = builderSchedulerUrl;
+        // Dynamic mode needs the instance cap and the inherited mode; static builders ignore both at runtime.
+        instanceEnv.SCHEDULING_MODE = inheritedSchedulingMode;
+        instanceEnv.RESOURCE_CPU_MILLICORES = String(
+          Math.max(0, Math.round(Number(profile.cpu_limit) * 1000)),
+        );
+        instanceEnv.RESOURCE_MEMORY_BYTES = String(Math.max(0, Number(profile.memory_limit_bytes)));
       }
       if (input.role_id === "scheduler" && schedulerPlacement) {
         // The entry script registers agent-runtime with the instance id; names may be Chinese, so this must be the derived ASCII id.
@@ -3048,6 +3126,10 @@ export class PcsService {
         instanceEnv.SCHEDULER_NODE_ID = `${host.host_id}:${x.instance_id}`;
         instanceEnv.SCHEDULER_HOST_ID = host.host_id;
         instanceEnv.SCHEDULER_ROLE = schedulerPlacement.role;
+        instanceEnv.SCHEDULING_MODE = inheritedSchedulingMode;
+        if (this.cfg.dynamicPolicyJson) {
+          instanceEnv.DYNAMIC_POLICY = this.cfg.dynamicPolicyJson;
+        }
         // The root needs a token too: it validates child-node reports; a node also needs to know where to report.
         instanceEnv.SCHEDULER_FEDERATION_TOKEN = this.federationToken;
         // The parent node must be able to call back to this machine when relaying tasks.
@@ -3069,7 +3151,7 @@ export class PcsService {
             throw new PcsError(
               400,
               "SCHEDULER_DATABASE_MISSING",
-              "未配置调度机数据库：设置 PCS_SCHEDULER_DATABASE_URL 或 PCS_SCHEDULER_DATABASE_URLS",
+              "scheduler database is not configured: set PCS_SCHEDULER_DATABASE_URL or PCS_SCHEDULER_DATABASE_URLS",
             );
           }
           instanceEnv.DATABASE_URL = dbUrl;
@@ -3120,27 +3202,27 @@ export class PcsService {
       {
         id: "host_online",
         ok: host.status === "ONLINE" || host.status === "DEGRADED",
-        detail: `主机状态 ${host.status}`,
+        detail: `host status ${host.status}`,
       },
       {
         id: "image_pinned",
         ok: /@sha256:[a-f0-9]{64}$/i.test(image),
-        detail: `镜像 ${image}`,
+        detail: `image ${image}`,
       },
       {
         id: "network_policy",
         ok: this.cfg.networkPolicies.includes(policy),
-        detail: `网络策略 ${policy}`,
+        detail: `network policy ${policy}`,
       },
       {
         id: "agent_binding",
         ok: !agent || agent.role_id === input.role_id,
-        detail: agent ? `Agent ${agent.agent_profile_id} → ${input.role_id}` : "未绑定 Agent",
+        detail: agent ? `Agent ${agent.agent_profile_id} → ${input.role_id}` : "no Agent bound",
       },
       {
         id: "api_bindings",
         ok: apis.every((p) => p.enabled),
-        detail: apiIds.length ? `API ${apiIds.join(", ")}` : "未绑定 API",
+        detail: apiIds.length ? `API ${apiIds.join(", ")}` : "no API bound",
       },
     ];
     if (input.role_id === "builder") {
@@ -3148,14 +3230,14 @@ export class PcsService {
       checks.push({
         id: "scheduler_url",
         ok: Boolean(schedulerUrl),
-        detail: schedulerUrl ? `调度机 ${schedulerUrl}` : "缺少调度机地址：设置 PCS_SCHEDULER_URL",
+        detail: schedulerUrl ? `scheduler ${schedulerUrl}` : "scheduler address is required: set PCS_SCHEDULER_URL",
       });
     }
     if (Number.isFinite(availableBytes) && availableBytes > 0) {
       checks.push({
         id: "memory_budget",
         ok: requiredBytes <= availableBytes,
-        detail: `需要 ${Math.round(requiredBytes / 1024 ** 2)}MiB，可用 ${Math.round(
+        detail: `requires ${Math.round(requiredBytes / 1024 ** 2)}MiB, available ${Math.round(
           availableBytes / 1024 ** 2,
         )}MiB`,
       });
@@ -3163,12 +3245,12 @@ export class PcsService {
       checks.push({
         id: "memory_budget",
         ok: false,
-        detail: "主机尚未上报可用内存，无法完成资源准入",
+        detail: "the host has not reported available memory yet; resource admission cannot complete",
       });
     }
     const failed = checks.filter((c) => !c.ok);
     if (failed.length) {
-      throw new PcsError(409, "DEPLOYMENT_CHECK_FAILED", "部署前校验未通过", { checks });
+      throw new PcsError(409, "DEPLOYMENT_CHECK_FAILED", "pre-deployment checks failed", { checks });
     }
 
     // v4 has no reviewer role; only deployments that "would interrupt a running build" raise the risk warning.
@@ -3207,8 +3289,8 @@ export class PcsService {
       interrupts_running: interrupt,
       risk,
       rollback_strategy: interrupt
-        ? "保留上一 generation；健康检查失败时停止新实例并回滚到上一镜像 digest"
-        : "无上一版本；失败时保留部署记录并停止新容器",
+        ? "keep the previous generation; on health-check failure, stop the new instance and roll back to the previous image digest"
+        : "no previous version; on failure, keep the deployment record and stop the new container",
       checks,
       // The browser only needs to know what is being deployed; values like DATABASE_URL in env must not leave the control plane,
       // and the app bundle in files should not be stuffed into the plan view either.
@@ -3282,21 +3364,21 @@ export class PcsService {
         expires_at: string;
       }>(`SELECT * FROM deployment_plans WHERE plan_id=$1`, [planId])
     ).rows[0];
-    if (!row) throw notFound("PLAN_NOT_FOUND", "部署计划不存在");
-    if (row.applied_at) throw conflict("PLAN_ALREADY_APPLIED", "部署计划已经被应用");
+    if (!row) throw notFound("PLAN_NOT_FOUND", "deployment plan not found");
+    if (row.applied_at) throw conflict("PLAN_ALREADY_APPLIED", "deployment plan has already been applied");
     if (new Date(row.expires_at).getTime() <= nowMs()) {
-      throw new PcsError(410, "PLAN_EXPIRED", "部署计划已过期，请重新预览");
+      throw new PcsError(410, "PLAN_EXPIRED", "deployment plan has expired; please preview again");
     }
     if (input.plan_digest !== row.plan_digest) {
-      throw conflict("PLAN_CHANGED", "plan_digest 与预览记录不一致，请重新预览", {
+      throw conflict("PLAN_CHANGED", "plan_digest does not match the preview record; please preview again", {
         expected: row.plan_digest,
         got: input.plan_digest,
       });
     }
 
     const host = await this.getHost(row.intent.host_id);
-    if (!host) throw notFound("HOST_NOT_FOUND", "目标主机不存在");
-    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "目标主机已被吊销");
+    if (!host) throw notFound("HOST_NOT_FOUND", "target host not found");
+    if (host.status === "REVOKED") throw forbidden("HOST_REVOKED", "target host has been revoked");
 
     // Recompute: changes to host status / active deployment count / generation all change the digest.
     const activeCount = Number(
@@ -3310,7 +3392,7 @@ export class PcsService {
     );
     const currentDigest = planDigest(this.planDigestInput(host, activeCount, row.intent));
     if (currentDigest !== row.plan_digest) {
-      throw conflict("PLAN_CHANGED", "部署计划依赖的主机状态已变化，请重新预览", {
+      throw conflict("PLAN_CHANGED", "the host state the deployment plan depends on has changed; please preview again", {
         expected: row.plan_digest,
         current: currentDigest,
       });
@@ -3323,7 +3405,7 @@ export class PcsService {
       0,
     );
     if (Number.isFinite(availableBytes) && availableBytes > 0 && requiredBytes > availableBytes) {
-      throw new PcsError(409, "DEPLOYMENT_CHECK_FAILED", "主机可用内存不足，请重新预览", {
+      throw new PcsError(409, "DEPLOYMENT_CHECK_FAILED", "the host does not have enough available memory; please preview again", {
         required_bytes: requiredBytes,
         available_bytes: availableBytes,
       });
@@ -3381,7 +3463,7 @@ export class PcsService {
         [planId, deploymentIds],
       );
       if (e instanceof PcsError) throw e;
-      throw new PcsError(500, "PLAN_APPLY_PARTIAL", "部署执行中断，计划已作废，请重新预览", {
+      throw new PcsError(500, "PLAN_APPLY_PARTIAL", "deployment was interrupted; the plan is void, please preview again", {
         deployment_ids: deploymentIds,
         error: e instanceof Error ? e.message : String(e),
       });
@@ -3425,17 +3507,17 @@ export class PcsService {
     action_scope: string[];
   } {
     if (!this.cfg.approvalMfaCode) {
-      throw new PcsError(503, "MFA_NOT_CONFIGURED", "PCS 未配置审批 MFA，拒绝签发审批令牌");
+      throw new PcsError(503, "MFA_NOT_CONFIGURED", "approval MFA is not configured on the PCS; refusing to issue an approval token");
     }
     if (!input.approval_request_id?.trim()) {
-      throw new PcsError(400, "BAD_REQUEST", "approval_request_id 必填");
+      throw new PcsError(400, "BAD_REQUEST", "approval_request_id is required");
     }
     if (!input.mfa_code || input.mfa_code !== this.cfg.approvalMfaCode) {
-      throw new PcsError(403, "MFA_REQUIRED", "MFA 验证失败，拒绝签发审批令牌");
+      throw new PcsError(403, "MFA_REQUIRED", "MFA verification failed; refusing to issue an approval token");
     }
     const operator = String(claims.operator_id ?? claims.sub ?? "");
     if (input.operator_id && input.operator_id !== operator) {
-      throw forbidden("ROLE_NOT_ALLOWED", "审批人必须是当前登录的操作者", {
+      throw forbidden("ROLE_NOT_ALLOWED", "the approver must be the currently logged-in operator", {
         token_operator: operator,
         requested: input.operator_id,
       });
@@ -3555,13 +3637,13 @@ export class PcsService {
           [commandId, hostId],
         )
       ).rows[0] as CommandRow | undefined;
-      if (!cmd) throw notFound("COMMAND_NOT_FOUND", "命令不存在或不属于本主机");
+      if (!cmd) throw notFound("COMMAND_NOT_FOUND", "command not found or does not belong to this host");
       if (cmd.state === "ACKED") {
         return { command_id: commandId, state: "ACKED", idempotent: true };
       }
-      if (cmd.state === "EXPIRED") throw conflict("COMMAND_EXPIRED", "命令已过期，拒绝执行");
+      if (cmd.state === "EXPIRED") throw conflict("COMMAND_EXPIRED", "command has expired; refusing to execute");
       if (cmd.state === "FAILED" && ok) {
-        throw conflict("COMMAND_ALREADY_FAILED", "命令已按超时失败，不能再确认成功");
+        throw conflict("COMMAND_ALREADY_FAILED", "command already failed due to timeout and can no longer be acknowledged as successful");
       }
 
       const state = ok ? "ACKED" : "FAILED";
@@ -3571,12 +3653,15 @@ export class PcsService {
       );
 
       if (cmd.deployment_id) {
+        // Generation guard: a superseded command may be acknowledged after a newer one was enqueued.
+        // Applying its result would overwrite the newer desired state (for example, a late failure ack
+        // for a retried REMOVE would flip the deployment back to FAILED).
         if (!ok) {
           await c.query(
             `UPDATE pcs_deployments
                 SET status='FAILED', actual_state='FAILED', observed=$2, updated_at=now()
-              WHERE deployment_id=$1`,
-            [cmd.deployment_id, JSON.stringify({ error: result })],
+              WHERE deployment_id=$1 AND generation <= $3`,
+            [cmd.deployment_id, JSON.stringify({ error: result }), cmd.generation],
           );
         } else {
           const update =
@@ -3587,8 +3672,8 @@ export class PcsService {
                 : `status='STARTING', actual_state='STARTING'`;
           await c.query(
             `UPDATE pcs_deployments SET ${update}, observed=$2, updated_at=now()
-              WHERE deployment_id=$1`,
-            [cmd.deployment_id, JSON.stringify({ ack: result })],
+              WHERE deployment_id=$1 AND generation <= $3`,
+            [cmd.deployment_id, JSON.stringify({ ack: result }), cmd.generation],
           );
         }
       }
@@ -3782,6 +3867,11 @@ export class PcsService {
       cpu_total: Number(res.cpu_count ?? 0) || undefined,
       mem_total_bytes: Number(res.mem_total_bytes ?? 0),
       mem_available_bytes: Number(res.mem_available_bytes ?? 0),
+      // Dynamic scheduling: the host-runtime's cgroup pool snapshot drives grants and pressure.
+      resource_pool:
+        res.pool && typeof res.pool === "object" && !Array.isArray(res.pool)
+          ? res.pool
+          : undefined,
     });
     await Promise.all(
       [...bases].map(async (base) => {
@@ -3800,7 +3890,7 @@ export class PcsService {
     );
   }
 
-  // ---------------------------------------------------------------- Agent / API Profile（P4）
+  // ---------------------------------------------------------------- Agent / API Profile (P4)
 
   /**
    * Entry point for creating an Agent Profile.
@@ -3811,21 +3901,21 @@ export class PcsService {
   async createAgentProfile(input: CreateAgentProfileInput, operator: string): Promise<AgentProfileRow> {
     const roleId = String(input.role_id ?? "").trim();
     const adapter = String(input.adapter ?? "").trim();
-    if (!roleId) throw new PcsError(400, "INVALID_PROFILE", "缺少 role_id");
+    if (!roleId) throw new PcsError(400, "INVALID_PROFILE", "role_id is required");
     if (!AGENT_ADAPTERS[roleId]) {
-      throw new PcsError(400, "ROLE_AGENT_NOT_ALLOWED", `角色 ${roleId} 不允许运行 Agent`);
+      throw new PcsError(400, "ROLE_AGENT_NOT_ALLOWED", `role ${roleId} is not allowed to run an Agent`);
     }
     if (!AGENT_ADAPTERS[roleId].includes(adapter)) {
       throw new PcsError(
         400,
         "ADAPTER_NOT_ALLOWED",
-        `角色 ${roleId} 不允许 ${adapter || "(空)"}，允许：${AGENT_ADAPTERS[roleId].join(",")}`,
+        `role ${roleId} does not allow ${adapter || "(empty)"}; allowed: ${AGENT_ADAPTERS[roleId].join(",")}`,
       );
     }
     const version = String(input.version ?? "").trim();
-    if (!version) throw new PcsError(400, "INVALID_PROFILE", "缺少 version");
+    if (!version) throw new PcsError(400, "INVALID_PROFILE", "version is required");
     const name = String(input.name ?? "").trim();
-    if (!name) throw new PcsError(400, "INVALID_PROFILE", "缺少 name");
+    if (!name) throw new PcsError(400, "INVALID_PROFILE", "name is required");
     const image = String(input.artifact_image ?? "").trim();
     // Allowing no Agent image: adapters such as http-local run directly in the instance image.
     if (image) assertPinnedImage(image, this.cfg.imageAllowlist);
@@ -3834,14 +3924,14 @@ export class PcsService {
     const modelApiId = input.model_api_profile_id ? String(input.model_api_profile_id).trim() : null;
     if (modelApiId) {
       const modelApi = await this.getApiProfile(modelApiId);
-      if (!modelApi) notFound("MODEL_API_NOT_FOUND", `模型 API Profile 不存在：${modelApiId}`);
+      if (!modelApi) notFound("MODEL_API_NOT_FOUND", `model API Profile not found: ${modelApiId}`);
       if (modelApi.kind !== "llm") {
-        throw new PcsError(400, "MODEL_API_NOT_LLM", "model_api_profile_id 必须指向 llm 类型的 API Profile");
+        throw new PcsError(400, "MODEL_API_NOT_LLM", "model_api_profile_id must reference an API Profile of kind llm");
       }
     }
     const allowedTools = unique(input.allowed_tools ?? []);
     if (allowedTools.some((t) => !/^[a-z][a-z0-9_.-]{0,63}$/i.test(t))) {
-      throw new PcsError(400, "INVALID_PROFILE", "allowed_tools 含非法 tool_id");
+      throw new PcsError(400, "INVALID_PROFILE", "allowed_tools contains an invalid tool_id");
     }
     const taskTypes = unique(input.task_types ?? []);
     const description = promptField(input.description, "description", 500);
@@ -3891,7 +3981,7 @@ export class PcsService {
       });
       return normalizeAgentProfile(r.rows[0]);
     } catch (e: any) {
-      if (e?.code === "23505") conflict("AGENT_PROFILE_EXISTS", `Agent Profile 已存在：${profileId}`);
+      if (e?.code === "23505") conflict("AGENT_PROFILE_EXISTS", `Agent Profile already exists: ${profileId}`);
       throw e;
     }
   }
@@ -3913,22 +4003,22 @@ export class PcsService {
     operator: string,
   ): Promise<AgentProfileRow> {
     const current = await this.getAgentProfile(profileId);
-    if (!current) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile 不存在：${profileId}`);
+    if (!current) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile not found: ${profileId}`);
     if (input.role_id !== undefined && String(input.role_id).trim() !== current.role_id) {
-      throw new PcsError(409, "ROLE_IMMUTABLE", "Agent Profile 的角色不能修改，请新建一个");
+      throw new PcsError(409, "ROLE_IMMUTABLE", "an Agent Profile role cannot be changed; create a new one");
     }
     const adapter = String(input.adapter ?? current.adapter).trim();
     if (!AGENT_ADAPTERS[current.role_id].includes(adapter)) {
       throw new PcsError(
         400,
         "ADAPTER_NOT_ALLOWED",
-        `角色 ${current.role_id} 不允许 ${adapter || "(空)"}，允许：${AGENT_ADAPTERS[current.role_id].join(",")}`,
+        `role ${current.role_id} does not allow ${adapter || "(empty)"}; allowed: ${AGENT_ADAPTERS[current.role_id].join(",")}`,
       );
     }
     const name = String(input.name ?? current.name).trim();
-    if (!name) throw new PcsError(400, "INVALID_PROFILE", "缺少 name");
+    if (!name) throw new PcsError(400, "INVALID_PROFILE", "name is required");
     const version = String(input.version ?? current.version).trim();
-    if (!version) throw new PcsError(400, "INVALID_PROFILE", "缺少 version");
+    if (!version) throw new PcsError(400, "INVALID_PROFILE", "version is required");
     const image =
       input.artifact_image !== undefined
         ? String(input.artifact_image).trim()
@@ -3944,15 +4034,15 @@ export class PcsService {
     }
     if (modelApiId && modelApiId !== current.model_api_profile_id) {
       const modelApi = await this.getApiProfile(modelApiId);
-      if (!modelApi) notFound("MODEL_API_NOT_FOUND", `模型 API Profile 不存在：${modelApiId}`);
+      if (!modelApi) notFound("MODEL_API_NOT_FOUND", `model API Profile not found: ${modelApiId}`);
       if (modelApi.kind !== "llm") {
-        throw new PcsError(400, "MODEL_API_NOT_LLM", "model_api_profile_id 必须指向 llm 类型的 API Profile");
+        throw new PcsError(400, "MODEL_API_NOT_LLM", "model_api_profile_id must reference an API Profile of kind llm");
       }
     }
     const allowedTools =
       input.allowed_tools !== undefined ? unique(input.allowed_tools) : current.allowed_tools;
     if (allowedTools.some((t) => !/^[a-z][a-z0-9_.-]{0,63}$/i.test(t))) {
-      throw new PcsError(400, "INVALID_PROFILE", "allowed_tools 含非法 tool_id");
+      throw new PcsError(400, "INVALID_PROFILE", "allowed_tools contains an invalid tool_id");
     }
     const taskTypes = input.task_types !== undefined ? unique(input.task_types) : current.task_types;
     const textOf = (key: "description" | "system_prompt" | "persona" | "tone" | "goals", max: number) =>
@@ -4006,7 +4096,7 @@ export class PcsService {
   /** Delete an Agent Profile not used by any instance; reject if it has bindings, so an instance does not lose its executor. */
   async deleteAgentProfile(profileId: string, operator: string): Promise<{ deleted: boolean }> {
     const current = await this.getAgentProfile(profileId);
-    if (!current) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile 不存在：${profileId}`);
+    if (!current) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile not found: ${profileId}`);
     const used = await query(
       `SELECT b.instance_id, COALESCE(h.hostname, b.host_id) AS host_name
          FROM role_agent_bindings b
@@ -4018,9 +4108,9 @@ export class PcsService {
     if (used.rowCount) {
       throw conflict(
         "PROFILE_IN_USE",
-        `仍被实例使用，先解除绑定：${used.rows
-          .map((r) => `${r.instance_id}（${r.host_name}）`)
-          .join("、")}`,
+        `still in use by instances; unbind them first: ${used.rows
+          .map((r) => `${r.instance_id} (${r.host_name})`)
+          .join(", ")}`,
       );
     }
     await query(`DELETE FROM agent_profiles WHERE agent_profile_id = $1`, [profileId]);
@@ -4035,33 +4125,33 @@ export class PcsService {
     const apiId = String(input.api_profile_id ?? "").trim() || newId("api");
     const kind = String(input.kind ?? "").trim();
     if (!["llm", "http", "tool", "storage"].includes(kind)) {
-      throw new PcsError(400, "INVALID_PROFILE", `kind 非法：${kind}`);
+      throw new PcsError(400, "INVALID_PROFILE", `invalid kind: ${kind}`);
     }
     const baseUrl = String(input.base_url ?? "").trim();
     let parsed: URL;
     try {
       parsed = new URL(baseUrl);
     } catch {
-      throw new PcsError(400, "INVALID_PROFILE", `base_url 不是合法 URL：${baseUrl}`);
+      throw new PcsError(400, "INVALID_PROFILE", `base_url is not a valid URL: ${baseUrl}`);
     }
     const loopbackDev =
       this.cfg.allowInsecureApiUrls &&
       parsed.protocol === "http:" &&
       ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname);
     if (parsed.protocol !== "https:" && !loopbackDev) {
-      throw new PcsError(400, "INSECURE_API_URL", "API Profile 只允许 https（本地开发需显式开启 PCS_ALLOW_INSECURE_API_URLS）");
+      throw new PcsError(400, "INSECURE_API_URL", "API Profiles only allow https (local development must explicitly enable PCS_ALLOW_INSECURE_API_URLS)");
     }
     const authType = String(input.auth_type ?? "").trim();
     if (!["bearer", "api_key", "oauth2_client", "mtls"].includes(authType)) {
-      throw new PcsError(400, "INVALID_PROFILE", `auth_type 非法：${authType}`);
+      throw new PcsError(400, "INVALID_PROFILE", `invalid auth_type: ${authType}`);
     }
     const secretRef = String(input.secret_ref ?? "").trim();
     if (!SECRET_REF.test(secretRef)) {
-      throw new PcsError(400, "INVALID_SECRET_REF", "secret_ref 必须形如 secret://<path>，且不能包含密钥明文");
+      throw new PcsError(400, "INVALID_SECRET_REF", "secret_ref must look like secret://<path> and must not contain secret plaintext");
     }
     const timeout = Number(input.timeout_seconds ?? 60);
     if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 600) {
-      throw new PcsError(400, "INVALID_PROFILE", "timeout_seconds 必须是 1..600 的整数");
+      throw new PcsError(400, "INVALID_PROFILE", "timeout_seconds must be an integer in 1..600");
     }
     const quota = normalizeQuota(input.quota);
     try {
@@ -4093,7 +4183,7 @@ export class PcsService {
       });
       return normalizeApiProfile(r.rows[0]);
     } catch (e: any) {
-      if (e?.code === "23505") conflict("API_PROFILE_EXISTS", `API Profile 已存在：${apiId}`);
+      if (e?.code === "23505") conflict("API_PROFILE_EXISTS", `API Profile already exists: ${apiId}`);
       throw e;
     }
   }
@@ -4115,16 +4205,16 @@ export class PcsService {
     operator: string,
   ): Promise<ApiProfileRow> {
     const current = await this.getApiProfile(apiId);
-    if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile 不存在：${apiId}`);
+    if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
     if (input.kind !== undefined && String(input.kind).trim() !== current.kind) {
-      throw new PcsError(409, "KIND_IMMUTABLE", "API Profile 的类型不能修改，请新建一个");
+      throw new PcsError(409, "KIND_IMMUTABLE", "an API Profile kind cannot be changed; create a new one");
     }
     const baseUrl = String(input.base_url ?? current.base_url).trim();
     let parsed: URL;
     try {
       parsed = new URL(baseUrl);
     } catch {
-      throw new PcsError(400, "INVALID_PROFILE", `base_url 不是合法 URL：${baseUrl}`);
+      throw new PcsError(400, "INVALID_PROFILE", `base_url is not a valid URL: ${baseUrl}`);
     }
     const loopbackDev =
       this.cfg.allowInsecureApiUrls &&
@@ -4132,19 +4222,19 @@ export class PcsService {
       ["127.0.0.1", "localhost", "::1"].includes(parsed.hostname);
     // When the address is unchanged, keep the existing judgment, so historical config does not block a rename / enable-disable.
     if (baseUrl !== current.base_url && parsed.protocol !== "https:" && !loopbackDev) {
-      throw new PcsError(400, "INSECURE_API_URL", "API Profile 只允许 https（本地开发需显式开启 PCS_ALLOW_INSECURE_API_URLS）");
+      throw new PcsError(400, "INSECURE_API_URL", "API Profiles only allow https (local development must explicitly enable PCS_ALLOW_INSECURE_API_URLS)");
     }
     const authType = String(input.auth_type ?? current.auth_type).trim();
     if (!["bearer", "api_key", "oauth2_client", "mtls"].includes(authType)) {
-      throw new PcsError(400, "INVALID_PROFILE", `auth_type 非法：${authType}`);
+      throw new PcsError(400, "INVALID_PROFILE", `invalid auth_type: ${authType}`);
     }
     const secretRef = String(input.secret_ref ?? current.secret_ref).trim();
     if (!SECRET_REF.test(secretRef)) {
-      throw new PcsError(400, "INVALID_SECRET_REF", "secret_ref 必须形如 secret://<path>，且不能包含密钥明文");
+      throw new PcsError(400, "INVALID_SECRET_REF", "secret_ref must look like secret://<path> and must not contain secret plaintext");
     }
     const timeout = Number(input.timeout_seconds ?? current.timeout_seconds);
     if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 600) {
-      throw new PcsError(400, "INVALID_PROFILE", "timeout_seconds 必须是 1..600 的整数");
+      throw new PcsError(400, "INVALID_PROFILE", "timeout_seconds must be an integer in 1..600");
     }
     const quota = input.quota !== undefined ? normalizeQuota(input.quota) : current.quota;
     const r = await query(
@@ -4177,7 +4267,7 @@ export class PcsService {
   /** Delete an API Profile that is not referenced; instance bindings, Agent model/tool references, and fallback all count as usage. */
   async deleteApiProfile(apiId: string, operator: string): Promise<{ deleted: boolean }> {
     const current = await this.getApiProfile(apiId);
-    if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile 不存在：${apiId}`);
+    if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
     const [used, agents, fallbacks] = await Promise.all([
       query(
         `SELECT b.instance_id, COALESCE(h.hostname, b.host_id) AS host_name
@@ -4196,12 +4286,12 @@ export class PcsService {
       query(`SELECT api_profile_id FROM api_profiles WHERE $1 = ANY(fallback) ORDER BY api_profile_id`, [apiId]),
     ]);
     const refs = [
-      ...used.rows.map((r) => `实例 ${r.instance_id}（${r.host_name}）`),
+      ...used.rows.map((r) => `instance ${r.instance_id} (${r.host_name})`),
       ...agents.rows.map((r) => `Agent ${r.agent_profile_id}`),
       ...fallbacks.rows.map((r) => `API ${r.api_profile_id}`),
     ];
     if (refs.length) {
-      throw conflict("PROFILE_IN_USE", `仍被引用，先解除：${refs.join("、")}`);
+      throw conflict("PROFILE_IN_USE", `still referenced; remove references first: ${refs.join(", ")}`);
     }
     await query(`DELETE FROM api_profiles WHERE api_profile_id = $1`, [apiId]);
     await this.audit(operator, "api_profile.delete", apiId, null, { name: current.name, kind: current.kind });
@@ -4218,19 +4308,19 @@ export class PcsService {
     operator: string,
   ): Promise<{ ok: true; secret_ref: string }> {
     const current = await this.getApiProfile(apiId);
-    if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile 不存在：${apiId}`);
+    if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
     if (!this.cfg.secretStoreUrl) {
       throw new PcsError(
         503,
         "SECRET_STORE_NOT_CONFIGURED",
-        "控制面未配置 Secret Store（PCS_SECRET_STORE_URL），只能填 secret:// 引用",
+        "the control plane has no Secret Store configured (PCS_SECRET_STORE_URL); only secret:// references can be used",
       );
     }
     if (typeof value !== "string" || value.length === 0 || value.length > 8192) {
-      throw new PcsError(400, "INVALID_SECRET_VALUE", "密钥值必须是 1..8192 字符");
+      throw new PcsError(400, "INVALID_SECRET_VALUE", "secret value must be 1..8192 characters");
     }
     if (/[\r\n\0]/.test(value)) {
-      throw new PcsError(400, "INVALID_SECRET_VALUE", "密钥值不能包含换行");
+      throw new PcsError(400, "INVALID_SECRET_VALUE", "secret value must not contain newlines");
     }
     const url = `${this.cfg.secretStoreUrl.replace(/\/+$/, "")}/v1/secrets`;
     let res: Response;
@@ -4250,12 +4340,12 @@ export class PcsService {
       throw new PcsError(
         502,
         "SECRET_STORE_UNAVAILABLE",
-        `Secret Store 不可达：${e instanceof Error ? e.message : String(e)}`,
+        `Secret Store unreachable: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     if (!res.ok) {
       let code = "SECRET_STORE_REJECTED";
-      let message = `Secret Store 返回 ${res.status}`;
+      let message = `Secret Store returned ${res.status}`;
       try {
         const body = (await res.json()) as { error?: { code?: string; message?: string } };
         if (body.error?.code) code = body.error.code;
@@ -4334,13 +4424,13 @@ export class PcsService {
     operator: string,
   ): Promise<{ host_id: string; instance_id: string; agent_profile_id: string; role_id: string }> {
     const profile = await this.getAgentProfile(agentProfileId);
-    if (!profile) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile 不存在：${agentProfileId}`);
-    if (!profile.enabled) throw new PcsError(409, "AGENT_PROFILE_DISABLED", "Agent Profile 未启用");
+    if (!profile) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile not found: ${agentProfileId}`);
+    if (!profile.enabled) throw new PcsError(409, "AGENT_PROFILE_DISABLED", "Agent Profile is not enabled");
     if (profile.role_id !== roleId) {
       throw new PcsError(
         409,
         "ROLE_AGENT_NOT_ALLOWED",
-        `Agent Profile 属于 ${profile.role_id}，不能绑定到 ${roleId}`,
+        `Agent Profile belongs to ${profile.role_id} and cannot be bound to ${roleId}`,
       );
     }
     await query(
@@ -4367,8 +4457,8 @@ export class PcsService {
     operator: string,
   ): Promise<{ host_id: string; instance_id: string; api_profile_id: string }> {
     const profile = await this.getApiProfile(apiProfileId);
-    if (!profile) notFound("API_PROFILE_NOT_FOUND", `API Profile 不存在：${apiProfileId}`);
-    if (!profile.enabled) throw new PcsError(409, "API_PROFILE_DISABLED", "API Profile 未启用");
+    if (!profile) notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiProfileId}`);
+    if (!profile.enabled) throw new PcsError(409, "API_PROFILE_DISABLED", "API Profile is not enabled");
     await query(
       `INSERT INTO role_api_bindings (host_id, instance_id, api_profile_id, bound_by)
        VALUES ($1,$2,$3,$4)

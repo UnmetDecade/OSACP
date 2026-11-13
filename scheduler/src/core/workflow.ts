@@ -70,11 +70,11 @@ async function loadTemplate(c: Client, templateId: string) {
     await c.query(`SELECT * FROM workflow_templates WHERE workflow_template_id = $1`, [templateId])
   ).rows[0];
   if (!row) {
-    throw new ApiError(404, "WORKFLOW_TEMPLATE_UNKNOWN", `工作流模板不存在: ${templateId}`);
+    throw new ApiError(404, "WORKFLOW_TEMPLATE_UNKNOWN", `workflow template not found: ${templateId}`);
   }
   const phases = row.phases as Phase[];
   if (!Array.isArray(phases) || phases.length === 0) {
-    throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "模板没有 phases");
+    throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "template has no phases");
   }
   return { ...row, phases };
 }
@@ -96,14 +96,14 @@ async function appendWorkflowEvent(
 
 export async function createWorkflowRun(input: CreateWorkflowInput) {
   if (!input.workflow_template_id) {
-    throw new ApiError(400, "BAD_REQUEST", "workflow_template_id 必填");
+    throw new ApiError(400, "BAD_REQUEST", "workflow_template_id is required");
   }
 
   return tx(async (c) => {
     const tpl = await loadTemplate(c, input.workflow_template_id);
     const first = tpl.phases[0];
     if (!first.task_type) {
-      throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "第一个阶段必须有 task_type");
+      throw new ApiError(422, "WORKFLOW_TEMPLATE_INVALID", "the first phase must have a task_type");
     }
 
     const runId = newId("wfr");
@@ -188,7 +188,7 @@ export async function advanceWorkflow(
   const tpl = await loadTemplate(c, run.workflow_template_id);
   const idx = tpl.phases.findIndex((p: Phase) => p.phase === run.current_phase);
   if (idx < 0) {
-    throw new ApiError(500, "WORKFLOW_STATE_INVALID", `当前阶段不在模板里: ${run.current_phase}`);
+    throw new ApiError(500, "WORKFLOW_STATE_INVALID", `current phase is not in the template: ${run.current_phase}`);
   }
 
   const next = tpl.phases[idx + 1];
@@ -313,7 +313,7 @@ async function enterApproval(c: Client, run: any, prev: any, tpl: any, phase: Ph
   ).rows[0];
 
   if (phase.artifact_required && !artifact) {
-    throw new ApiError(409, "ARTIFACT_REQUIRED", "该审批阶段要求上一阶段上传并通过校验的制品");
+    throw new ApiError(409, "ARTIFACT_REQUIRED", "this approval phase requires an artifact uploaded and verified in the previous phase");
   }
 
   const attempt = (
@@ -391,15 +391,15 @@ export interface ApprovalDecisionInput {
 export async function decideApproval(input: ApprovalDecisionInput) {
   requireApprovalConfigured();
   if (!input.approval_token || !input.operator_id) {
-    throw new ApiError(400, "BAD_REQUEST", "approval_token / operator_id 必填");
+    throw new ApiError(400, "BAD_REQUEST", "approval_token / operator_id are required");
   }
   if (input.decision !== "APPROVED" && input.decision !== "REJECTED") {
-    throw new ApiError(400, "BAD_REQUEST", "decision 必须是 APPROVED / REJECTED");
+    throw new ApiError(400, "BAD_REQUEST", "decision must be APPROVED or REJECTED");
   }
 
   const claims = verifyApprovalToken(input.approval_token);
   if (claims.operator_id !== input.operator_id) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "审批令牌的 operator 与调用方不一致", {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "approval token operator does not match the caller", {
       token_operator: claims.operator_id,
       requested: input.operator_id,
     });
@@ -412,24 +412,24 @@ export async function decideApproval(input: ApprovalDecisionInput) {
         [input.task_id],
       )
     ).rows[0];
-    if (!req) throw new ApiError(404, "APPROVAL_NOT_FOUND", "没有待决审批请求");
+    if (!req) throw new ApiError(404, "APPROVAL_NOT_FOUND", "no pending approval request");
 
     // ---- Bind the token to this request
     if (claims.approval_request_id !== req.approval_request_id) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "审批令牌不是为这条请求签发的", {
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "approval token was not issued for this request", {
         token_request: claims.approval_request_id,
         pending_request: req.approval_request_id,
       });
     }
     const tokenDigest = claims.subject_digest ?? null;
     if (req.subject_digest && tokenDigest !== req.subject_digest) {
-      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "审批对象已变化，必须重新审批", {
+      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "the approval subject has changed; approval must be repeated", {
         expected: req.subject_digest,
         got: tokenDigest,
       });
     }
     if (input.subject_digest && input.subject_digest !== tokenDigest) {
-      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "请求体摘要与审批令牌不一致", {
+      throw new ApiError(409, "APPROVAL_SUBJECT_CHANGED", "request body digest does not match the approval token", {
         token: tokenDigest,
         body: input.subject_digest,
       });
@@ -437,7 +437,7 @@ export async function decideApproval(input: ApprovalDecisionInput) {
     const reqScope = [...(req.action_scope ?? [])].sort();
     const tokenScope = [...claims.action_scope].sort();
     if (reqScope.join(",") !== tokenScope.join(",")) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "审批令牌的操作范围与请求不一致", {
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "approval token action scope does not match the request", {
         expected: reqScope,
         got: tokenScope,
       });
@@ -448,12 +448,12 @@ export async function decideApproval(input: ApprovalDecisionInput) {
         req.workflow_run_id,
       ])
     ).rows[0];
-    if (!run) throw new ApiError(409, "STATE_CONFLICT", "审批对应的工作流不存在");
+    if (!run) throw new ApiError(409, "STATE_CONFLICT", "the workflow for this approval does not exist");
 
     // jti is single-use: even if the token is forwarded, it can be persisted only once
     if (claims.jti) {
       const used = await q1(`SELECT 1 FROM approvals WHERE token_jti = $1`, [claims.jti]);
-      if (used) throw new ApiError(409, "APPROVAL_TOKEN_USED", "审批令牌已被使用");
+      if (used) throw new ApiError(409, "APPROVAL_TOKEN_USED", "approval token has already been used");
     }
 
     const approval = (
@@ -540,7 +540,7 @@ export async function decideApproval(input: ApprovalDecisionInput) {
 
 export async function getWorkflowRun(runId: string) {
   const run = await q1(`SELECT * FROM workflow_runs WHERE workflow_run_id = $1`, [runId]);
-  if (!run) throw new ApiError(404, "NOT_FOUND", `工作流不存在: ${runId}`);
+  if (!run) throw new ApiError(404, "NOT_FOUND", `workflow not found: ${runId}`);
   const tasks = await q(
     `SELECT task_id, task_type, status, parent_task_id, current_attempt_id,
             attempt_count, enqueued_at, updated_at

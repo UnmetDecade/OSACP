@@ -30,7 +30,7 @@ async function readJson(req: http.IncomingMessage): Promise<Record<string, any>>
   for await (const chunk of req) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buf.length;
-    if (size > MAX_BODY) throw new PcsError(413, "BODY_TOO_LARGE", "请求体超过 32MiB");
+    if (size > MAX_BODY) throw new PcsError(413, "BODY_TOO_LARGE", "request body exceeds 32MiB");
     chunks.push(buf);
   }
   if (!chunks.length) return {};
@@ -41,14 +41,14 @@ async function readJson(req: http.IncomingMessage): Promise<Record<string, any>>
     }
     return parsed;
   } catch {
-    throw new PcsError(400, "INVALID_JSON", "请求体不是合法 JSON 对象");
+    throw new PcsError(400, "INVALID_JSON", "request body is not a valid JSON object");
   }
 }
 
 function bearer(req: http.IncomingMessage): string {
   const value = req.headers.authorization ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(value);
-  if (!m) throw new PcsError(401, "TOKEN_REQUIRED", "缺少 Bearer 令牌");
+  if (!m) throw new PcsError(401, "TOKEN_REQUIRED", "Bearer token is required");
   return m[1];
 }
 
@@ -235,7 +235,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       if (method === "GET" && hostDetail) {
         admin("host:read");
         const out = await service.getHostDetail(decodeURIComponent(hostDetail[1]));
-        if (!out) throw new PcsError(404, "HOST_NOT_FOUND", "主机不存在");
+        if (!out) throw new PcsError(404, "HOST_NOT_FOUND", "host not found");
         return send(res, 200, out);
       }
 
@@ -316,7 +316,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       if (method === "GET" && depGet) {
         admin("deployment:read");
         const dep = await service.getDeployment(decodeURIComponent(depGet[1]));
-        if (!dep) throw new PcsError(404, "DEPLOYMENT_NOT_FOUND", "部署不存在");
+        if (!dep) throw new PcsError(404, "DEPLOYMENT_NOT_FOUND", "deployment not found");
         return send(res, 200, { deployment: dep });
       }
 
@@ -491,7 +491,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           throw new PcsError(
             400,
             "HOST_ID_REQUIRED",
-            "缺少 host_id：实例名只在主机内唯一，绑定必须指定主机",
+            "host_id is required: instance names are unique only within a host, so binding must specify a host",
           );
         }
         return hostId;
@@ -552,7 +552,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           requireHostId(url.searchParams.get("host_id")),
           decodeURIComponent(resolve[1]),
         );
-        if (!out) throw new PcsError(404, "BINDING_NOT_FOUND", "实例没有 Agent 绑定");
+        if (!out) throw new PcsError(404, "BINDING_NOT_FOUND", "instance has no Agent binding");
         return send(res, 200, out);
       }
 
@@ -609,7 +609,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, await service.renewHostToken(h));
       }
 
-      send(res, 404, { error: { code: "NOT_FOUND", message: `没有这个接口：${method} ${path}` } });
+      send(res, 404, { error: { code: "NOT_FOUND", message: `no such endpoint: ${method} ${path}` } });
     } catch (e) {
       if (e instanceof PcsError) {
         send(res, e.status, {

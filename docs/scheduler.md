@@ -4,6 +4,7 @@
 
 > Version: v4.3 · 2026-11-12
 > The scheduler is the single source of truth for state. It does only four things: accept tasks, queue them, dispatch them, and keep accounts.
+> Allocation and scheduling math (`W`, water filling, concurrency, pressure) is specified in [scheduling-algorithm.md](scheduling-algorithm.md).
 
 ---
 

@@ -44,7 +44,7 @@ export async function issueTerminalTicket(
   const hostId = String(body.host_id ?? "").trim();
   const instanceId = String(body.instance_id ?? "").trim();
   if (!hostId || !instanceId) {
-    throw new PcsError(400, "BAD_REQUEST", "缺少 host_id 或 instance_id");
+    throw new PcsError(400, "BAD_REQUEST", "host_id or instance_id is required");
   }
   const target = await service.terminalTarget(hostId, instanceId);
   const ticket = crypto.randomBytes(24).toString("base64url");

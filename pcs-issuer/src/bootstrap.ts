@@ -79,15 +79,15 @@ export function buildBootstrapScript(p: BootstrapPlan): string {
     'for pid in $(pgrep -f "$DIR/(watchdog|runtime)\\.mjs" || true); do kill "$pid" 2>/dev/null || true; done',
     "sleep 0.3",
     `NODE="${p.nodePath}"`,
-    'command -v "$NODE" >/dev/null 2>&1 || { echo "BOOTSTRAP_ERROR 目标主机找不到 Node（当前：$NODE）：请安装 Node 22+，并用 PCS_RUNTIME_NODE 指定绝对路径" >&2; exit 20; }',
+    'command -v "$NODE" >/dev/null 2>&1 || { echo "BOOTSTRAP_ERROR Node not found on the target host (current: $NODE): install Node 22+ and point PCS_RUNTIME_NODE at its absolute path" >&2; exit 20; }',
     '"$NODE" -e \'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)\' \\',
-    '  || { echo "BOOTSTRAP_ERROR 目标主机的 Node 版本低于 22（当前：$("$NODE" -v 2>/dev/null)），请用 PCS_RUNTIME_NODE 指向 Node 22+" >&2; exit 21; }',
+    '  || { echo "BOOTSTRAP_ERROR the target host has Node older than 22 (current: $("$NODE" -v 2>/dev/null)); point PCS_RUNTIME_NODE at Node 22+" >&2; exit 21; }',
     // Bare-metal roles do not need Docker; container hosts are still checked, to avoid failing only at deploy time.
     ...(p.dockerRequired === false
       ? []
       : [
           'docker info >/dev/null 2>&1 \\',
-          '  || { echo "BOOTSTRAP_ERROR 目标主机没有可用的 Docker：先安装 Docker Engine，并让当前用户能访问 /var/run/docker.sock" >&2; exit 22; }',
+          '  || { echo "BOOTSTRAP_ERROR Docker is not available on the target host: install Docker Engine and make /var/run/docker.sock accessible to the current user" >&2; exit 22; }',
         ]),
     "cd \"$DIR\"",
     'nohup "$NODE" "$DIR/watchdog.mjs" --config "$DIR/runtime.host.json" \\',
@@ -129,21 +129,21 @@ export function buildEnvSetupScript(p: {
     '  case "$(uname -m)" in',
     "    aarch64|arm64) NODE_ARCH=arm64 ;;",
     "    x86_64|amd64) NODE_ARCH=x64 ;;",
-    '    *) echo "PCS_ENV_ERROR=远程主机缺少 Node 22，且 CPU 架构 $(uname -m) 不在自动安装支持范围内" >&2; exit 20 ;;',
+    '    *) echo "PCS_ENV_ERROR=the remote host is missing Node 22, and CPU architecture $(uname -m) is not supported for automatic installation" >&2; exit 20 ;;',
     "  esac",
     '  NODE_DIR="$HOME/opt/node-v22.20.0-linux-$NODE_ARCH"',
     '  if [ ! -x "$NODE_DIR/bin/node" ]; then',
     '    echo "PCS_STEP=node-download" >&2',
-    '    mkdir -p "$HOME/opt" || { echo "PCS_ENV_ERROR=远程主机缺少 Node 22，且无法写入 $HOME/opt" >&2; exit 21; }',
+    '    mkdir -p "$HOME/opt" || { echo "PCS_ENV_ERROR=the remote host is missing Node 22, and $HOME/opt is not writable" >&2; exit 21; }',
     '    if ! curl -fsSL --retry 2 --connect-timeout 15 -o /tmp/pcs-node22.tar.xz \\',
     '      "https://npmmirror.com/mirrors/node/v22.20.0/node-v22.20.0-linux-$NODE_ARCH.tar.xz"; then',
-    '      echo "PCS_ENV_ERROR=远程主机缺少 Node 22，自动下载失败（检查这台机器能否访问 npmmirror.com）" >&2; exit 22',
+    '      echo "PCS_ENV_ERROR=the remote host is missing Node 22, and automatic download failed (check whether this machine can reach npmmirror.com)" >&2; exit 22',
     "    fi",
-    '    tar -xJf /tmp/pcs-node22.tar.xz -C "$HOME/opt" || { echo "PCS_ENV_ERROR=远程主机缺少 Node 22，下载后解压失败" >&2; exit 23; }',
+    '    tar -xJf /tmp/pcs-node22.tar.xz -C "$HOME/opt" || { echo "PCS_ENV_ERROR=the remote host is missing Node 22, and extraction failed after download" >&2; exit 23; }',
     "    rm -f /tmp/pcs-node22.tar.xz",
     "  fi",
     '  PCS_NODE="$NODE_DIR/bin/node"',
-    '  [ -x "$PCS_NODE" ] || { echo "PCS_ENV_ERROR=远程主机缺少 Node 22，自动安装后仍不可执行：$PCS_NODE" >&2; exit 24; }',
+    '  [ -x "$PCS_NODE" ] || { echo "PCS_ENV_ERROR=the remote host is missing Node 22, and it is still not executable after automatic installation: $PCS_NODE" >&2; exit 24; }',
     "fi",
     ...(p.dockerRequired === false
       ? []
@@ -162,15 +162,15 @@ export function buildEnvSetupScript(p: {
     '    IFS= read -r SUDO_PASS || true',
     '    if [ -z "$SUDO_PASS" ]; then',
     '      if [ "$HAVE_DOCKER" -eq 0 ]; then',
-    '        echo "PCS_ENV_ERROR=远程主机缺少 Docker，且当前 SSH 凭据没有密码、sudo 不能免密，无法自动安装" >&2',
+    '        echo "PCS_ENV_ERROR=the remote host is missing Docker, the current SSH credential has no password, and sudo is not passwordless; automatic installation is not possible" >&2',
     "      else",
-    '        echo "PCS_ENV_ERROR=远程主机上的 Docker 不可用，且当前 SSH 凭据没有密码、sudo 不能免密，无法自动修复" >&2',
+    '        echo "PCS_ENV_ERROR=Docker on the remote host is unavailable, the current SSH credential has no password, and sudo is not passwordless; automatic repair is not possible" >&2',
     "      fi",
     "      exit 30",
     "    fi",
     "    ROOT_HOW=password",
     "    printf '%s\\n' \"$SUDO_PASS\" | sudo -S -p '' true >/dev/null 2>&1 \\",
-    '      || { echo "PCS_ENV_ERROR=远程主机的 sudo 密码与 SSH 密码不一致，无法自动安装 Docker" >&2; exit 34; }',
+    '      || { echo "PCS_ENV_ERROR=the sudo password on the remote host does not match the SSH password; cannot install Docker automatically" >&2; exit 34; }',
     "  fi",
     "  as_root() {",
     '    case "$ROOT_HOW" in',
@@ -182,9 +182,9 @@ export function buildEnvSetupScript(p: {
     '  if [ "$HAVE_DOCKER" -eq 0 ]; then',
     '    echo "PCS_STEP=docker-install" >&2',
     '    as_root "apt-get update -qq" >/dev/null 2>&1 \\',
-    '      || { echo "PCS_ENV_ERROR=远程主机缺少 Docker，自动安装失败（apt-get update 没有成功）" >&2; exit 31; }',
+    '      || { echo "PCS_ENV_ERROR=the remote host is missing Docker, and automatic installation failed (apt-get update did not succeed)" >&2; exit 31; }',
     '    as_root "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io" >/dev/null 2>&1 \\',
-    '      || { echo "PCS_ENV_ERROR=远程主机缺少 Docker，自动安装失败（apt-get install docker.io 没有成功）" >&2; exit 32; }',
+    '      || { echo "PCS_ENV_ERROR=the remote host is missing Docker, and automatic installation failed (apt-get install docker.io did not succeed)" >&2; exit 32; }',
     "  fi",
     '  as_root "systemctl enable --now docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1 || true" >/dev/null 2>&1 || true',
     "  as_root \"usermod -aG docker '$USER_NAME' >/dev/null 2>&1 || true\" || true",
@@ -194,7 +194,7 @@ export function buildEnvSetupScript(p: {
     "    i=$((i+1)); sleep 1",
     "  done",
     '  as_root "docker info >/dev/null 2>&1" \\',
-    '    || { echo "PCS_ENV_ERROR=远程主机缺少 Docker，安装后守护进程没有起来（检查 systemctl status docker）" >&2; exit 33; }',
+    '    || { echo "PCS_ENV_ERROR=the remote host is missing Docker, and the daemon did not start after installation (check systemctl status docker)" >&2; exit 33; }',
     "fi",
         ]),
     'echo "PCS_NODE_PATH=$PCS_NODE"',
@@ -214,7 +214,7 @@ export async function runLocalBootstrap(
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      resolve({ code: 124, stdout, stderr: `${stderr}\n引导超时` });
+      resolve({ code: 124, stdout, stderr: `${stderr}\nbootstrap timed out` });
     }, timeoutMs);
     child.stdout.on("data", (d: Buffer) => {
       stdout += d.toString("utf8");

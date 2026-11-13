@@ -25,7 +25,7 @@ const WIDTH = Number(process.env.CAPTURE_WIDTH ?? 1440);
 const HEIGHT = Number(process.env.CAPTURE_HEIGHT ?? 1000);
 
 if (LIVE && !token) {
-  console.error("实时模式需要 ADMIN_TOKEN");
+  console.error("live mode requires ADMIN_TOKEN");
   process.exit(1);
 }
 
@@ -76,7 +76,7 @@ async function waitFor(fn, timeoutMs, label) {
     }
     await sleep(250);
   }
-  throw new Error(`等待超时：${label}`);
+  throw new Error(`Timed out waiting for: ${label}`);
 }
 
 let ws;

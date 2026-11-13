@@ -94,8 +94,8 @@ function detectCliVersion(provider) {
   const m = text.match(/\b(\d+\.\d+\.\d+)\b/);
   if (probe.status === 0 && m) return m[1];
   die(
-    `无法确定 ${provider} 的版本：本机没有可用的 ${provider} --version。` +
-      `请安装 CLI，或显式设置 AGENT_${provider.toUpperCase()}_VERSION（例如 2.1.322）。`,
+    `Cannot determine the ${provider} version: no working ${provider} --version on this machine. ` +
+      `Install the CLI, or set AGENT_${provider.toUpperCase()}_VERSION explicitly (e.g. 2.1.322).`,
   );
 }
 
@@ -105,11 +105,11 @@ function die(msg) {
 }
 
 if (!/^.+@sha256:[0-9a-f]{64}$/.test(IMAGE)) {
-  die("AGENT_IMAGE 必须是摘要固定的镜像，例如 registry.example/agents/claude@sha256:<64 hex>");
+  die("AGENT_IMAGE must be pinned by digest, e.g. registry.example/agents/claude@sha256:<64 hex>");
 }
-if (!dryRun && !TOKEN) die("缺少 ADMIN_TOKEN（只通过环境变量传入，不要写进命令行历史）");
-if (!PROVIDERS.length) die("AGENT_PROVIDERS 为空");
-for (const p of PROVIDERS) if (!PROVIDER_NAME[p]) die(`未知 provider：${p}`);
+if (!dryRun && !TOKEN) die("ADMIN_TOKEN is required (pass it only through the environment, never on the command line)");
+if (!PROVIDERS.length) die("AGENT_PROVIDERS is empty");
+for (const p of PROVIDERS) if (!PROVIDER_NAME[p]) die(`unknown provider: ${p}`);
 
 async function api(method, url, body) {
   const res = await fetch(`${PCS_URL}${url}`, {
@@ -223,14 +223,14 @@ for (const spec of binds) {
   const sep = spec.lastIndexOf(":");
   const target = sep > 0 ? spec.slice(0, sep) : "";
   const provider = sep > 0 ? spec.slice(sep + 1) : "";
-  if (!target || !PROVIDER_NAME[provider]) die(`--bind 格式应为 <instance>:claude|codex，收到 ${spec}`);
+  if (!target || !PROVIDER_NAME[provider]) die(`--bind expects <instance>:claude|codex; got ${spec}`);
   const hit = findInstance(target);
   if (!hit) {
     const others = instancesByName.get(target.includes("/") ? target.slice(target.indexOf("/") + 1) : target) ?? [];
     die(
       others.length > 1
-        ? `--bind ${target} 在 ${others.length} 台主机上同名，请写成 <host>/${target}`
-        : `--bind 找不到实例角色；请先在 PCS 注册部署（未知实例 ${target}）`,
+        ? `--bind ${target} is ambiguous across ${others.length} hosts; write <host>/${target}`
+        : `--bind found no instance role; register the deployment in PCS first (unknown instance ${target})`,
     );
   }
   const profileId = `agp_${provider}_${hit.role}`;
@@ -249,5 +249,5 @@ console.log(
   `profiles: created=${created.length} skipped=${skipped.length}` +
     (created.length ? ` [${created.join(", ")}]` : ""),
 );
-console.log("提示：Profile 注册只改控制面；Host Runtime 需滚动重启实例才会加载新 Agent。");
+console.log("Note: registering a Profile only changes the control plane; Host Runtime instances must be restarted to load the new Agent.");
 

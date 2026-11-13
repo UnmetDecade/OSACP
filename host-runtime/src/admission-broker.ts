@@ -135,23 +135,23 @@ export class AdmissionBroker {
   check(req: TaskGrantRequest): Promise<AdmissionResult> {
     return this.serialize(() => {
       if (!req?.grant_id?.startsWith("rgr_")) {
-        throw new AdmissionError(400, "INVALID_GRANT", "grant_id 必须由控制面签发（rgr_ 前缀）");
+        throw new AdmissionError(400, "INVALID_GRANT", "grant_id must be issued by the control plane (rgr_ prefix)");
       }
       if (req.kind !== "TASK") {
-        throw new AdmissionError(400, "INVALID_GRANT_KIND", "只接受 TASK 类型的 grant");
+        throw new AdmissionError(400, "INVALID_GRANT_KIND", "Only TASK grants are accepted");
       }
       if (!req.instance_id || !req.task_id || !req.attempt_id) {
-        throw new AdmissionError(400, "INVALID_GRANT", "缺少 instance_id / task_id / attempt_id");
+        throw new AdmissionError(400, "INVALID_GRANT", "Missing instance_id / task_id / attempt_id");
       }
       const memory = Number(req.resources?.memory_bytes);
       if (!Number.isFinite(memory) || memory <= 0) {
-        throw new AdmissionError(400, "INVALID_RESOURCES", "memory_bytes 必须是正数");
+        throw new AdmissionError(400, "INVALID_RESOURCES", "memory_bytes must be a positive number");
       }
       if (memory > this.cfg.max_task_grant_bytes) {
         throw new AdmissionError(
           400,
           "RESOURCE_REQUEST_TOO_LARGE",
-          `单任务申请超过上限 ${this.cfg.max_task_grant_bytes} 字节`,
+          `Single-task request exceeds the limit of ${this.cfg.max_task_grant_bytes} bytes`,
         );
       }
 
@@ -164,7 +164,7 @@ export class AdmissionBroker {
           existing.task_id !== req.task_id ||
           existing.attempt_id !== req.attempt_id
         ) {
-          throw new AdmissionError(409, "GRANT_CONFLICT", "同一 grant_id 不能用于不同 attempt");
+          throw new AdmissionError(409, "GRANT_CONFLICT", "The same grant_id cannot be used for a different attempt");
         }
         return existing.result;
       }
@@ -206,7 +206,7 @@ export class AdmissionBroker {
   checkDeployment(grantId: string, instanceId: string, memoryBytes: number): Promise<AdmissionResult> {
     return this.serialize(() => {
       if (!grantId.startsWith("rgr_")) {
-        throw new AdmissionError(400, "INVALID_GRANT", "grant_id 必须由控制面签发");
+        throw new AdmissionError(400, "INVALID_GRANT", "grant_id must be issued by the control plane");
       }
       const now = this.now();
       this.reap(now);
@@ -270,7 +270,7 @@ function readBody(req: http.IncomingMessage, limit = 64 * 1024): Promise<Record<
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > limit) {
-        reject(new AdmissionError(413, "BODY_TOO_LARGE", "请求体过大"));
+        reject(new AdmissionError(413, "BODY_TOO_LARGE", "Request body too large"));
         req.destroy();
         return;
       }
@@ -280,7 +280,7 @@ function readBody(req: http.IncomingMessage, limit = 64 * 1024): Promise<Record<
       try {
         resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {});
       } catch {
-        reject(new AdmissionError(400, "INVALID_JSON", "请求体不是 JSON"));
+        reject(new AdmissionError(400, "INVALID_JSON", "Request body is not JSON"));
       }
     });
     req.on("error", reject);
@@ -325,10 +325,10 @@ export function startAdmissionServer(
       }
       if (req.method === "POST" && url.pathname === "/admission/release") {
         const body = await readBody(req);
-        if (!body.grant_id) throw new AdmissionError(400, "INVALID_GRANT", "缺少 grant_id");
+        if (!body.grant_id) throw new AdmissionError(400, "INVALID_GRANT", "Missing grant_id");
         return send(res, 200, await broker.release(String(body.grant_id)));
       }
-      send(res, 404, { error: { code: "NOT_FOUND", message: "没有这个接口" } });
+      send(res, 404, { error: { code: "NOT_FOUND", message: "No such endpoint" } });
     } catch (e) {
       if (e instanceof AdmissionError) {
         send(res, e.status, { error: { code: e.code, message: e.message } });

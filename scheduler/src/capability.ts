@@ -54,6 +54,70 @@ export function computeCapabilityScore(detail: CapabilityDetail | null | undefin
   return Math.max(0, Math.min(1000, Math.round(raw * 1000)));
 }
 
+/**
+ * Dynamic-mode capability split (v0.3 §6.2).
+ *
+ * `static_score` covers the four load-independent components (frequency/disk/model/API),
+ * `res_score` covers CPU and memory and is the only part that scales with H_res.
+ * The two parts each have a 500-point maximum, so `static + res` is bounded by 1000.
+ */
+export interface CapabilitySplit {
+  static_score: number;
+  res_score: number;
+  /** W0 = static + res at the instance cap: the cross-mode eligibility ceiling. */
+  ceiling: number;
+}
+
+export function splitCapability(
+  detail: CapabilityDetail | null | undefined,
+  cap?: { cpu_cores?: number; mem_gb?: number },
+): CapabilitySplit {
+  const d = normalizeCapabilityDetail(detail ?? {});
+  const staticRaw =
+    CAPABILITY_WEIGHTS.freq_ghz * ratio(d.freq_ghz, CAPABILITY_CEILINGS.freq_ghz) +
+    CAPABILITY_WEIGHTS.disk_gb * ratio(d.disk_gb, CAPABILITY_CEILINGS.disk_gb) +
+    CAPABILITY_WEIGHTS.model * ratio(d.model, CAPABILITY_CEILINGS.model) +
+    CAPABILITY_WEIGHTS.api * ratio(d.api, CAPABILITY_CEILINGS.api);
+  const cores = cap?.cpu_cores ?? d.cores ?? 0;
+  const memGb = cap?.mem_gb ?? d.mem_gb ?? 0;
+  const resRaw =
+    CAPABILITY_WEIGHTS.cores * ratio(cores, CAPABILITY_CEILINGS.cores) +
+    CAPABILITY_WEIGHTS.mem_gb * ratio(memGb, CAPABILITY_CEILINGS.mem_gb);
+  const staticScore = Math.max(0, Math.min(500, Math.round(staticRaw * 1000)));
+  const resScore = Math.max(0, Math.min(500, Math.round(resRaw * 1000)));
+  return { static_score: staticScore, res_score: resScore, ceiling: staticScore + resScore };
+}
+
+export type WDegradeScope = "resource" | "whole";
+
+/**
+ * W_live from a split and the pool-level H_res. `resource` scales only the CPU/memory part;
+ * `whole` scales the whole score and applies W_floor. H_res is already clamped by the caller.
+ */
+export function dynamicLiveScore(
+  split: CapabilitySplit,
+  hRes: number,
+  opts: { scope?: WDegradeScope; wFloor?: number } = {},
+): number {
+  const h = Number.isFinite(hRes) ? Math.max(0, Math.min(1, hRes)) : 1;
+  if ((opts.scope ?? "resource") === "whole") {
+    const floor = Math.max(0, Math.min(1000, Number(opts.wFloor ?? 0)));
+    return Math.max(floor, Math.round(split.ceiling * h));
+  }
+  return Math.max(0, Math.min(1000, Math.round(split.static_score + h * split.res_score)));
+}
+
+/** Optional capacity-planning value: score at the instance's equal-share minimum. */
+export function dynamicGuaranteedScore(
+  split: CapabilitySplit,
+  minShare: { cpu_cores: number; mem_gb: number },
+): number {
+  const res =
+    CAPABILITY_WEIGHTS.cores * ratio(minShare.cpu_cores, CAPABILITY_CEILINGS.cores) +
+    CAPABILITY_WEIGHTS.mem_gb * ratio(minShare.mem_gb, CAPABILITY_CEILINGS.mem_gb);
+  return Math.max(0, Math.min(1000, Math.round(split.static_score + res * 1000)));
+}
+
 export function normalizeCapabilityDetail(detail: unknown): CapabilityDetail {
   if (!detail || typeof detail !== "object") return {};
   const d = detail as Record<string, unknown>;

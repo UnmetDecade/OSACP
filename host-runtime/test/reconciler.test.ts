@@ -138,7 +138,7 @@ function cleanup(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-test("DEPLOY→STOP→START→RESTART→REMOVE 收敛到期望态", async () => {
+test("DEPLOY→STOP→START→RESTART→REMOVE converges to the desired state", async () => {
   const { dir, state, engine, broker, reconciler } = setup();
   const depId = "dep_1";
   const insId = "ins_1";
@@ -176,7 +176,7 @@ test("DEPLOY→STOP→START→RESTART→REMOVE 收敛到期望态", async () => 
   }
 });
 
-test("部署写入容器配置文件，并从主机凭据文件注入模型密钥", async () => {
+test("deployment writes the container config and injects model keys from the host credentials file", async () => {
   const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-test-"));
   const envFile = path.join(secretsDir, "agent-env");
   fs.writeFileSync(
@@ -208,7 +208,7 @@ test("部署写入容器配置文件，并从主机凭据文件注入模型密�
   }
 });
 
-test("凭据文件缺少变量时拒绝创建容器", async () => {
+test("container creation is refused when the credentials file lacks a variable", async () => {
   const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-missing-"));
   const envFile = path.join(secretsDir, "agent-env");
   fs.writeFileSync(envFile, "ANTHROPIC_BASE_URL=https://example.test/anthropic\n");
@@ -227,13 +227,13 @@ test("凭据文件缺少变量时拒绝创建容器", async () => {
   }
 });
 
-test("容器只读挂载主机运行环境缓存", async () => {
+test("the container mounts the host runtime environment cache read-only", async () => {
   const cacheDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "platform-cache-")), "cache");
   const { dir, engine, reconciler } = setup({ cacheDir });
   try {
     const out = await reconciler.execute(command("DEPLOY", "dep_cache", "ins_cache"), true);
     assert.equal(out.ok, true);
-    assert.equal(fs.existsSync(cacheDir), true, "部署前应创建缓存目录");
+    assert.equal(fs.existsSync(cacheDir), true, "the cache directory should be created before deployment");
     const mounts = engine.configOf(containerName("ins_cache"))?.HostConfig?.Mounts ?? [];
     const cache = mounts.find((m: any) => m.Target === "/opt/platform/cache");
     assert.equal(cache?.Type, "bind");
@@ -245,7 +245,7 @@ test("容器只读挂载主机运行环境缓存", async () => {
   }
 });
 
-test("对账发现容器已在运行时不重复写配置文件", async () => {
+test("reconciliation does not rewrite the config file when the container is already running", async () => {
   const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-env-reconcile-"));
   const envFile = path.join(secretsDir, "agent-env");
   fs.writeFileSync(envFile, "ANTHROPIC_API_KEY=sk-test\n");
@@ -269,7 +269,7 @@ test("对账发现容器已在运行时不重复写配置文件", async () => {
   }
 });
 
-test("重复 DEPLOY 幂等：容器已运行时不重建", async () => {
+test("repeated DEPLOY is idempotent: a running container is not recreated", async () => {
   const { dir, engine, reconciler } = setup();
   const depId = "dep_idem";
   const insId = "ins_idem";
@@ -285,7 +285,7 @@ test("重复 DEPLOY 幂等：容器已运行时不重建", async () => {
   }
 });
 
-test("PCS 失联、看门狗保护、准入不足都拒绝新建容器", async () => {
+test("PCS unreachable, watchdog protection, and insufficient admission all refuse new containers", async () => {
   {
     const { dir, engine, reconciler } = setup();
     try {
@@ -332,7 +332,7 @@ test("PCS 失联、看门狗保护、准入不足都拒绝新建容器", async (
   }
 });
 
-test("THROTTLED 下不允许新建部署，但重启已有容器仍可", async () => {
+test("THROTTLED blocks new deployments but still allows restarting existing containers", async () => {
   const { dir, engine, reconciler } = setup();
   try {
     await reconciler.execute(command("DEPLOY", "dep_t", "ins_t"), true);
@@ -350,7 +350,7 @@ test("THROTTLED 下不允许新建部署，但重启已有容器仍可", async (
   }
 });
 
-test("对账：退出的容器被拉起，缺失的容器被重建，离线时不动", async () => {
+test("reconciliation: exited containers are started, missing ones are recreated, and nothing is touched while offline", async () => {
   const { dir, state, engine, reconciler } = setup();
   const depId = "dep_rec";
   const insId = "ins_rec";
@@ -375,7 +375,7 @@ test("对账：退出的容器被拉起，缺失的容器被重建，离线时�
   }
 });
 
-test("对账：STOPPED 的部署不再被拉起", async () => {
+test("reconciliation: STOPPED deployments are no longer started", async () => {
   const { dir, engine, reconciler } = setup();
   const depId = "dep_stop";
   const insId = "ins_stop";

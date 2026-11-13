@@ -117,11 +117,11 @@ export function errorMessage(e: unknown): string {
       ?.checks;
     if (Array.isArray(checks)) {
       const failed = checks.filter((c) => c && c.ok === false).map((c) => c.detail).filter(Boolean);
-      if (failed.length) return `${e.code}：${failed.join("；")}`;
+      if (failed.length) return `${e.code}: ${failed.join("; ")}`;
     }
     // HTTP_ERROR simply means no structured error was received; just show the status code information.
     if (!e.code || e.code === "HTTP_ERROR") return e.message;
-    return `${e.code}：${e.message}`;
+    return `${e.code}: ${e.message}`;
   }
   return e instanceof Error ? e.message : String(e);
 }

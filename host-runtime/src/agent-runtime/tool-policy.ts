@@ -75,7 +75,7 @@ export class ToolGuard {
   private readonly seen = new Map<string, { hash: string; result: unknown }>();
 
   constructor(private readonly opts: ToolGuardOptions) {
-    if (!opts.toolToken) throw new Error("ToolGuard 需要每次 attempt 的 tool_token");
+    if (!opts.toolToken) throw new Error("ToolGuard requires a tool_token for each attempt");
   }
 
   get turnsUsed(): number {
@@ -102,29 +102,29 @@ export class ToolGuard {
       // 1. Identity: the call must come from the current attempt and hold this attempt's token
       input = parseCall(raw);
       if (!sameToken(input.tool_token, this.opts.toolToken)) {
-        throw deny("TOOL_IDENTITY_MISMATCH", "tool_token 与当前 attempt 不匹配", 1);
+        throw deny("TOOL_IDENTITY_MISMATCH", "tool_token does not match the current attempt", 1);
       }
       this.turns++;
       if (this.opts.maxTurns !== undefined && this.turns > this.opts.maxTurns) {
-        throw deny("TOOL_TURN_LIMIT", `工具调用超过 max_turns=${this.opts.maxTurns}`, 1);
+        throw deny("TOOL_TURN_LIMIT", `Tool calls exceeded max_turns=${this.opts.maxTurns}`, 1);
       }
 
       // 2. Profile permissions; empty means all permissions. Only platform-registered tool_ids narrow the scope,
       //    so other words typed into the panel (descriptive permissions) do not accidentally block every tool.
       const allowed = this.opts.profile.allowed_tools.filter((id) => TOOL_CATALOG[id]);
       if (allowed.length > 0 && !allowed.includes(input.tool_id)) {
-        throw deny("TOOL_NOT_ALLOWED", `Agent Profile 未允许工具 ${input.tool_id}`, 2);
+        throw deny("TOOL_NOT_ALLOWED", `Agent Profile does not allow tool ${input.tool_id}`, 2);
       }
       const descriptor = TOOL_CATALOG[input.tool_id];
       if (!descriptor) {
-        throw deny("TOOL_UNKNOWN", `工具未在平台目录注册：${input.tool_id}`, 2);
+        throw deny("TOOL_UNKNOWN", `Tool is not registered in the platform catalog: ${input.tool_id}`, 2);
       }
 
       // 3. Phase
       if (descriptor.phases.length && !descriptor.phases.includes(this.opts.phase)) {
         throw deny(
           "TOOL_PHASE_DENIED",
-          `阶段 ${this.opts.phase} 不允许工具 ${input.tool_id}`,
+          `Phase ${this.opts.phase} does not allow tool ${input.tool_id}`,
           3,
         );
       }
@@ -135,13 +135,13 @@ export class ToolGuard {
       // 5. Resources / network / side effects
       for (const scope of descriptor.action_scopes) {
         if (!this.opts.approvedActionScope.includes(scope)) {
-          throw deny("TOOL_SCOPE_DENIED", `缺少审批 action_scope：${scope}`, 5);
+          throw deny("TOOL_SCOPE_DENIED", `Missing approved action_scope: ${scope}`, 5);
         }
       }
       if (descriptor.egress) {
         const apiId = String(input.args.api_profile_id ?? "");
         if (!this.opts.apiProfiles.has(apiId)) {
-          throw deny("API_PROFILE_NOT_ALLOWED", `API ${apiId} 不在实例绑定内`, 5);
+          throw deny("API_PROFILE_NOT_ALLOWED", `API ${apiId} is not bound to the instance`, 5);
         }
       }
 
@@ -151,7 +151,7 @@ export class ToolGuard {
         const prev = this.seen.get(input.idempotency_key);
         if (prev) {
           if (prev.hash !== argsHash) {
-            throw deny("TOOL_IDEMPOTENCY_CONFLICT", "同一幂等键对应了不同参数", 6);
+            throw deny("TOOL_IDEMPOTENCY_CONFLICT", "The same idempotency key was used with different arguments", 6);
           }
           this.record({
             tool_id: input.tool_id,
@@ -215,11 +215,11 @@ export class ToolGuard {
     if (input.tool_id === "workspace.read") {
       const rel = normalizeRel(String(args.path ?? ""));
       const file = path.join(this.opts.workspace, rel);
-      if (!fs.existsSync(file)) throw new Error(`文件不存在：${rel}`);
+      if (!fs.existsSync(file)) throw new Error(`File does not exist: ${rel}`);
       return { path: rel, content: fs.readFileSync(file, "utf8") };
     }
     if (input.tool_id === "api.call") {
-      if (!this.opts.apiCall) throw new Error("API Adapter 未启动");
+      if (!this.opts.apiCall) throw new Error("API Adapter is not started");
       return this.opts.apiCall({
         api_profile_id: String(args.api_profile_id),
         method: String(args.method ?? "GET").toUpperCase(),
@@ -228,7 +228,7 @@ export class ToolGuard {
         scope: args.scope === undefined ? undefined : String(args.scope),
       });
     }
-    throw new Error(`工具没有实现：${input.tool_id}`);
+    throw new Error(`Tool is not implemented: ${input.tool_id}`);
   }
 
   private record(r: Omit<ToolAuditRecord, "ts" | "instance_id" | "attempt_id" | "task_id">): void {
@@ -247,16 +247,16 @@ export class ToolGuard {
 }
 
 function parseCall(raw: unknown): ToolCallInput {
-  if (!raw || typeof raw !== "object") throw new ToolDenied("TOOL_INPUT_INVALID", "工具参数必须是对象", 1);
+  if (!raw || typeof raw !== "object") throw new ToolDenied("TOOL_INPUT_INVALID", "Tool arguments must be an object", 1);
   const o = raw as Record<string, unknown>;
   if (typeof o.tool_id !== "string" || !o.tool_id) {
-    throw new ToolDenied("TOOL_INPUT_INVALID", "缺少 tool_id", 1);
+    throw new ToolDenied("TOOL_INPUT_INVALID", "Missing tool_id", 1);
   }
   if (!o.args || typeof o.args !== "object" || Array.isArray(o.args)) {
-    throw new ToolDenied("TOOL_INPUT_INVALID", "args 必须是对象", 1);
+    throw new ToolDenied("TOOL_INPUT_INVALID", "args must be an object", 1);
   }
   if (typeof o.tool_token !== "string") {
-    throw new ToolDenied("TOOL_IDENTITY_MISMATCH", "缺少 tool_token", 1);
+    throw new ToolDenied("TOOL_IDENTITY_MISMATCH", "Missing tool_token", 1);
   }
   return {
     tool_id: o.tool_id,
@@ -271,44 +271,44 @@ function validateArgs(toolId: string, args: Record<string, unknown>, workspace: 
     throw new ToolDenied("TOOL_INPUT_INVALID", m, 4);
   };
   if (toolId === "demo.echo") {
-    if (typeof args.text !== "string" || args.text.length > 2000) fail("demo.echo.text 必须是 <=2000 字符的字符串");
+    if (typeof args.text !== "string" || args.text.length > 2000) fail("demo.echo.text must be a string of at most 2000 characters");
     return;
   }
   if (toolId === "workspace.write") {
-    if (typeof args.path !== "string" || typeof args.content !== "string") fail("workspace.write 需要 path/content");
-    if ((args.content as string).length > 1024 * 1024) fail("写入内容超过 1MiB");
+    if (typeof args.path !== "string" || typeof args.content !== "string") fail("workspace.write requires path/content");
+    if ((args.content as string).length > 1024 * 1024) fail("Written content exceeds 1MiB");
     assertInsideWorkspace(args.path as string, workspace);
     return;
   }
   if (toolId === "workspace.read") {
-    if (typeof args.path !== "string") fail("workspace.read 需要 path");
+    if (typeof args.path !== "string") fail("workspace.read requires path");
     assertInsideWorkspace(args.path as string, workspace);
     return;
   }
   if (toolId === "api.call") {
-    if (typeof args.api_profile_id !== "string" || !args.api_profile_id) fail("需要 api_profile_id");
+    if (typeof args.api_profile_id !== "string" || !args.api_profile_id) fail("api_profile_id is required");
     const method = String(args.method ?? "GET").toUpperCase();
-    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(method)) fail(`method 不允许：${method}`);
+    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(method)) fail(`method not allowed: ${method}`);
     if (typeof args.path !== "string" || !args.path.startsWith("/") || args.path.length > 512) {
-      fail("path 必须是以 / 开头的相对路径");
+      fail("path must be a relative path starting with /");
     }
     const p = args.path as string;
-    if (p.includes("..") || p.includes("//") || p.includes("\\") || /[\r\n]/.test(p)) fail("path 含非法段");
-    if (args.body !== undefined && String(args.body).length > 64 * 1024) fail("body 超过 64KiB");
-    if (args.scope !== undefined && typeof args.scope !== "string") fail("scope 必须是字符串");
+    if (p.includes("..") || p.includes("//") || p.includes("\\") || /[\r\n]/.test(p)) fail("path contains an illegal segment");
+    if (args.body !== undefined && String(args.body).length > 64 * 1024) fail("body exceeds 64KiB");
+    if (args.scope !== undefined && typeof args.scope !== "string") fail("scope must be a string");
     return;
   }
-  fail(`工具没有参数校验规则：${toolId}`);
+  fail(`No argument validation rule for tool: ${toolId}`);
 }
 
 export function assertInsideWorkspace(rel: string, workspace: string): void {
   if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.split("/").includes("..")) {
-    throw new ToolDenied("WORKSPACE_PATH_DENIED", `路径必须位于工作区内：${rel}`, 4);
+    throw new ToolDenied("WORKSPACE_PATH_DENIED", `Path must be inside the workspace: ${rel}`, 4);
   }
   const root = path.resolve(workspace);
   const target = path.resolve(root, rel);
   if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
-    throw new ToolDenied("WORKSPACE_PATH_DENIED", `路径逃逸工作区：${rel}`, 4);
+    throw new ToolDenied("WORKSPACE_PATH_DENIED", `Path escapes the workspace: ${rel}`, 4);
   }
 }
 

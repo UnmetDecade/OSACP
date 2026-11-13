@@ -41,16 +41,16 @@ export interface CreateTaskInput {
 
 /** Create a task in the caller's transaction: workflow advance needs to commit "previous phase succeeded + next phase enqueued" together */
 export async function insertTask(c: Client, input: CreateTaskInput) {
-  if (!input.task_type) throw new ApiError(400, "BAD_REQUEST", "task_type 必填");
+  if (!input.task_type) throw new ApiError(400, "BAD_REQUEST", "task_type is required");
 
   const def = await c.query(`SELECT * FROM task_definitions WHERE task_type = $1`, [
     input.task_type,
   ]);
   const d = def.rows[0];
-  if (!d) throw new ApiError(422, "TASK_TYPE_UNKNOWN", `未定义的任务类型: ${input.task_type}`);
+  if (!d) throw new ApiError(422, "TASK_TYPE_UNKNOWN", `unknown task type: ${input.task_type}`);
 
   const profile = input.resource_profile_id ?? d.default_profile;
-  if (!profile) throw new ApiError(422, "PROFILE_UNKNOWN", "缺少资源画像");
+  if (!profile) throw new ApiError(422, "PROFILE_UNKNOWN", "missing resource profile");
 
   const taskId = newId("task");
   const priority = input.priority_class ?? 1;

@@ -38,5 +38,5 @@ http
     res.end(JSON.stringify({ ok: true, path: url.pathname }));
   })
   .listen(port, "127.0.0.1", () => {
-    console.log(`[p4-mock-upstream] 127.0.0.1:${port}（只记录 auth_ok）`);
+    console.log(`[p4-mock-upstream] 127.0.0.1:${port} (only auth_ok is logged)`);
   });

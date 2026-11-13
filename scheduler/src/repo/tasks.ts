@@ -13,7 +13,7 @@ export async function createTask(input: CreateTaskInput) {
 
 export async function getTask(taskId: string) {
   const task = await q1("SELECT * FROM tasks WHERE task_id = $1", [taskId]);
-  if (!task) throw new ApiError(404, "NOT_FOUND", `任务不存在: ${taskId}`);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
   const attempts = await q(
     `SELECT attempt_id, attempt_number, instance_id, status, result_summary, outputs,
             error, started_at, finished_at
@@ -90,10 +90,10 @@ export async function cancelTask(taskId: string, actor = "operator") {
     const row = (
       await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])
     ).rows[0];
-    if (!row) throw new ApiError(404, "NOT_FOUND", `任务不存在: ${taskId}`);
+    if (!row) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
     const from = row.status as TaskStatus;
     if (isTerminal(from)) {
-      throw new ApiError(409, "STATE_CONFLICT", `任务已终结（${from}），不能取消`);
+      throw new ApiError(409, "STATE_CONFLICT", `task is already terminal (${from}); cannot cancel`);
     }
 
     if (from === "RUNNING") {

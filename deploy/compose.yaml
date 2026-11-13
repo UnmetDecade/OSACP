@@ -42,7 +42,7 @@ services:
     environment:
       POSTGRES_DB: scheduler
       POSTGRES_USER: platform
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?在 deploy/.env 设置 POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     networks: [platform-net]

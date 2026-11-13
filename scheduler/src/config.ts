@@ -1,3 +1,16 @@
+import { normalizeDynamicPolicy, type DynamicPolicy } from "./core/resources.js";
+
+function dynamicPolicyFromEnv(): DynamicPolicy {
+  const raw = (process.env.DYNAMIC_POLICY ?? "").trim();
+  if (!raw) return normalizeDynamicPolicy({});
+  try {
+    return normalizeDynamicPolicy(JSON.parse(raw));
+  } catch {
+    console.warn("[config] DYNAMIC_POLICY is not valid JSON; using the default dynamic policy");
+    return normalizeDynamicPolicy({});
+  }
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 7801),
   // Listen on loopback by default: expose externally only through the control-plane reverse proxy + mTLS, never bind the port directly to a NIC
@@ -31,11 +44,19 @@ export const config = {
     250,
     Number(process.env.SCHEDULER_RELAY_SYNC_MS ?? 2000) || 2000,
   ),
+  // Scheduling mode is fixed when the root scheduler is deployed and inherited by node schedulers and builders.
+  schedulingMode: process.env.SCHEDULING_MODE === "dynamic" ? ("dynamic" as const) : ("static" as const),
+  dynamicPolicy: dynamicPolicyFromEnv(),
+  // Grant recomputation cadence; events (claim/release/pressure change) also trigger a recompute.
+  grantIntervalMs: Math.max(
+    1000,
+    Number(process.env.GRANT_UPDATE_INTERVAL_MS ?? 5000) || 5000,
+  ),
 } as const;
 
 if (Boolean(config.tlsCertFile) !== Boolean(config.tlsKeyFile)) {
-  throw new Error("SCHEDULER_TLS_CERT_FILE 与 SCHEDULER_TLS_KEY_FILE 必须同时配置");
+  throw new Error("SCHEDULER_TLS_CERT_FILE and SCHEDULER_TLS_KEY_FILE must be configured together");
 }
 if (config.mtls && (!config.tlsCertFile || !config.tlsCaFile)) {
-  throw new Error("SCHEDULER_MTLS=1 需要同时配置 TLS 证书与客户端 CA（SCHEDULER_TLS_CA_FILE）");
+  throw new Error("SCHEDULER_MTLS=1 requires both a TLS certificate and a client CA (SCHEDULER_TLS_CA_FILE)");
 }

@@ -56,7 +56,7 @@ function stateFile(
   };
 }
 
-test("阈值各自独立触发", () => {
+test("thresholds trigger independently", () => {
   assert.deepEqual(thresholdReason(sample(), cfg.warning), []);
   assert.equal(thresholdReason(sample({ mem_available_bytes: 1 * G }), cfg.warning).length, 1);
   assert.equal(thresholdReason(sample({ load1: 7 }), cfg.warning).length, 1);
@@ -66,7 +66,7 @@ test("阈值各自独立触发", () => {
   );
 });
 
-test("升级必须持续到 sustain 窗口：NORMAL→WARNING→THROTTLED→PROTECTING", () => {
+test("escalation must persist through the sustain window: NORMAL→WARNING→THROTTLED→PROTECTING", () => {
   const warn = sample({ mem_available_bytes: 1.5 * G }); // 0.1875
   const throttle = sample({ mem_available_bytes: 0.8 * G }); // 0.10
   const protect = sample({ mem_available_bytes: 0.3 * G }); // 0.0375
@@ -94,7 +94,7 @@ test("升级必须持续到 sustain 窗口：NORMAL→WARNING→THROTTLED→PROT
   assert.match(s.reason, /MEM_AVAILABLE_RATIO/);
 });
 
-test("PCS 失联直接进入 PROTECTING，不看本机指标", () => {
+test("an unreachable PCS goes straight to PROTECTING regardless of local metrics", () => {
   let s = nextWatchdogState(null, sample(), t0, cfg);
   const lost = sample({ pcs_reachable: false, pcs_silence_seconds: 61 });
   s = nextWatchdogState(s, lost, t0 + 1000, cfg);
@@ -105,7 +105,7 @@ test("PCS 失联直接进入 PROTECTING，不看本机指标", () => {
   assert.match(s.reason, /PCS_LOST/);
 });
 
-test("恢复需要稳定 recover_seconds，再观察 recovering_seconds", () => {
+test("recovery requires stable recover_seconds, then observes recovering_seconds", () => {
   let s = stateFile("PROTECTING", t0);
   s = nextWatchdogState(s, sample(), t0 + 1000, cfg);
   assert.equal(s.state, "PROTECTING");
@@ -119,7 +119,7 @@ test("恢复需要稳定 recover_seconds，再观察 recovering_seconds", () => 
   assert.equal(s.pending, null);
 });
 
-test("恢复过程中再次告警立即回到升级判定", () => {
+test("another alert during recovery immediately returns to escalation", () => {
   const recovering = stateFile("RECOVERING", t0);
   const warn = sample({ mem_available_bytes: 1.5 * G });
   let s = nextWatchdogState(recovering, warn, t0 + 1000, cfg);
@@ -129,7 +129,7 @@ test("恢复过程中再次告警立即回到升级判定", () => {
   assert.equal(s.state, "WARNING");
 });
 
-test("缺失或过期看门狗状态一律失败关闭", () => {
+test("missing or expired watchdog state always fails closed", () => {
   const now = t0;
   assert.equal(watchdogFresh(null, now, 5), false);
   assert.equal(watchdogFresh(stateFile("NORMAL", now - 16_000), now, 5), false);
@@ -151,7 +151,7 @@ test("缺失或过期看门狗状态一律失败关闭", () => {
   }
 });
 
-test("THROTTLED 只拦新建部署，START/RESTART 仍允许", () => {
+test("THROTTLED only blocks new deployments while START/RESTART remain allowed", () => {
   const throttled = stateFile("THROTTLED", t0);
   assert.equal(containerAdmission(throttled, t0, 5, "DEPLOY").allowed, false);
   assert.equal(containerAdmission(throttled, t0, 5, "START").allowed, true);

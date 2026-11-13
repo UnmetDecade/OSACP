@@ -122,7 +122,7 @@ export function loadConfig(configPath?: string): RuntimeConfig {
   const file = configPath ?? process.env.RUNTIME_CONFIG ?? "runtime.config.json";
   const abs = path.resolve(file);
   if (!fs.existsSync(abs)) {
-    throw new Error(`找不到配置文件：${abs}（可从 runtime.config.example.json 复制）`);
+    throw new Error(`Config file not found: ${abs} (copy one from runtime.config.example.json)`);
   }
   const raw = JSON.parse(fs.readFileSync(abs, "utf8")) as Partial<RuntimeConfig>;
   const cfg = {
@@ -147,10 +147,10 @@ export function loadConfig(configPath?: string): RuntimeConfig {
     instances: applyCapabilityEnv(raw.instances ?? []),
   } as RuntimeConfig;
   if (Boolean(cfg.scheduler_client_cert_file) !== Boolean(cfg.scheduler_client_key_file)) {
-    throw new Error("scheduler_client_cert_file 与 scheduler_client_key_file 必须同时配置");
+    throw new Error("scheduler_client_cert_file and scheduler_client_key_file must be configured together");
   }
   for (const f of [cfg.scheduler_ca_file, cfg.scheduler_client_cert_file, cfg.scheduler_client_key_file]) {
-    if (f && !fs.existsSync(f)) throw new Error(`找不到 TLS 文件：${f}`);
+    if (f && !fs.existsSync(f)) throw new Error(`TLS file not found: ${f}`);
   }
   return cfg;
 }
@@ -162,6 +162,6 @@ export function selectInstances(cfg: RuntimeConfig, argv: string[]): InstanceCon
   const list = cfg.instances.filter((i) => i.enabled !== false);
   if (!wanted) return list;
   const one = list.filter((i) => i.instance_id === wanted);
-  if (!one.length) throw new Error(`配置里没有实例 ${wanted}`);
+  if (!one.length) throw new Error(`No instance ${wanted} in the config`);
   return one;
 }

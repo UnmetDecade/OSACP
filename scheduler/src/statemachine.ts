@@ -57,7 +57,7 @@ export function assertTransition(from: TaskStatus, to: TaskStatus, cause?: strin
     throw new ApiError(
       409,
       "STATE_CONFLICT",
-      `非法状态迁移 ${from} → ${to}${cause ? `（触发：${cause}）` : ""}`,
+      `illegal state transition ${from} → ${to}${cause ? ` (cause: ${cause})` : ""}`,
       { from, to, allowed: Object.keys(TRANSITIONS[from] ?? {}) },
     );
   }

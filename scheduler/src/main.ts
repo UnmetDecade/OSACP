@@ -7,6 +7,7 @@ import { sweepDrainTimeouts, sweepHeartbeats } from "./repo/instances.js";
 import { capabilitySnapshot } from "./repo/federation.js";
 import { getFederationParentUrl } from "./federation-state.js";
 import { syncRelays } from "./core/relay.js";
+import { recomputeAllGrants } from "./repo/resources.js";
 import { selfNodeId } from "./node.js";
 
 const server = createServer();
@@ -22,6 +23,8 @@ let federationTimer: NodeJS.Timeout | undefined;
 let relayTimer: NodeJS.Timeout | undefined;
 let reporting = false;
 let syncingRelays = false;
+let grantTimer: NodeJS.Timeout | undefined;
+let granting = false;
 
 /**
  * Three background sweeps:
@@ -43,12 +46,12 @@ async function tick() {
     if (hb.offline.length) console.log("[heartbeat] OFFLINE", hb.offline.join(","));
 
     const drainedOut = await sweepDrainTimeouts();
-    if (drainedOut.length) console.log("[drain] 超时 OFFLINE", drainedOut.join(","));
+    if (drainedOut.length) console.log("[drain] timed out; OFFLINE", drainedOut.join(","));
 
     const r = await sweepLeases();
     if (r.reclaimed.length) {
       console.log(
-        "[lease] 回收",
+        "[lease] reclaimed",
         r.reclaimed.map((x) => `${x.task_id}:${x.cause}->${x.to}`).join(" "),
       );
     }
@@ -89,16 +92,23 @@ async function reportUpstream() {
         // The parent needs for relaying: reachable address, max W, idle count, subtree instance roster.
         url: config.advertiseUrl || null,
         max_builder_score: snap.subtree_max_builder_score,
+        mode: snap.mode,
+        // Cross-mode eligibility uses the ceiling; live is only for same-mode ordering (§12.3).
+        max_builder_ceiling: snap.subtree_max_builder_ceiling,
+        max_builder_live: snap.subtree_max_builder_live,
+        guaranteed_score: snap.subtree_guaranteed_score,
+        available_commitment_mem_bytes: snap.subtree_available_commitment_mem_bytes,
+        pressure_state: snap.subtree_pressure_state,
         idle_builder_count: snap.subtree_idle_builder_count,
         instances: snap.instances,
       }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {
-      console.warn(`[federation] 上报失败 ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      console.warn(`[federation] Report failed ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
   } catch (e) {
-    console.warn("[federation] 上报失败", e instanceof Error ? e.message : e);
+    console.warn("[federation] Report failed", e instanceof Error ? e.message : e);
   } finally {
     reporting = false;
   }
@@ -108,12 +118,36 @@ async function reportUpstream() {
  * Relay sync: pull back the state of tasks running on children. Completely independent of local dispatch;
  * when a child is unreachable only the error is recorded, and the parent task stays as is, never reaped and re-run.
  */
+/**
+ * Grant allocator: recompute per-host fair shares and W_live from the latest pool/usage report.
+ * Claims also trigger a recompute on assignment, so this loop mainly handles demand decay,
+ * pressure recovery and builders that became idle without a new claim.
+ */
+async function grantTick() {
+  if (granting) return;
+  granting = true;
+  try {
+    const hosts = await recomputeAllGrants();
+    const pressured = hosts.filter((h) => h.pressure_state !== "NORMAL");
+    if (pressured.length) {
+      console.log(
+        "[grants] pressure",
+        pressured.map((h) => `${h.host_id}:${h.pressure_state}`).join(" "),
+      );
+    }
+  } catch (e) {
+    console.error("[grants]", e);
+  } finally {
+    granting = false;
+  }
+}
+
 async function relayTick() {
   if (syncingRelays) return;
   syncingRelays = true;
   try {
     const r = await syncRelays();
-    if (r.updated) console.log(`[relay] 同步 ${r.checked} 条，状态更新 ${r.updated} 条`);
+    if (r.updated) console.log(`[relay] Synced ${r.checked} items, updated ${r.updated}`);
   } catch (e) {
     console.error("[relay]", e);
   } finally {
@@ -124,11 +158,11 @@ async function relayTick() {
 server.listen(config.port, config.host, () => {
   console.log(`scheduler listening on ${config.host}:${config.port}`);
   if (!authEnabled()) {
-    console.warn("[auth] 未配置 PCS 公钥或 AUTH_TOKEN：实例/Worker 接口无鉴权，只允许本地开发使用");
+    console.warn("[auth] No PCS public key or AUTH_TOKEN configured: instance/worker endpoints are unauthenticated and must not be exposed");
   } else if (process.env.PCS_PUBLIC_KEY_FILE || process.env.PCS_PUBLIC_KEY) {
-    console.log("[auth] 实例鉴权：ES256 JWT 验签");
+    console.log("[auth] Instance auth: ES256 JWT verification");
   } else {
-    console.warn("[auth] 实例鉴权：共享 AUTH_TOKEN（过渡方案）");
+    console.warn("[auth] Instance auth: shared AUTH_TOKEN (transitional)");
   }
   if (config.loops) {
     timer = setInterval(tick, config.tickMs);
@@ -140,11 +174,14 @@ server.listen(config.port, config.host, () => {
     }
     // Without relays this round just queries an empty table; skipping costs less than checking "are there child nodes".
     relayTimer = setInterval(relayTick, config.relaySyncMs);
+    // Fair-share recomputation; only dynamic instances receive grant rows, so static hosts pay one cheap query.
+    grantTimer = setInterval(grantTick, config.grantIntervalMs);
+    void grantTick();
   }
 });
 
 async function shutdown(signal: string) {
-  console.log(`\n${signal}，正在停止…`);
+  console.log(`\n${signal}: shutting down…`);
   if (timer) clearInterval(timer);
   if (federationTimer) clearInterval(federationTimer);
   if (relayTimer) clearInterval(relayTimer);

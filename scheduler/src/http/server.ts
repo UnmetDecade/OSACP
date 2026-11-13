@@ -39,6 +39,12 @@ import {
   setCapabilities,
   syncConfig,
 } from "../repo/instances.js";
+import {
+  getGrants,
+  getInstanceGrantState,
+  markGrantApplied,
+  markGrantFailed,
+} from "../repo/resources.js";
 
 type Ctx = {
   params: Record<string, string>;
@@ -150,13 +156,66 @@ route(
     const raw = c.query.get("version");
     const version = raw === null ? null : Number(raw);
     if (version !== null && !Number.isFinite(version)) {
-      throw new ApiError(400, "BAD_REQUEST", "version 必须是数字");
+      throw new ApiError(400, "BAD_REQUEST", "version must be a number");
     }
     const cfg = await syncConfig(c.params.id, version);
     return cfg ?? NOT_MODIFIED;
   },
   { auth: true, scopes: ["config:read"] },
 );
+
+// ---------------- Dynamic resource grants (§7.4 / §10)
+// The builder daemon polls its own grant and acks the cgroup generation it actually applied.
+route(
+  "GET",
+  "/v1/instances/:id/grant",
+  async (c) => {
+    assertSelf(c.auth, c.params.id);
+    const state = await getInstanceGrantState(c.params.id);
+    if (!state) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${c.params.id}`);
+    return state;
+  },
+  { auth: true, scopes: ["instance:claim"] },
+);
+route(
+  "POST",
+  "/v1/instances/:id/grant/applied",
+  async (c) => {
+    assertSelf(c.auth, c.params.id);
+    const state = await getInstanceGrantState(c.params.id);
+    if (!state) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${c.params.id}`);
+    const generation = Number(c.body?.generation);
+    if (!Number.isFinite(generation) || generation <= 0) {
+      throw new ApiError(400, "BAD_REQUEST", "generation must be a positive integer");
+    }
+    const error = typeof c.body?.error === "string" ? c.body.error.trim() : "";
+    if (error) {
+      await markGrantFailed({
+        host_id: state.host_id,
+        instance_id: c.params.id,
+        generation,
+        error,
+      });
+      return { ok: false, state: "FAILED" };
+    }
+    return markGrantApplied({
+      host_id: state.host_id,
+      instance_id: c.params.id,
+      generation,
+      cpu_millicores: c.body?.cpu_millicores,
+      memory_bytes: c.body?.memory_bytes,
+      memory_low_bytes: c.body?.memory_low_bytes,
+      memory_high_bytes: c.body?.memory_high_bytes,
+      cpu_weight: c.body?.cpu_weight,
+    });
+  },
+  { auth: true, scopes: ["instance:claim"] },
+);
+// Host-runtime (host identity, same trust boundary as the host roster push) reads every grant on its host.
+route("GET", "/v1/hosts/:id/resource-grants", async (c) => ({
+  host_id: c.params.id,
+  items: await getGrants(c.params.id),
+}));
 
 // ---------------- Claim and execution (Worker protocol)
 route(
@@ -214,7 +273,7 @@ route("GET", "/v1/events", async (c) => {
   const after = Number(c.query.get("after") ?? 0);
   const limit = c.query.get("limit") ? Number(c.query.get("limit")) : undefined;
   if (!Number.isFinite(after) || after < 0) {
-    throw new ApiError(400, "BAD_REQUEST", "after 必须是非负整数");
+    throw new ApiError(400, "BAD_REQUEST", "after must be a non-negative integer");
   }
   const items = await listOutbox(after, limit);
   return { items, next_after: items.length ? Number(items[items.length - 1].event_id) : after };
@@ -284,12 +343,12 @@ route("GET", "/v1/nodes", async () => ({
 // Child schedulers report periodically. parent_node_id is always filled by the receiver with itself, so a child cannot forge its attachment point.
 route("POST", "/v1/nodes/report", (c) => {
   if (!config.federationToken) {
-    throw new ApiError(503, "FEDERATION_DISABLED", "未配置 SCHEDULER_FEDERATION_TOKEN");
+    throw new ApiError(503, "FEDERATION_DISABLED", "SCHEDULER_FEDERATION_TOKEN is not configured");
   }
   const raw = c.headers["x-federation-token"];
   const token = Array.isArray(raw) ? raw[0] : raw;
   if (token !== config.federationToken) {
-    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "结点上报令牌无效");
+    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "node report token is invalid");
   }
   return upsertNodeReport({ ...c.body, parent_node_id: selfNodeId(), role: "node" });
 });
@@ -300,12 +359,12 @@ route("GET", "/v1/federation/parent", async () => ({
 }));
 route("POST", "/v1/federation/parent", async (c) => {
   if (!config.federationToken) {
-    throw new ApiError(503, "FEDERATION_DISABLED", "未配置 SCHEDULER_FEDERATION_TOKEN");
+    throw new ApiError(503, "FEDERATION_DISABLED", "SCHEDULER_FEDERATION_TOKEN is not configured");
   }
   const raw = c.headers["x-federation-token"];
   const token = Array.isArray(raw) ? raw[0] : raw;
   if (token !== config.federationToken) {
-    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "联邦令牌无效");
+    throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "federation token is invalid");
   }
   return { parent_url: setFederationParentUrl(c.body?.parent_url) || null };
 });
@@ -318,7 +377,7 @@ route("GET", "/readyz", async () => {
     "SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'tasks'",
   );
   const ready = !!db && migrated?.n === 1;
-  if (!ready) throw new ApiError(503, "NOT_READY", "数据库或 schema 未就绪");
+  if (!ready) throw new ApiError(503, "NOT_READY", "database or schema is not ready");
   return { ready: true };
 });
 route("GET", "/v1/queue/stats", async () => {
@@ -399,7 +458,7 @@ function readRawBody(req: http.IncomingMessage, limit: number): Promise<Buffer> 
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > limit) {
-        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", `请求体超过 ${limit} 字节`));
+        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", `request body exceeds ${limit} bytes`));
         req.destroy();
         return;
       }
@@ -417,7 +476,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > 2 * 1024 * 1024) {
-        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", "请求体超过 2MB"));
+        reject(new ApiError(413, "PAYLOAD_TOO_LARGE", "request body exceeds 2MB"));
         req.destroy();
         return;
       }
@@ -429,7 +488,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
       try {
         resolve(JSON.parse(raw));
       } catch {
-        reject(new ApiError(400, "BAD_JSON", "请求体不是合法 JSON"));
+        reject(new ApiError(400, "BAD_JSON", "request body is not valid JSON"));
       }
     });
     req.on("error", reject);

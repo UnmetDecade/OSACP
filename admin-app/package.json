@@ -27,5 +27,5 @@
     "typescript": "~7.0.2",
     "vite": "^8.3.6"
   },
-  "description": "AI Agent 计算与调度平台 · 管理应用（React + Vite）"
+  "description": "AI Agent compute and scheduling platform · admin app (React + Vite)"
 }

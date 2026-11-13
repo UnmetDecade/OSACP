@@ -2,7 +2,7 @@
 # Scheduler container entrypoint: authorize SSH → wait for DB → migrate → optional seed → run the scheduler in the foreground.
 set -euo pipefail
 
-: "${DATABASE_URL:?缺少 DATABASE_URL}"
+: "${DATABASE_URL:?DATABASE_URL is required}"
 
 SCHEDULER_INSTANCE_ID="${SCHEDULER_INSTANCE_ID:-scheduler}"
 SCHEDULER_AGENT_PROFILE_ID="${SCHEDULER_AGENT_PROFILE_ID:-agp_scheduler}"
@@ -30,10 +30,10 @@ for i in $(seq 1 60); do
     break
   fi
   if [[ "$i" == "60" ]]; then
-    echo "数据库迁移失败：60 秒内无法连接或迁移未通过" >&2
+    echo "Database migration failed: not connected or not applied within 60 seconds" >&2
     exit 1
   fi
-  echo "等待数据库就绪（$i/60）..."
+  echo "Waiting for the database ($i/60)..."
   sleep 2
 done
 
@@ -57,7 +57,7 @@ for i in $(seq 1 60); do
     break
   fi
   if ! kill -0 "$SCHED_PID" 2>/dev/null; then
-    echo "调度机进程提前退出" >&2
+    echo "The scheduler process exited early" >&2
     exit 1
   fi
   sleep 1
@@ -105,7 +105,7 @@ AGENT_PID=$!
 while kill -0 "$SCHED_PID" 2>/dev/null; do
   if ! kill -0 "$AGENT_PID" 2>/dev/null; then
     wait "$AGENT_PID" 2>/dev/null || true
-    echo "[scheduler-agent] 退出，2 秒后重启" >&2
+    echo "[scheduler-agent] Exited; restarting in 2 seconds" >&2
     sleep 2
     start_agent &
     AGENT_PID=$!

@@ -44,7 +44,7 @@ export class SecretStore {
     try {
       return JSON.parse(fs.readFileSync(this.opts.secretsFile, "utf8")) as Record<string, string>;
     } catch (e) {
-      throw new SecretError("SECRET_STORE_BROKEN", "Secret Store 数据不可读", 503);
+      throw new SecretError("SECRET_STORE_BROKEN", "Secret Store data is unreadable", 503);
     }
   }
 
@@ -52,31 +52,31 @@ export class SecretStore {
     try {
       return JSON.parse(fs.readFileSync(this.opts.policyFile, "utf8")) as Policy;
     } catch (e) {
-      throw new SecretError("SECRET_STORE_BROKEN", "Secret Store 策略不可读", 503);
+      throw new SecretError("SECRET_STORE_BROKEN", "Secret Store policy is unreadable", 503);
     }
   }
 
   resolve(instanceId: string, secretRef: string): { credential: string; expires_at: string } {
-    if (!instanceId) throw new SecretError("SECRET_INSTANCE_REQUIRED", "缺少实例身份", 401);
+    if (!instanceId) throw new SecretError("SECRET_INSTANCE_REQUIRED", "Missing instance identity", 401);
     if (this.revoked.has(instanceId)) {
       this.record("resolve", instanceId, secretRef, "DENY", "INSTANCE_REVOKED");
-      throw new SecretError("INSTANCE_REVOKED", "实例凭据已被吊销", 403);
+      throw new SecretError("INSTANCE_REVOKED", "Instance credentials have been revoked", 403);
     }
     if (!/^secret:\/\/[A-Za-z0-9._\-\/]+$/.test(secretRef)) {
       this.record("resolve", instanceId, secretRef, "DENY", "SECRET_REF_INVALID");
-      throw new SecretError("SECRET_REF_INVALID", "secret_ref 格式非法", 400);
+      throw new SecretError("SECRET_REF_INVALID", "Invalid secret_ref format", 400);
     }
     const policy = this.policy();
     // "*" denotes a platform-wide secret: every enrolled instance can read it (API provider keys written from the console).
     const allowed = [...(policy[instanceId] ?? []), ...(policy["*"] ?? [])];
     if (!allowed.includes(secretRef)) {
       this.record("resolve", instanceId, secretRef, "DENY", "SECRET_NOT_ALLOWED");
-      throw new SecretError("SECRET_NOT_ALLOWED", "该实例无权读取此 secret_ref", 403);
+      throw new SecretError("SECRET_NOT_ALLOWED", "This instance is not allowed to read this secret_ref", 403);
     }
     const value = this.secrets()[secretRef];
     if (typeof value !== "string" || !value) {
       this.record("resolve", instanceId, secretRef, "DENY", "SECRET_NOT_FOUND");
-      throw new SecretError("SECRET_NOT_FOUND", "secret_ref 没有对应值", 404);
+      throw new SecretError("SECRET_NOT_FOUND", "secret_ref has no corresponding value", 404);
     }
     const expiresAt = new Date(Date.now() + this.ttl * 1000).toISOString();
     this.record("resolve", instanceId, secretRef, "ALLOW", "OK", { expires_at: expiresAt });
@@ -89,13 +89,13 @@ export class SecretStore {
    */
   put(secretRef: string, value: string, platformWide = true): { secret_ref: string; updated_at: string } {
     if (!/^secret:\/\/[A-Za-z0-9._\-\/]+$/.test(secretRef)) {
-      throw new SecretError("SECRET_REF_INVALID", "secret_ref 格式非法", 400);
+      throw new SecretError("SECRET_REF_INVALID", "Invalid secret_ref format", 400);
     }
     if (typeof value !== "string" || value.length === 0 || value.length > 8192) {
-      throw new SecretError("SECRET_VALUE_INVALID", "密钥值必须是 1..8192 字符", 400);
+      throw new SecretError("SECRET_VALUE_INVALID", "Secret value must be 1..8192 characters", 400);
     }
     if (/[\r\n\0]/.test(value)) {
-      throw new SecretError("SECRET_VALUE_INVALID", "密钥值不能包含换行或 NUL", 400);
+      throw new SecretError("SECRET_VALUE_INVALID", "Secret value must not contain newlines or NUL", 400);
     }
     const secrets = this.secrets();
     secrets[secretRef] = value;
@@ -112,7 +112,7 @@ export class SecretStore {
   }
 
   revoke(instanceId: string): void {
-    if (!instanceId) throw new SecretError("SECRET_INSTANCE_REQUIRED", "缺少实例 id", 400);
+    if (!instanceId) throw new SecretError("SECRET_INSTANCE_REQUIRED", "Missing instance id", 400);
     this.revoked.add(instanceId);
     this.record("revoke", instanceId, "*", "ALLOW", "REVOKED");
   }
@@ -165,8 +165,8 @@ function writePrivateJson(file: string, data: unknown): void {
 
 export function assertPrivateFile(file: string): void {
   const st = fs.statSync(file);
-  if (!st.isFile()) throw new Error(`${file} 不是普通文件`);
+  if (!st.isFile()) throw new Error(`${file} is not a regular file`);
   if ((st.mode & 0o077) !== 0) {
-    throw new Error(`${file} 权限过宽（必须 0600 或更严格）`);
+    throw new Error(`${file} permissions are too broad (must be 0600 or stricter)`);
   }
 }

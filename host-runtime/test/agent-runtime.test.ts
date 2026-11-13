@@ -139,8 +139,8 @@ const fakeSecret = {
 
 // ---------------------------------------------------------------- profiles
 
-describe("Profile 绑定校验", () => {
-  it("只允许绑定过的 Agent 与 API；信封版本必须匹配", () => {
+describe("Profile binding validation", () => {
+  it("only bound Agents and APIs are allowed, and the envelope version must match", () => {
     const file = {
       agent_profiles: [agentProfile()],
       api_profiles: [apiProfile()],
@@ -171,7 +171,7 @@ describe("Profile 绑定校验", () => {
     );
   });
 
-  it("跨角色、非法 Adapter、实例加载未绑定的 API 都拒绝", () => {
+  it("cross-role, invalid Adapter, and instance loading of an unbound API are all rejected", () => {
     const file = {
       agent_profiles: [agentProfile({ role_id: "scheduler", adapter: "http-local" as const })],
       api_profiles: [apiProfile()],
@@ -205,8 +205,8 @@ describe("Profile 绑定校验", () => {
 
 // ---------------------------------------------------------------- egress
 
-describe("默认拒绝出站", () => {
-  it("拦截元数据、私网、未列白名单与非法协议", async () => {
+describe("outbound traffic is denied by default", () => {
+  it("metadata, private networks, unlisted destinations, and invalid protocols are blocked", async () => {
     assert.equal(isBlockedIp("169.254.169.254"), true);
     assert.equal(isBlockedIp("10.1.2.3"), true);
     assert.equal(isBlockedIp("127.0.0.1"), true);
@@ -238,7 +238,7 @@ describe("默认拒绝出站", () => {
 
 // ---------------------------------------------------------------- tool policy
 
-describe("Tool Policy Guard 固定七步", () => {
+describe("the Tool Policy Guard has a fixed seven-step flow", () => {
   function guard(over: Partial<ConstructorParameters<typeof ToolGuard>[0]> = {}) {
     const audits: ToolAuditRecord[] = [];
     const g = new ToolGuard({
@@ -258,7 +258,7 @@ describe("Tool Policy Guard 固定七步", () => {
     return { g, audits };
   }
 
-  it("身份、白名单、未知工具、阶段、路径、幂等、审计", async () => {
+  it("identity, allowlist, unknown tool, stage, path, idempotency, audit", async () => {
     const { g, audits } = guard();
     await assert.rejects(
       () => g.call({ tool_id: "demo.echo", args: { text: "x" }, tool_token: "wrong" }),
@@ -284,7 +284,7 @@ describe("Tool Policy Guard 固定七步", () => {
     assert.ok(audits.every((a) => !JSON.stringify(a).includes("hi")));
   });
 
-  it("权限留空表示全部工具，显式列出时只允许列出的工具", async () => {
+  it("empty permissions mean all tools; an explicit list allows only the listed tools", async () => {
     const open = guard({ profile: { ...agentProfile(), allowed_tools: [] } });
     const ok = await open.g.call({ tool_id: "demo.echo", args: { text: "hi" }, tool_token: "tok" });
     assert.equal((ok as any).echo, "hi");
@@ -298,7 +298,7 @@ describe("Tool Policy Guard 固定七步", () => {
     );
   });
 
-  it("工作区路径逃逸被拒绝", async () => {
+  it("workspace path escapes are rejected", async () => {
     const { g } = guard();
     for (const p of ["../escape", "/etc/passwd", "a/../../b"]) {
       await assert.rejects(
@@ -308,7 +308,7 @@ describe("Tool Policy Guard 固定七步", () => {
     }
   });
 
-  it("幂等键同参数复用、不同参数拒绝", async () => {
+  it("an idempotency key is reused for identical arguments and rejected for different ones", async () => {
     const { g } = guard();
     const a = await g.call({ tool_id: "demo.echo", args: { text: "a" }, tool_token: "tok", idempotency_key: "k1" });
     const b = await g.call({ tool_id: "demo.echo", args: { text: "a" }, tool_token: "tok", idempotency_key: "k1" });
@@ -319,7 +319,7 @@ describe("Tool Policy Guard 固定七步", () => {
     );
   });
 
-  it("超过 max_turns 拒绝", async () => {
+  it("exceeding max_turns is rejected", async () => {
     const { g } = guard({ maxTurns: 1 });
     await g.call({ tool_id: "demo.echo", args: { text: "1" }, tool_token: "tok" });
     await assert.rejects(
@@ -331,8 +331,8 @@ describe("Tool Policy Guard 固定七步", () => {
 
 // ---------------------------------------------------------------- API adapter
 
-describe("API Adapter 本地代理", () => {
-  it("注入认证头、丢弃 Agent 自带的认证头、不记录正文", async () => {
+describe("API Adapter local proxy", () => {
+  it("auth headers are injected, Agent-supplied auth headers are dropped, and bodies are not logged", async () => {
     const up = await startUpstream((req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ auth: req.headers.authorization ?? null }));
@@ -362,7 +362,7 @@ describe("API Adapter 本地代理", () => {
     await up.close();
   });
 
-  it("未绑定 API 403，未授权 egress 拒绝，配额 429", async () => {
+  it("an unbound API returns 403, unauthorized egress is rejected, and quota returns 429", async () => {
     const up = await startUpstream((_req, res) => {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("ok");
@@ -412,7 +412,7 @@ describe("API Adapter 本地代理", () => {
     await up.close();
   });
 
-  it("可重试失败按 fallback 切换并审计", async () => {
+  it("retryable failures switch to the fallback and are audited", async () => {
     const bad = await startUpstream((_req, res) => {
       res.writeHead(503);
       res.end("down");
@@ -442,10 +442,10 @@ describe("API Adapter 本地代理", () => {
     await good.close();
   });
 
-  it("Secret 被拒绝时失败关闭，不把错误里的凭据带给调用方", async () => {
+  it("a denied Secret fails closed without leaking credentials from the error to the caller", async () => {
     const denied = {
       resolve: async () => {
-        throw new SecretDenied("SECRET_NOT_ALLOWED", "该实例无权读取此 secret_ref");
+        throw new SecretDenied("SECRET_NOT_ALLOWED", "this instance is not allowed to read this secret_ref");
       },
       invalidate: () => {},
     } as unknown as SecretClient;
@@ -471,8 +471,8 @@ describe("API Adapter 本地代理", () => {
 
 // ---------------------------------------------------------------- runner
 
-describe("Agent 执行器", () => {
-  it("通过 stdio Adapter 执行；越权工具被拒绝；产物由 role-agent 上传", async () => {
+describe("Agent executor", () => {
+  it("executes through the stdio Adapter; unauthorized tools are rejected; artifacts are uploaded by role-agent", async () => {
     const ws = fs.mkdtempSync(path.join(TMP, "ws-"));
     const { ctx, uploads } = ctxFor(ws);
     const audits: ToolAuditRecord[] = [];
@@ -491,7 +491,7 @@ describe("Agent 执行器", () => {
     assert.ok(audits.some((a) => a.decision === "ALLOW" && a.tool_id === "demo.echo"));
   });
 
-  it("同角色换 Agent 只换 Profile；Adapter 崩溃按可重试失败上报", async () => {
+  it("switching Agents within a role only swaps the Profile; Adapter crashes report as retryable failures", async () => {
     const wsBeta = fs.mkdtempSync(path.join(TMP, "ws-beta-"));
     const beta = runtimeProfiles({
       agent: agentProfile({

@@ -27,19 +27,19 @@ async function sweep(): Promise<void> {
 }
 
 server.listen(cfg.port, cfg.host, () => {
-  console.log(`platform-control (PCS 替身) 监听 ${cfg.host}:${cfg.port}`);
-  console.log(`  数据库 ${cfg.databaseUrl.replace(/\/\/[^@]+@/, "//***@")}`);
+  console.log(`platform-control (PCS stand-in) listening on ${cfg.host}:${cfg.port}`);
+  console.log(`  Database ${cfg.databaseUrl.replace(/\/\/[^@]+@/, "//***@")}`);
   if (!cfg.imageAllowlist.length) {
-    console.warn("[deploy] PCS_IMAGE_ALLOWLIST 为空：所有部署意图都会被拒绝（默认拒绝）");
+    console.warn("[deploy] PCS_IMAGE_ALLOWLIST is empty: every deployment intent will be rejected (deny by default)");
   } else {
-    console.log(`  镜像白名单 ${cfg.imageAllowlist.join(", ")}`);
+    console.log(`  Image allowlist ${cfg.imageAllowlist.join(", ")}`);
   }
   sweepTimer = setInterval(() => void sweep(), cfg.tickMs);
   void sweep();
 });
 
 async function shutdown(signal: string): Promise<void> {
-  console.log(`\n${signal}，正在停止…`);
+  console.log(`\n${signal}: shutting down…`);
   if (sweepTimer) clearInterval(sweepTimer);
   server.close();
   await pool.end().catch(() => {});

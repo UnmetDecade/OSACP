@@ -16,22 +16,22 @@ travel() {
   sleep 1.5   # wait for the background sweep to run one round
 }
 
-hr "0. 健康检查"
+hr "0. Health check"
 curl -s "$BASE/healthz"; echo
 curl -s "$BASE/readyz"; echo
 
-hr "1. 实例心跳上线"
+hr "1. Instance heartbeat comes online"
 curl -s -X POST "$BASE/v1/instances/heartbeat" \
   -H 'content-type: application/json' \
   -d '{"instance_id":"worker-a","state":"ONLINE","load":{"cpu":0.1}}'; echo
 
-hr "2. 创建任务（P1）"
+hr "2. Create a task (P1)"
 TASK=$(curl -s -X POST "$BASE/v1/tasks" -H 'content-type: application/json' \
   -d '{"task_type":"task.build","priority_class":1,"payload_ref":"svn://demo/r1","payload_schema":"1.0"}')
 TASK_ID=$(echo "$TASK" | jget task_id)
 echo "task_id=$TASK_ID  status=$(echo "$TASK" | jget status)"
 
-hr "3. worker-a 领取"
+hr "3. worker-a claims it"
 A=$(curl -s -X POST "$BASE/v1/claim" -H 'content-type: application/json' \
   -d '{"instance_id":"worker-a"}')
 ATTEMPT=$(echo "$A" | jget attempt_id)
@@ -39,7 +39,7 @@ LEASE=$(echo "$A" | jget lease_token)
 FENCE=$(echo "$A" | jget fencing_token)
 echo "attempt=$ATTEMPT fencing=$FENCE expires=$(echo "$A" | jget lease_expires_at)"
 
-hr "4. 同一实例重复领取（并发上限 1）→ 期望 204"
+hr "4. The same instance claims again (concurrency limit 1) → expect 204"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/claim" \
   -H 'content-type: application/json' -d '{"instance_id":"worker-a"}')
 echo "HTTP $CODE"
@@ -48,12 +48,12 @@ hr "5. start-ack → RUNNING"
 curl -s -X POST "$BASE/v1/attempts/$ATTEMPT/start-ack" -H 'content-type: application/json' \
   -d "{\"lease_token\":\"$LEASE\",\"fencing_token\":$FENCE,\"instance_id\":\"worker-a\"}"; echo
 
-hr "6. 模拟实例失联：时间 +301s，租约过期"
+hr "6. Simulate a lost instance: advance time by 301s so the lease expires"
 travel 301000
 curl -s "$BASE/v1/tasks/$TASK_ID" | python3 -c \
   'import sys,json;d=json.load(sys.stdin);print("task status:",d["status"],"| attempt_count:",d["attempt_count"])'
 
-hr "7. 退避结束后 worker-b 接手（fencing 应为 2）"
+hr "7. worker-b takes over after backoff (fencing should be 2)"
 travel 301000
 # After time advances worker-b is also marked SUSPECT/OFFLINE; send a heartbeat first to bring it back ONLINE
 curl -s -X POST "$BASE/v1/instances/heartbeat" -H 'content-type: application/json' \
@@ -65,19 +65,19 @@ LEASE2=$(echo "$B" | jget lease_token)
 FENCE2=$(echo "$B" | jget fencing_token)
 echo "attempt=$ATTEMPT2 fencing=$FENCE2"
 
-hr "8. 旧 attempt 这时才回写结果（毒消息）→ 期望 FENCING_STALE"
+hr "8. The old attempt writes its result now (poison message) → expect FENCING_STALE"
 curl -s -X POST "$BASE/v1/attempts/$ATTEMPT/result" -H 'content-type: application/json' \
-  -d "{\"lease_token\":\"$LEASE\",\"fencing_token\":$FENCE,\"status\":\"SUCCEEDED\",\"summary\":\"迟到的成功\"}"; echo
+  -d "{\"lease_token\":\"$LEASE\",\"fencing_token\":$FENCE,\"status\":\"SUCCEEDED\",\"summary\":\"late success\"}"; echo
 
-hr "9. 新 attempt 正常完成"
+hr "9. The new attempt completes normally"
 curl -s -X POST "$BASE/v1/attempts/$ATTEMPT2/start-ack" -H 'content-type: application/json' \
   -d "{\"lease_token\":\"$LEASE2\",\"fencing_token\":$FENCE2,\"instance_id\":\"worker-b\"}" >/dev/null
 curl -s -X POST "$BASE/v1/attempts/$ATTEMPT2/result" -H 'content-type: application/json' \
   -d "{\"lease_token\":\"$LEASE2\",\"fencing_token\":$FENCE2,\"status\":\"SUCCEEDED\",\"summary\":\"ok\"}" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print("task:",d["task"]["status"],"attempt:",d["attempt_status"])'
 
-hr "10. 事件时间线（只追加）"
+hr "10. Event timeline (append-only)"
 curl -s "$BASE/v1/tasks/$TASK_ID/events" | python3 "$(dirname "$0")/timeline.py"
 
-hr "11. 队列统计"
+hr "11. Queue stats"
 curl -s "$BASE/v1/queue/stats"; echo

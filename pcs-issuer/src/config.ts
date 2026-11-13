@@ -81,6 +81,10 @@ export interface PcsConfig {
    * only into scheduler containers and never echoed.
    */
   federationToken: string | null;
+  /** Default scheduling mode for newly deployed root schedulers; inherited by their node schedulers and builders. */
+  schedulingMode: "static" | "dynamic";
+  /** JSON overrides for the scheduler's dynamic policy; empty means scheduler defaults. */
+  dynamicPolicyJson: string | null;
   /** Secret Store address for API keys written from the console; when unset, the UI can only fill in secret:// references */
   secretStoreUrl: string | null;
   /** Secret Store admin token (used only for writes, never returned to the browser) */
@@ -94,10 +98,10 @@ function parseHostValueMap(raw: string | undefined, envName: string): Record<str
     const item = part.trim();
     if (!item) continue;
     const eq = item.indexOf("=");
-    if (eq <= 0) throw new Error(`${envName} 每项必须是 host_id=值：${item}`);
+    if (eq <= 0) throw new Error(`${envName} items must be host_id=value: ${item}`);
     const hostId = item.slice(0, eq).trim();
     const value = item.slice(eq + 1).trim();
-    if (!hostId || !value) throw new Error(`${envName} 每项必须是 host_id=值：${item}`);
+    if (!hostId || !value) throw new Error(`${envName} items must be host_id=value: ${item}`);
     out[hostId] = value;
   }
   return out;
@@ -109,10 +113,10 @@ function parseImageMap(raw: string | undefined): Record<string, string> {
     const item = part.trim();
     if (!item) continue;
     const eq = item.indexOf("=");
-    if (eq <= 0) throw new Error(`PCS_BUILDER_IMAGES 每项必须是 os=镜像：${item}`);
+    if (eq <= 0) throw new Error(`PCS_BUILDER_IMAGES items must be os=image: ${item}`);
     const os = item.slice(0, eq).trim();
     const image = item.slice(eq + 1).trim();
-    if (!os || !image) throw new Error(`PCS_BUILDER_IMAGES 每项必须是 os=镜像：${item}`);
+    if (!os || !image) throw new Error(`PCS_BUILDER_IMAGES items must be os=image: ${item}`);
     out[os] = image;
   }
   return out;
@@ -122,7 +126,7 @@ function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} 必须是正数：${raw}`);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number: ${raw}`);
   return n;
 }
 
@@ -152,7 +156,7 @@ export function loadConfig(overrides: Partial<PcsConfig> = {}): PcsConfig {
       if (!raw) return {};
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(`PCS_NETWORK_POLICY_MAP 必须是 JSON 对象：${raw}`);
+        throw new Error(`PCS_NETWORK_POLICY_MAP must be a JSON object: ${raw}`);
       }
       return Object.fromEntries(
         Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
@@ -201,6 +205,8 @@ export function loadConfig(overrides: Partial<PcsConfig> = {}): PcsConfig {
     ),
     schedulerUrls: parseHostValueMap(process.env.PCS_SCHEDULER_URLS, "PCS_SCHEDULER_URLS"),
     federationToken: (process.env.PCS_FEDERATION_TOKEN ?? "").trim() || null,
+    schedulingMode: process.env.PCS_SCHEDULING_MODE === "dynamic" ? "dynamic" : "static",
+    dynamicPolicyJson: (process.env.PCS_DYNAMIC_POLICY ?? "").trim() || null,
     schedulerUrl: (process.env.PCS_SCHEDULER_URL ?? "").trim() || null,
     schedulerSyncUrl: (process.env.PCS_SCHEDULER_SYNC_URL ?? "").trim() || null,
     secretStoreUrl: (process.env.PCS_SECRET_STORE_URL ?? "").trim() || null,
@@ -208,28 +214,28 @@ export function loadConfig(overrides: Partial<PcsConfig> = {}): PcsConfig {
     ...overrides,
   };
   if (Boolean(cfg.tlsCertFile) !== Boolean(cfg.tlsKeyFile)) {
-    throw new Error("PCS_TLS_CERT_FILE 与 PCS_TLS_KEY_FILE 必须同时配置");
+    throw new Error("PCS_TLS_CERT_FILE and PCS_TLS_KEY_FILE must be configured together");
   }
   if (cfg.tlsCertFile && !fs.existsSync(cfg.tlsCertFile)) {
-    throw new Error(`找不到 TLS 证书 ${cfg.tlsCertFile}`);
+    throw new Error(`TLS certificate not found: ${cfg.tlsCertFile}`);
   }
   if (cfg.tlsKeyFile && !fs.existsSync(cfg.tlsKeyFile)) {
-    throw new Error(`找不到 TLS 私钥 ${cfg.tlsKeyFile}`);
+    throw new Error(`TLS private key not found: ${cfg.tlsKeyFile}`);
   }
   if (cfg.requireClientCert && (!cfg.tlsCertFile || !cfg.tlsCaFile)) {
-    throw new Error("PCS_MTLS=1 需要同时配置 TLS 证书与客户端 CA（PCS_TLS_CA_FILE）");
+    throw new Error("PCS_MTLS=1 requires both a TLS certificate and a client CA (PCS_TLS_CA_FILE)");
   }
   if (cfg.tlsCaFile && !fs.existsSync(cfg.tlsCaFile)) {
-    throw new Error(`找不到客户端 CA ${cfg.tlsCaFile}`);
+    throw new Error(`client CA not found: ${cfg.tlsCaFile}`);
   }
   if (!fs.existsSync(cfg.jwtPrivateKeyFile)) {
-    throw new Error(`找不到 JWT 私钥 ${cfg.jwtPrivateKeyFile}，先执行 npm run keygen`);
+    throw new Error(`JWT private key not found: ${cfg.jwtPrivateKeyFile}; run npm run keygen first`);
   }
   if (!fs.existsSync(cfg.commandPrivateKeyFile)) {
-    throw new Error(`找不到命令私钥 ${cfg.commandPrivateKeyFile}，先执行 npm run keygen`);
+    throw new Error(`command private key not found: ${cfg.commandPrivateKeyFile}; run npm run keygen first`);
   }
   if (cfg.credentialKeyFile && !fs.existsSync(cfg.credentialKeyFile)) {
-    throw new Error(`找不到 SSH 凭据密钥 ${cfg.credentialKeyFile}`);
+    throw new Error(`SSH credential key not found: ${cfg.credentialKeyFile}`);
   }
   return cfg;
 }

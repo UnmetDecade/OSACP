@@ -40,7 +40,7 @@ function broker(total = 10 * G, available = 10 * G, cfg = admissionCfg, now?: ()
   );
 }
 
-test("并发申请不能超卖", async () => {
+test("concurrent requests cannot oversubscribe", async () => {
   const b = broker();
   const [a, c] = await Promise.all([b.check(req("rgr_a", 6 * G)), b.check(req("rgr_b", 6 * G))]);
   assert.equal([a, c].filter((r) => r.allowed).length, 1);
@@ -51,7 +51,7 @@ test("并发申请不能超卖", async () => {
   assert.equal(b.summary().task_grants, 1);
 });
 
-test("同一 grant 幂等；不同 attempt 复用同一 grant 冲突", async () => {
+test("the same grant is idempotent; reusing a grant across attempts conflicts", async () => {
   const b = broker();
   const first = await b.check(req("rgr_a", 2 * G));
   const again = await b.check(req("rgr_a", 2 * G));
@@ -65,7 +65,7 @@ test("同一 grant 幂等；不同 attempt 复用同一 grant 冲突", async () 
   );
 });
 
-test("释放后余量归还", async () => {
+test("released capacity is returned", async () => {
   const b = broker();
   assert.equal((await b.check(req("rgr_a", 8 * G))).allowed, true);
   assert.equal((await b.check(req("rgr_b", 8 * G))).allowed, false);
@@ -74,7 +74,7 @@ test("释放后余量归还", async () => {
   assert.equal((await b.check(req("rgr_b", 8 * G))).allowed, true);
 });
 
-test("grant 前缀、类型、上限和实时余量校验", async () => {
+test("grant prefix, type, limits, and live capacity are validated", async () => {
   const b = broker();
   await assert.rejects(
     () => b.check({ ...req("gr_x", G) }),
@@ -99,18 +99,18 @@ test("grant 前缀、类型、上限和实时余量校验", async () => {
   assert.equal(denied.observed.mem_available_bytes, 1 * G);
 });
 
-test("TTL 过期自动回收", async () => {
+test("expired TTLs are reclaimed automatically", async () => {
   let now = 1_000_000;
   const b = broker(10 * G, 10 * G, { ...admissionCfg, grant_ttl_seconds: 10 }, () => now);
   assert.equal((await b.check(req("rgr_a", 8 * G))).allowed, true);
   assert.equal((await b.check(req("rgr_b", 8 * G))).allowed, false);
   assert.equal(b.grants().length, 1);
   now += 11_000;
-  assert.equal(b.grants().length, 0, "过期 grant 不应再出现在对账列表里");
+  assert.equal(b.grants().length, 0, "expired grants should no longer appear in the reconciliation list");
   assert.equal((await b.check(req("rgr_b", 8 * G))).allowed, true);
 });
 
-test("部署占用计入总量，reconciler 重建后不泄漏", async () => {
+test("deployment usage counts toward the total and does not leak after reconciler recreation", async () => {
   const b = broker();
   assert.equal((await b.checkDeployment("rgr_dep", "ins_dep", 7 * G)).allowed, true);
   assert.equal((await b.check(req("rgr_task", 4 * G))).allowed, false);
@@ -126,7 +126,7 @@ test("部署占用计入总量，reconciler 重建后不泄漏", async () => {
   assert.equal(b.summary().deployment_bytes, 10 * G);
 });
 
-test("同实例重新部署不把旧容器占用算进准入", async () => {
+test("redeploying the same instance does not count old container usage toward admission", async () => {
   const b = broker(8 * G, 8 * G);
   b.setDeploymentGrants([{ grant_id: "rgr_old", instance_id: "ins_dep", memory_bytes: 6 * G }]);
 
@@ -136,7 +136,7 @@ test("同实例重新部署不把旧容器占用算进准入", async () => {
   assert.equal((await b.checkDeployment("rgr_new", "ins_dep", 6 * G)).allowed, true);
 });
 
-test("unix socket 权限 0600，客户端可检查与释放", async () => {
+test("the unix socket is mode 0600 and the client can inspect and release", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "admission-test-"));
   const socketPath = path.join(dir, "runtime.sock");
   const b = broker();

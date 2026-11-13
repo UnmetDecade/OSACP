@@ -63,9 +63,9 @@ export class RuntimeState {
         const backup = `${this.file}.corrupt-${Date.now()}`;
         try {
           fs.renameSync(this.file, backup);
-          console.error(`[state] 状态文件损坏，已移到 ${backup}，以空状态启动`);
+          console.error(`[state] State file is corrupt; moved to ${backup} and starting with empty state`);
         } catch {
-          console.error("[state] 状态文件损坏且无法备份", e);
+          console.error("[state] State file is corrupt and could not be backed up", e);
         }
       }
       return structuredClone(EMPTY);

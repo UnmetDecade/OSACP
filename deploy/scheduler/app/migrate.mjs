@@ -226,8 +226,8 @@ var require_postgres_date = __commonJS({
     function bcYearToNegativeYear(year) {
       return -(year - 1);
     }
-    function is0To99(num) {
-      return num >= 0 && num < 100;
+    function is0To99(num2) {
+      return num2 >= 0 && num2 < 100;
     }
   }
 });
@@ -2403,18 +2403,18 @@ var require_buffer_writer = __commonJS({
           oldBuffer.copy(this.buffer, 0, 0, this.offset);
         }
       }
-      addInt32(num) {
+      addInt32(num2) {
         this.ensure(4);
-        this.buffer[this.offset++] = num >>> 24 & 255;
-        this.buffer[this.offset++] = num >>> 16 & 255;
-        this.buffer[this.offset++] = num >>> 8 & 255;
-        this.buffer[this.offset++] = num >>> 0 & 255;
+        this.buffer[this.offset++] = num2 >>> 24 & 255;
+        this.buffer[this.offset++] = num2 >>> 16 & 255;
+        this.buffer[this.offset++] = num2 >>> 8 & 255;
+        this.buffer[this.offset++] = num2 >>> 0 & 255;
         return this;
       }
-      addInt16(num) {
+      addInt16(num2) {
         this.ensure(2);
-        this.buffer[this.offset++] = num >>> 8 & 255;
-        this.buffer[this.offset++] = num >>> 0 & 255;
+        this.buffer[this.offset++] = num2 >>> 8 & 255;
+        this.buffer[this.offset++] = num2 >>> 0 & 255;
         return this;
       }
       addCString(string) {
@@ -5366,7 +5366,81 @@ var TypeOverrides = import_lib.default.TypeOverrides;
 var defaults = import_lib.default.defaults;
 var esm_default = import_lib.default;
 
+// scheduler/src/core/resources.ts
+var MIB = 1024 ** 2;
+var DEFAULT_DYNAMIC_POLICY = {
+  max_instances_per_host: 64,
+  cpu_single_overcommit: 4,
+  overcommit_warn: 2,
+  h_min: 0.05,
+  w_floor: 25,
+  w_degrade_scope: "resource",
+  pressure_enter: { busy: 0.7, pressure: 0.85, critical: 0.95 },
+  pressure_exit: { busy: 0.6, pressure: 0.75, critical: 0.9 },
+  recovery_hold_seconds: 60,
+  grant_update_interval_seconds: 5,
+  reclaim_cooldown_seconds: 3,
+  reclaim_check_window_seconds: 5,
+  reclaim_max_steps: 3,
+  require_applied_before_start: true,
+  idle_floor_cpu_millicores: 50,
+  idle_floor_mem_bytes: 128 * MIB,
+  ewma_alpha: 0.3,
+  dispatch_window_seconds: 15
+};
+var num = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+var ratio = (value, fallback) => {
+  const n = num(value, fallback);
+  return Math.max(0, Math.min(1, n));
+};
+function normalizeDynamicPolicy(input) {
+  const raw = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const enter = raw.pressure_enter ?? {};
+  const exit = raw.pressure_exit ?? {};
+  return {
+    max_instances_per_host: Math.max(1, Math.trunc(num(raw.max_instances_per_host, DEFAULT_DYNAMIC_POLICY.max_instances_per_host))),
+    cpu_single_overcommit: Math.max(1, num(raw.cpu_single_overcommit, DEFAULT_DYNAMIC_POLICY.cpu_single_overcommit)),
+    overcommit_warn: Math.max(0, num(raw.overcommit_warn, DEFAULT_DYNAMIC_POLICY.overcommit_warn)),
+    h_min: ratio(raw.h_min, DEFAULT_DYNAMIC_POLICY.h_min),
+    w_floor: Math.max(0, Math.min(1e3, Math.trunc(num(raw.w_floor, DEFAULT_DYNAMIC_POLICY.w_floor)))),
+    w_degrade_scope: raw.w_degrade_scope === "whole" ? "whole" : "resource",
+    pressure_enter: {
+      busy: ratio(enter.busy, DEFAULT_DYNAMIC_POLICY.pressure_enter.busy),
+      pressure: ratio(enter.pressure, DEFAULT_DYNAMIC_POLICY.pressure_enter.pressure),
+      critical: ratio(enter.critical, DEFAULT_DYNAMIC_POLICY.pressure_enter.critical)
+    },
+    pressure_exit: {
+      busy: ratio(exit.busy, DEFAULT_DYNAMIC_POLICY.pressure_exit.busy),
+      pressure: ratio(exit.pressure, DEFAULT_DYNAMIC_POLICY.pressure_exit.pressure),
+      critical: ratio(exit.critical, DEFAULT_DYNAMIC_POLICY.pressure_exit.critical)
+    },
+    recovery_hold_seconds: Math.max(0, num(raw.recovery_hold_seconds, DEFAULT_DYNAMIC_POLICY.recovery_hold_seconds)),
+    grant_update_interval_seconds: Math.max(1, num(raw.grant_update_interval_seconds, DEFAULT_DYNAMIC_POLICY.grant_update_interval_seconds)),
+    reclaim_cooldown_seconds: Math.max(0, num(raw.reclaim_cooldown_seconds, DEFAULT_DYNAMIC_POLICY.reclaim_cooldown_seconds)),
+    reclaim_check_window_seconds: Math.max(1, num(raw.reclaim_check_window_seconds, DEFAULT_DYNAMIC_POLICY.reclaim_check_window_seconds)),
+    reclaim_max_steps: Math.max(1, Math.trunc(num(raw.reclaim_max_steps, DEFAULT_DYNAMIC_POLICY.reclaim_max_steps))),
+    require_applied_before_start: raw.require_applied_before_start === void 0 ? DEFAULT_DYNAMIC_POLICY.require_applied_before_start : Boolean(raw.require_applied_before_start),
+    idle_floor_cpu_millicores: Math.max(0, Math.trunc(num(raw.idle_floor_cpu_millicores, DEFAULT_DYNAMIC_POLICY.idle_floor_cpu_millicores))),
+    idle_floor_mem_bytes: Math.max(0, Math.trunc(num(raw.idle_floor_mem_bytes, DEFAULT_DYNAMIC_POLICY.idle_floor_mem_bytes))),
+    ewma_alpha: ratio(raw.ewma_alpha, DEFAULT_DYNAMIC_POLICY.ewma_alpha),
+    dispatch_window_seconds: Math.max(1, num(raw.dispatch_window_seconds, DEFAULT_DYNAMIC_POLICY.dispatch_window_seconds))
+  };
+}
+
 // scheduler/src/config.ts
+function dynamicPolicyFromEnv() {
+  const raw = (process.env.DYNAMIC_POLICY ?? "").trim();
+  if (!raw) return normalizeDynamicPolicy({});
+  try {
+    return normalizeDynamicPolicy(JSON.parse(raw));
+  } catch {
+    console.warn("[config] DYNAMIC_POLICY is not valid JSON; using the default dynamic policy");
+    return normalizeDynamicPolicy({});
+  }
+}
 var config = {
   port: Number(process.env.PORT ?? 7801),
   // Listen on loopback by default: expose externally only through the control-plane reverse proxy + mTLS, never bind the port directly to a NIC
@@ -5397,13 +5471,21 @@ var config = {
   relaySyncMs: Math.max(
     250,
     Number(process.env.SCHEDULER_RELAY_SYNC_MS ?? 2e3) || 2e3
+  ),
+  // Scheduling mode is fixed when the root scheduler is deployed and inherited by node schedulers and builders.
+  schedulingMode: process.env.SCHEDULING_MODE === "dynamic" ? "dynamic" : "static",
+  dynamicPolicy: dynamicPolicyFromEnv(),
+  // Grant recomputation cadence; events (claim/release/pressure change) also trigger a recompute.
+  grantIntervalMs: Math.max(
+    1e3,
+    Number(process.env.GRANT_UPDATE_INTERVAL_MS ?? 5e3) || 5e3
   )
 };
 if (Boolean(config.tlsCertFile) !== Boolean(config.tlsKeyFile)) {
-  throw new Error("SCHEDULER_TLS_CERT_FILE \u4E0E SCHEDULER_TLS_KEY_FILE \u5FC5\u987B\u540C\u65F6\u914D\u7F6E");
+  throw new Error("SCHEDULER_TLS_CERT_FILE and SCHEDULER_TLS_KEY_FILE must be configured together");
 }
 if (config.mtls && (!config.tlsCertFile || !config.tlsCaFile)) {
-  throw new Error("SCHEDULER_MTLS=1 \u9700\u8981\u540C\u65F6\u914D\u7F6E TLS \u8BC1\u4E66\u4E0E\u5BA2\u6237\u7AEF CA\uFF08SCHEDULER_TLS_CA_FILE\uFF09");
+  throw new Error("SCHEDULER_MTLS=1 requires both a TLS certificate and a client CA (SCHEDULER_TLS_CA_FILE)");
 }
 
 // scheduler/src/migrate.ts
@@ -5447,4 +5529,5 @@ await runFile("004_chat_console.sql");
 await runFile("005_essentials.sql");
 await runFile("006_capability.sql");
 await runFile("007_relay.sql");
+await runFile("008_dynamic_scheduling.sql");
 process.exit(0);

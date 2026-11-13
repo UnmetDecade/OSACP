@@ -168,11 +168,11 @@ const report = {
 console.log(JSON.stringify(report, null, 2));
 
 if (finished !== count || pending.size) {
-  console.error(`FAIL - 完成 ${finished}/${count}，超时 ${pending.size}`);
+  console.error(`FAIL - completed ${finished}/${count}, timed out ${pending.size}`);
   process.exit(1);
 }
 if (report.oom_kill.delta && report.oom_kill.delta > 0) {
-  console.error(`FAIL - 运行期间发生 ${report.oom_kill.delta} 次 OOM kill`);
+  console.error(`FAIL - ${report.oom_kill.delta} OOM kills occurred during the run`);
   process.exit(1);
 }
-console.log(`OK - ${finished}/${count} 完成，p95 ${pct(0.95)}ms，OOM kill 增量 ${report.oom_kill.delta ?? "n/a"}`);
+console.log(`OK - ${finished}/${count} completed, p95 ${pct(0.95)}ms, OOM kill delta ${report.oom_kill.delta ?? "n/a"}`);

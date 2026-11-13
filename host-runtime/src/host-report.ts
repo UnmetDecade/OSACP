@@ -12,6 +12,8 @@ export interface ReportInput {
   engineHealthy: boolean;
   /** Native instances have no container; the Reconciler generates a running record of the same shape. */
   deployments?: Array<Record<string, unknown>>;
+  /** cgroup v2 pool snapshot; absent or unavailable leaves dynamic scheduling unenforced. */
+  pool?: Record<string, unknown>;
 }
 
 /** Corresponds to host-runtime-spec §6.4. Only containers whose labels carry platform.* are reported. */
@@ -41,6 +43,7 @@ export async function buildReport(input: ReportInput): Promise<Record<string, un
       swap_used_bytes: input.sample.swap_used_bytes,
       disk: input.sample.disk,
       pids_used: input.sample.pids_used,
+      ...(input.pool ? { pool: input.pool } : {}),
     },
     containers: [
       ...containers.map((c) => ({

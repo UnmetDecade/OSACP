@@ -2,9 +2,15 @@ import { q, q1, tx } from "../db.js";
 import { ApiError } from "../errors.js";
 import {
   computeCapabilityScore,
+  dynamicGuaranteedScore,
+  dynamicLiveScore,
   normalizeCapabilityDetail,
+  splitCapability,
   type CapabilityDetail,
 } from "../capability.js";
+
+const GIB = 1024 ** 3;
+const nonNeg = (value: unknown): number => Math.max(0, Math.trunc(Number(value) || 0));
 
 export interface RegisterInput {
   instance_id: string;
@@ -20,6 +26,11 @@ export interface RegisterInput {
   /** Capability score 0–1000; omitted means compute from capability_detail, and omitting both keeps the old value */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
+  /** Deployment scheduling mode; omitted keeps the recorded mode (new rows default to static). */
+  scheduling_mode?: "static" | "dynamic";
+  /** Instance cap from the deployment resource profile; omitted falls back to the capability detail. */
+  cap_cpu_millicores?: number;
+  cap_mem_bytes?: number;
   config_version: number;
   protocol_version?: string;
   payload_schemas?: string[];
@@ -31,10 +42,10 @@ export interface RegisterInput {
  */
 export async function register(input: RegisterInput) {
   if (!input.instance_id || !input.role_id || !input.host_id) {
-    throw new ApiError(400, "BAD_REQUEST", "instance_id / role_id / host_id 必填");
+    throw new ApiError(400, "BAD_REQUEST", "instance_id / role_id / host_id are required");
   }
   const host = await q1("SELECT host_id FROM hosts WHERE host_id = $1", [input.host_id]);
-  if (!host) throw new ApiError(409, "HOST_UNKNOWN", `主机未注册: ${input.host_id}`);
+  if (!host) throw new ApiError(409, "HOST_UNKNOWN", `host not registered: ${input.host_id}`);
 
   // On first registration, freeze the declared capabilities as a ceiling; re-registration does not raise it (§7.3: only narrow)
   const declared = input.capabilities ?? { healthy: [] };
@@ -50,16 +61,59 @@ export async function register(input: RegisterInput) {
         ? computeCapabilityScore(detail)
         : null;
 
+  const mode =
+    input.scheduling_mode === "dynamic"
+      ? "dynamic"
+      : input.scheduling_mode === "static"
+        ? "static"
+        : null;
+  const capCpu =
+    input.cap_cpu_millicores !== undefined
+      ? nonNeg(input.cap_cpu_millicores)
+      : detail?.cores !== undefined
+        ? Math.round(nonNeg(detail.cores) * 1000)
+        : null;
+  const capMem =
+    input.cap_mem_bytes !== undefined
+      ? nonNeg(input.cap_mem_bytes)
+      : detail?.mem_gb !== undefined
+        ? Math.round(nonNeg(detail.mem_gb) * GIB)
+        : null;
+  // Dynamic mode records the freeze-time split immediately; the allocator refreshes W_live once
+  // the host reports real usage. Static rows keep the single legacy W in every score column.
+  const split = detail ? splitCapability(detail, {
+    cpu_cores: (capCpu ?? Math.round(nonNeg(detail.cores) * 1000)) / 1000,
+    mem_gb: (capMem ?? Math.round(nonNeg(detail.mem_gb) * GIB)) / GIB,
+  }) : null;
+  const isDynamic = mode === "dynamic";
+  const scoreCeiling = split ? (isDynamic ? split.ceiling : score) : null;
+  const scoreLive = split
+    ? (isDynamic ? dynamicLiveScore(split, 1, { scope: "resource" }) : score)
+    : null;
+  const scoreGuaranteed = split && isDynamic
+    ? dynamicGuaranteedScore(split, {
+        cpu_cores: (capCpu ?? 0) / 1000,
+        mem_gb: (capMem ?? 0) / GIB,
+      })
+    : scoreCeiling;
+
   return tx(async (c) => {
     const res = await c.query(
       `INSERT INTO role_instances (
          instance_id, role_id, host_id, state, agent_profile_id, allowed_task_types,
          capabilities, config_version, protocol_version, payload_schemas,
          capability_ceiling, drain_deadline_at, last_heartbeat_at, updated_at,
-         agent_profile_version, api_profile_ids, capability_score, capability_detail)
+         agent_profile_version, api_profile_ids, capability_score, capability_detail,
+         scheduling_mode, cap_cpu_millicores, cap_mem_bytes,
+         capability_static_score, capability_ceiling_score, capability_live_score,
+         capability_dispatch_score, capability_guaranteed_score, capability_updated_at)
        VALUES ($1,$2,$3,'STARTING',$4,$5,$6,$7,$8,COALESCE($9, ARRAY['1.0']),
                $10, NULL, app_now(), app_now(), $11, $12::text[],
-               COALESCE($13, 0), COALESCE($14::jsonb, '{}'::jsonb))
+               COALESCE($13, 0), COALESCE($14::jsonb, '{}'::jsonb),
+               COALESCE($15, 'static'), COALESCE($16, 0), COALESCE($17, 0),
+               COALESCE($18, 0), COALESCE($19, COALESCE($13, 0)), COALESCE($20, COALESCE($13, 0)),
+               COALESCE($20, COALESCE($13, 0)), COALESCE($21, COALESCE($19, COALESCE($13, 0))),
+               CASE WHEN $13 IS NULL AND $14 IS NULL THEN NULL ELSE app_now() END)
        ON CONFLICT (instance_id) DO UPDATE SET
          role_id = EXCLUDED.role_id,
          host_id = EXCLUDED.host_id,
@@ -73,6 +127,16 @@ export async function register(input: RegisterInput) {
          payload_schemas = EXCLUDED.payload_schemas,
          capability_score = COALESCE($13, role_instances.capability_score),
          capability_detail = COALESCE($14::jsonb, role_instances.capability_detail),
+         scheduling_mode = COALESCE($15, role_instances.scheduling_mode),
+         cap_cpu_millicores = COALESCE($16, role_instances.cap_cpu_millicores),
+         cap_mem_bytes = COALESCE($17, role_instances.cap_mem_bytes),
+         capability_static_score = COALESCE($18, role_instances.capability_static_score),
+         capability_ceiling_score = COALESCE($19, role_instances.capability_ceiling_score),
+         capability_live_score = COALESCE($20, role_instances.capability_live_score),
+         capability_dispatch_score = COALESCE($20, role_instances.capability_dispatch_score),
+         capability_guaranteed_score = COALESCE($21, role_instances.capability_guaranteed_score),
+         capability_updated_at = CASE WHEN $13 IS NULL AND $14 IS NULL
+                                      THEN role_instances.capability_updated_at ELSE app_now() END,
          -- Registration means "a new process has started": the previous process's drain / heartbeat-timeout state is discarded.
          -- Otherwise the DRAINING heartbeat sent when the previous process exits would leave this instance stuck forever.
          state = CASE WHEN role_instances.state IN ('OFFLINE','FAILED','DRAINING','SUSPECT')
@@ -96,6 +160,13 @@ export async function register(input: RegisterInput) {
         input.api_profile_ids ?? [],
         score,
         detail === null ? null : JSON.stringify(detail),
+        mode,
+        capCpu,
+        capMem,
+        split?.static_score ?? null,
+        scoreCeiling,
+        scoreLive,
+        scoreGuaranteed,
       ],
     );
     return res.rows[0];
@@ -108,6 +179,8 @@ export interface HeartbeatInput {
   load?: Record<string, unknown>;
   capabilities?: { healthy: string[]; unhealthy?: string[] };
   config_version?: number;
+  /** Optional direct usage report; hosts that report a pool send per-instance usage there instead. */
+  usage?: { cpu_millicores?: number; mem_bytes?: number };
 }
 
 export async function heartbeat(input: HeartbeatInput) {
@@ -123,7 +196,10 @@ export async function heartbeat(input: HeartbeatInput) {
                     END,
             load = COALESCE($3, load),
             capabilities = COALESCE($4, capabilities),
-            config_version = COALESCE($5, config_version)
+            config_version = COALESCE($5, config_version),
+            usage_cpu_millicores = COALESCE($6, usage_cpu_millicores),
+            usage_mem_bytes = COALESCE($7::bigint, usage_mem_bytes),
+            usage_updated_at = CASE WHEN $6 IS NULL AND $7 IS NULL THEN usage_updated_at ELSE app_now() END
       WHERE instance_id = $1
       RETURNING instance_id, state, config_version, host_id`,
     [
@@ -132,9 +208,11 @@ export async function heartbeat(input: HeartbeatInput) {
       input.load === undefined ? null : JSON.stringify(input.load),
       input.capabilities === undefined ? null : JSON.stringify(input.capabilities),
       input.config_version ?? null,
+      input.usage?.cpu_millicores === undefined ? null : nonNeg(input.usage.cpu_millicores),
+      input.usage?.mem_bytes === undefined ? null : nonNeg(input.usage.mem_bytes),
     ],
   );
-  if (!rows.length) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${input.instance_id}`);
+  if (!rows.length) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
   const row = rows[0];
 
   // The heartbeat response carries host state and config version (§7.2), so the instance can self-throttle and pull config on demand
@@ -220,14 +298,14 @@ export async function setCapabilities(instanceId: string, input: CapabilitiesInp
     const inst = (
       await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])
     ).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
 
     const declared = input.declared ?? {};
     const allowed: string[] = inst.allowed_task_types ?? [];
     const nextTaskTypes = declared.task_types ?? allowed;
     const extraTypes = nextTaskTypes.filter((t) => !allowed.includes(t));
     if (extraTypes.length) {
-      throw new ApiError(403, "CAPABILITY_MISMATCH", "只能收窄任务类型，不能扩大", {
+      throw new ApiError(403, "CAPABILITY_MISMATCH", "task types can only be narrowed, not expanded", {
         extra: extraTypes,
         allowed,
       });
@@ -241,7 +319,7 @@ export async function setCapabilities(instanceId: string, input: CapabilitiesInp
     const nextHealthy = declared.capabilities ?? current.healthy ?? [];
     const extraCaps = nextHealthy.filter((x) => !ceiling.includes(x));
     if (extraCaps.length) {
-      throw new ApiError(403, "CAPABILITY_MISMATCH", "只能收窄能力，不能扩大", {
+      throw new ApiError(403, "CAPABILITY_MISMATCH", "capabilities can only be narrowed, not expanded", {
         extra: extraCaps,
         ceiling,
       });
@@ -283,16 +361,16 @@ export async function drain(
 ) {
   const seconds = Number(input.timeout_seconds ?? 300);
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new ApiError(400, "BAD_REQUEST", "timeout_seconds 必须是正数");
+    throw new ApiError(400, "BAD_REQUEST", "timeout_seconds must be positive");
   }
 
   return tx(async (c) => {
     const inst = (
       await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])
     ).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
     if (!["ONLINE", "SUSPECT", "DRAINING"].includes(inst.state)) {
-      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `实例状态 ${inst.state}，不能 drain`);
+      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `instance state is ${inst.state}; cannot drain`);
     }
 
     // Idempotent: if already draining, keep the original deadline; repeated calls do not extend it
@@ -331,10 +409,10 @@ export async function resume(instanceId: string) {
     const inst = (
       await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])
     ).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
     if (inst.state === "ONLINE") return { instance_id: instanceId, state: "ONLINE", idempotent: true };
     if (inst.state !== "DRAINING") {
-      throw new ApiError(409, "STATE_CONFLICT", `实例状态 ${inst.state}，不能 resume`);
+      throw new ApiError(409, "STATE_CONFLICT", `instance state is ${inst.state}; cannot resume`);
     }
     const row = (
       await c.query(
@@ -361,7 +439,7 @@ export async function deregister(
     const inst = (
       await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])
     ).rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${instanceId}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
 
     const active = await c.query(
       `SELECT count(*)::int AS n FROM leases
@@ -370,7 +448,7 @@ export async function deregister(
     );
     const activeAttempts = active.rows[0].n;
     if (activeAttempts > 0 && !input.force) {
-      throw new ApiError(409, "STATE_CONFLICT", "还有在途任务，不能注销", {
+      throw new ApiError(409, "STATE_CONFLICT", "there are still in-flight tasks; cannot deregister", {
         active_attempts: activeAttempts,
       });
     }
@@ -398,7 +476,7 @@ export async function deregister(
  */
 export async function syncConfig(instanceId: string, version?: number | null) {
   const inst = await q1<any>(`SELECT * FROM role_instances WHERE instance_id = $1`, [instanceId]);
-  if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${instanceId}`);
+  if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
 
   const current = Number(inst.config_version);
   if (version !== undefined && version !== null && Number(version) === current) return null;
@@ -413,6 +491,19 @@ export async function syncConfig(instanceId: string, version?: number | null) {
     },
     api_profiles: inst.api_profile_ids ?? [],
     resource_profile: null,
+    scheduling_mode: inst.scheduling_mode ?? "static",
+    capacity: {
+      cap_cpu_millicores: Number(inst.cap_cpu_millicores ?? 0),
+      cap_mem_bytes: Number(inst.cap_mem_bytes ?? 0),
+    },
+    capability: {
+      schema_version: Number(inst.capability_schema_version ?? 1),
+      static_score: Number(inst.capability_static_score ?? 0),
+      ceiling: Number(inst.capability_ceiling_score ?? inst.capability_score ?? 0),
+      live: Number(inst.capability_live_score ?? inst.capability_score ?? 0),
+      dispatch: Number(inst.capability_dispatch_score ?? inst.capability_score ?? 0),
+      guaranteed: Number(inst.capability_guaranteed_score ?? inst.capability_score ?? 0),
+    },
     allowed_task_types: inst.allowed_task_types,
     capabilities: inst.capabilities,
     drain: {

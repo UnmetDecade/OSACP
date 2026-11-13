@@ -39,14 +39,14 @@ function safeEqual(a: string, b: string): boolean {
 function bearer(req: http.IncomingMessage): string {
   const header = req.headers.authorization ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(header);
-  if (!m) throw new ApiError(401, "UNAUTHENTICATED", "缺少 Bearer 令牌");
+  if (!m) throw new ApiError(401, "UNAUTHENTICATED", "missing Bearer token");
   return m[1];
 }
 
 export function requireInstanceAuth(req: http.IncomingMessage): AuthContext | null {
   if (jwtEnabled()) {
     const claims = verifyJwt(bearer(req), { issuer: "platform-control", audience: "scheduler" });
-    if (!claims.sub) throw new ApiError(401, "TOKEN_INVALID", "实例令牌缺少 sub");
+    if (!claims.sub) throw new ApiError(401, "TOKEN_INVALID", "instance token is missing sub");
     return {
       kind: "jwt",
       instance_id: claims.sub,
@@ -58,7 +58,7 @@ export function requireInstanceAuth(req: http.IncomingMessage): AuthContext | nu
   const expected = authToken();
   if (!expected) return null;
   if (!safeEqual(bearer(req), expected)) {
-    throw new ApiError(401, "UNAUTHENTICATED", "令牌无效");
+    throw new ApiError(401, "UNAUTHENTICATED", "invalid token");
   }
   return { kind: "shared", instance_id: null, scopes: [] };
 }
@@ -67,7 +67,7 @@ export function requireInstanceAuth(req: http.IncomingMessage): AuthContext | nu
 export function assertSelf(auth: AuthContext | null, instanceId: string | undefined): void {
   if (auth?.kind !== "jwt") return;
   if (!instanceId || instanceId !== auth.instance_id) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "实例令牌只能操作自身实例", {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "instance tokens may only operate on their own instance", {
       token_sub: auth.instance_id,
       requested: instanceId ?? null,
     });
@@ -77,6 +77,6 @@ export function assertSelf(auth: AuthContext | null, instanceId: string | undefi
 /** Approvals no longer accept shared admin tokens: either a PCS public key is available for verification, or reject (fail closed). */
 export function requireApprovalConfigured(): void {
   if (!jwtEnabled()) {
-    throw new ApiError(503, "APPROVAL_NOT_CONFIGURED", "未配置 PCS 公钥，审批接口不可用");
+    throw new ApiError(503, "APPROVAL_NOT_CONFIGURED", "PCS public key is not configured; approval endpoints are unavailable");
   }
 }

@@ -27,7 +27,7 @@ export function loadCredentialKey(file: string | null): Buffer | null {
   const raw = fs.readFileSync(file);
   const key = parseKey(raw);
   if (key.length !== 32) {
-    throw new Error(`SSH 凭据密钥必须是 32 字节（当前 ${key.length}）：${file}`);
+    throw new Error(`the SSH credential key must be 32 bytes (currently ${key.length}): ${file}`);
   }
   return key;
 }
@@ -90,23 +90,23 @@ export function resolveAuthType(
   opts: { optional?: boolean } = {},
 ): "key" | "password" | null {
   if (password && /[\r\n\0]/.test(password)) {
-    throw new PcsError(400, "INVALID_PASSWORD", "密码不能包含换行或空字节");
+    throw new PcsError(400, "INVALID_PASSWORD", "password must not contain newlines or null bytes");
   }
   if (privateKey && password) {
-    throw new PcsError(400, "CREDENTIAL_CONFLICT", "私钥和密码只填一个");
+    throw new PcsError(400, "CREDENTIAL_CONFLICT", "provide either a private key or a password, not both");
   }
   if (privateKey) {
     if (!looksLikePrivateKey(privateKey)) {
-      throw new PcsError(400, "INVALID_PRIVATE_KEY", "私钥看起来不是 PEM/OpenSSH 私钥");
+      throw new PcsError(400, "INVALID_PRIVATE_KEY", "the private key does not look like a PEM/OpenSSH private key");
     }
     return "key";
   }
   if (password) {
     if (password.length > 1024) {
-      throw new PcsError(400, "INVALID_PASSWORD", "密码过长");
+      throw new PcsError(400, "INVALID_PASSWORD", "password is too long");
     }
     return "password";
   }
   if (opts.optional) return null;
-  throw new PcsError(400, "CREDENTIAL_REQUIRED", "需要填写 SSH 密码或私钥");
+  throw new PcsError(400, "CREDENTIAL_REQUIRED", "an SSH password or private key is required");
 }

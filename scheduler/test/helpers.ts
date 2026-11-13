@@ -17,6 +17,8 @@ const TABLES = [
   "approvals",
   "task_events",
   "leases",
+  "resource_grants",
+  "host_resource_pools",
   "resource_reservations",
   "task_attempts",
   "tasks",
@@ -38,7 +40,8 @@ export async function reset(): Promise<void> {
     `UPDATE scheduler_config SET global_limit = 100, role_pool_limit = 20, instance_limit = 1,
             task_type_limit = 10, aging_after_seconds = 600, lease_seconds = 300,
             start_window_seconds = 30, suspect_after_seconds = 45, offline_after_seconds = 90,
-            retry_backoff_seconds = ARRAY[300, 900, 2700]`,
+            retry_backoff_seconds = ARRAY[300, 900, 2700],
+            dynamic_policy = '{}'::jsonb`,
   );
 
   await q(
@@ -54,7 +57,7 @@ export async function reset(): Promise<void> {
   );
   await q(
     `INSERT INTO workflow_templates (workflow_template_id, name, version, phases, approval_policy_ref)
-     VALUES ('wft_test','测试流程','1.0',
+     VALUES ('wft_test','Test Workflow','1.0',
        '[{"phase":"EXECUTE","task_type":"task.build"},
          {"phase":"REVIEW","task_type":"task.review.snapshot"},
          {"phase":"APPROVE","action_scope":["svn.commit"],"artifact_required":true},
@@ -97,7 +100,7 @@ export async function newTask(input: Partial<CreateTaskInput> = {}) {
 
 export async function claimOrFail(instanceId: string): Promise<Assignment> {
   const a = await claim({ instance_id: instanceId });
-  if (!a) throw new Error(`${instanceId} 没有领到任务`);
+  if (!a) throw new Error(`${instanceId} did not claim a task`);
   return a;
 }
 

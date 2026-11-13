@@ -57,7 +57,7 @@ function call<T>(socketPath: string, method: string, path: string, body?: unknow
           try {
             data = text ? JSON.parse(text) : {};
           } catch {
-            return reject(new Error(`host admission 返回非 JSON：${text.slice(0, 200)}`));
+            return reject(new Error(`host admission returned non-JSON: ${text.slice(0, 200)}`));
           }
           if (!res.statusCode || res.statusCode >= 400) {
             const err = data.error ?? {};

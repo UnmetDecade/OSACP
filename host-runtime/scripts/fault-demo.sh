@@ -23,7 +23,7 @@ for t in json.load(sys.stdin)["items"]:
     print(f"{tid:<22} {st:<10} {who}")'
 }
 
-hr "0. 清库、调整演示用参数、起两个实例"
+hr "0. Reset the database, tune demo settings, start two instances"
 "$DIR/scripts/stop.sh" builder-ubuntu22-a builder-ubuntu24-a >/dev/null 2>&1 || true
 "$SCHEDULER_DIR/scripts/reset.sh" >/dev/null
 docker exec "$PG" psql -U postgres -d scheduler -q -c "
@@ -42,7 +42,7 @@ export RUNTIME_CONFIG=run/runtime.demo.json
 "$DIR/scripts/start.sh" builder-ubuntu22-a builder-ubuntu24-a
 sleep 3
 
-hr "1. 提交 2 个任务，两个实例各跑一个"
+hr "1. Submit 2 tasks, one to each instance"
 for i in 1 2; do
   curl -s -X POST "$BASE/v1/tasks" -H 'content-type: application/json' \
     -d "{\"task_type\":\"task.build\",\"priority_class\":1,\"payload_ref\":\"svn://fault/r$i\"}" >/dev/null
@@ -50,26 +50,26 @@ done
 sleep 3
 tasks_json
 
-hr "2. 强杀 builder-ubuntu22-a（任务还在跑，租约未释放）"
+hr "2. SIGKILL builder-ubuntu22-a (task still running, lease not released)"
 "$DIR/scripts/stop.sh" --force builder-ubuntu22-a
 sleep 1
 tasks_json
 
-hr "3. 等 7s：租约过期，调度机回收、回队"
+hr "3. Wait 7s: the lease expires, the scheduler reclaims and requeues"
 sleep 7
 tasks_json
 
-hr "4. 等 8s：退避结束，builder-ubuntu24-a 接手同一个任务（attempt #2）"
+hr "4. Wait 8s: backoff ends and builder-ubuntu24-a takes over the same task (attempt #2)"
 sleep 8
 tasks_json
 
-hr "5. 等 10s：任务完成"
+hr "5. Wait 10s: the task completes"
 sleep 10
 tasks_json
-echo "--- builder-ubuntu24-a 日志："
-grep -E "开始|完成|续租" "$DIR/run/builder-ubuntu24-a.log" | tail -6
+echo "--- builder-ubuntu24-a log:"
+grep -E "Starting|Finished|lease renewed" "$DIR/run/builder-ubuntu24-a.log" | tail -6
 
-hr "6. builder-ubuntu22-a 重启归队"
+hr "6. builder-ubuntu22-a restarts and rejoins"
 "$DIR/scripts/start.sh" builder-ubuntu22-a
 sleep 4
 curl -s "$BASE/v1/instances" | python3 -c '
@@ -77,9 +77,9 @@ import sys, json
 for i in json.load(sys.stdin)["items"]:
     if i["instance_id"].startswith("builder"):
         iid = i["instance_id"]; st = i["state"]; age = i["heartbeat_age_s"]
-        print(f"{iid:<10} {st:<8} 心跳 {age}s 前")'
+        print(f"{iid:<10} {st:<8} heartbeat {age}s ago")'
 
-hr "7. 最终状态"
+hr "7. Final state"
 tasks_json
-echo "--- 队列统计："
+echo "--- Queue stats:"
 curl -s "$BASE/v1/queue/stats"; echo

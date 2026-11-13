@@ -7,12 +7,12 @@ force=""
 
 for id in "$@"; do
   pidfile="$DIR/run/$id.pid"
-  if [[ ! -f "$pidfile" ]]; then echo "$id 没在运行"; continue; fi
+  if [[ ! -f "$pidfile" ]]; then echo "$id is not running"; continue; fi
   pid="$(cat "$pidfile")"
   if [[ -n "$force" ]]; then
-    kill -9 "$pid" 2>/dev/null && echo "$id 已强杀（模拟崩溃）"
+    kill -9 "$pid" 2>/dev/null && echo "$id killed with SIGKILL (simulated crash)"
   else
-    kill "$pid" 2>/dev/null && echo "$id 收到 SIGTERM，drain 中"
+    kill "$pid" 2>/dev/null && echo "$id received SIGTERM; draining"
   fi
   rm -f "$pidfile"
 done

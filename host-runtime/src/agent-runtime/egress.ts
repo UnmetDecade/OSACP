@@ -82,26 +82,26 @@ export async function assertEgressAllowed(
   opts: EgressPolicyOptions,
 ): Promise<void> {
   if (!policyName) {
-    throw new EgressDenied("EGRESS_POLICY_REQUIRED", "API Profile 未声明 egress 策略，默认拒绝");
+    throw new EgressDenied("EGRESS_POLICY_REQUIRED", "API Profile did not declare an egress policy; denying by default");
   }
   const allow = opts.policies[policyName];
   if (!allow) {
-    throw new EgressDenied("EGRESS_POLICY_UNKNOWN", `未知出站策略：${policyName}`);
+    throw new EgressDenied("EGRESS_POLICY_UNKNOWN", `Unknown egress policy: ${policyName}`);
   }
   const host = normalizeHost(url.hostname);
   if (HOST_SUFFIX_BLOCK.some((h) => host === h || host.endsWith(`.${h}`))) {
-    throw new EgressDenied("EGRESS_METADATA_BLOCKED", `禁止访问元数据域名：${host}`);
+    throw new EgressDenied("EGRESS_METADATA_BLOCKED", `Access to metadata host is forbidden: ${host}`);
   }
   if (!hostAllowed(host, allow)) {
-    throw new EgressDenied("EGRESS_HOST_NOT_ALLOWED", `${host} 不在出站策略 ${policyName} 内`);
+    throw new EgressDenied("EGRESS_HOST_NOT_ALLOWED", `${host} is not in egress policy ${policyName}`);
   }
   if (url.protocol !== "https:" && !(opts.allowLoopback && url.protocol === "http:")) {
-    throw new EgressDenied("EGRESS_SCHEME_DENIED", `只允许 https 出站：${url.protocol}`);
+    throw new EgressDenied("EGRESS_SCHEME_DENIED", `Only https egress is allowed: ${url.protocol}`);
   }
 
   if (net.isIP(host)) {
     if (isBlockedIp(host, opts.allowLoopback)) {
-      throw new EgressDenied("EGRESS_IP_BLOCKED", `目标地址不可访问：${host}`);
+      throw new EgressDenied("EGRESS_IP_BLOCKED", `Target address is not reachable: ${host}`);
     }
     return;
   }
@@ -109,12 +109,12 @@ export async function assertEgressAllowed(
   try {
     addrs = await dns.lookup(host, { all: true, verbatim: true });
   } catch {
-    throw new EgressDenied("EGRESS_DNS_FAILED", `无法解析：${host}`);
+    throw new EgressDenied("EGRESS_DNS_FAILED", `DNS resolution failed: ${host}`);
   }
-  if (!addrs.length) throw new EgressDenied("EGRESS_DNS_FAILED", `DNS 无结果：${host}`);
+  if (!addrs.length) throw new EgressDenied("EGRESS_DNS_FAILED", `DNS returned no results: ${host}`);
   for (const a of addrs) {
     if (isBlockedIp(a.address, opts.allowLoopback)) {
-      throw new EgressDenied("EGRESS_IP_BLOCKED", `${host} 解析到不可访问地址 ${a.address}`);
+      throw new EgressDenied("EGRESS_IP_BLOCKED", `${host} resolves to a blocked address ${a.address}`);
     }
   }
 }

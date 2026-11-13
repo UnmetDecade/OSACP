@@ -4,7 +4,7 @@
 
 **在任意多台主机上运行 Claude Code、Codex、DeepSeek 或普通 Shell —— 确定性调度、递归调度机、满权限构建机。**
 
-[快速开始](#快速开始) · [架构](#架构) · [界面](#界面) · [文档](#文档) · **[English](README.md)**
+[快速开始](#快速开始) · [架构](#架构) · [调度算法](#调度算法) · [界面](#界面) · [文档](#文档) · **[English](README.md)**
 
 [![CI](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -127,13 +127,76 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 | 概念 | 怎么工作 |
 |---|---|
 | **根 / 结点调度机** | 每台主机一台根，下面可挂任意多台结点。结点有自己的构建机与数据库，不直接调度别的结点的构建机。 |
-| **能力值 `W`** | 创建构建机时按 CPU、内存、磁盘、系统、Agent、API 六项归一化到 0–1000，然后冻结。 |
+| **能力值 `W`** | 按 CPU 核数、主频、内存、磁盘、模型能力、API 能力六项归一化到 0–1000。静态模式在部署时冻结；动态模式让与负载相关的那一半保持实时（`W_static + H_res × W_res`）。 |
 | **任务难度 `D`** | 提交时给出。只有 `W ≥ D` 且能力子集匹配的构建机才能领取。 |
 | **`ΣW`** | 调度机上报整棵子树在线构建机的能力之和；根能看到整个联邦的容量。 |
 | **租约与 fencing** | 每次领取生成 attempt、租约与 fencing token；旧 token 写入返回 `409 FENCING_STALE`。 |
 | **Agent / API 档案** | PCS 保存档案与绑定；调度机只看见 `profile_id` 引用，从不接触密钥。 |
 | **Secret Store** | 档案只存 `secret://` 引用；按实例身份解析成短期凭据，审计不记录值。 |
 | **中继** | `D > W` 的任务下推到子调度机，不复制；结果沿链上浮，最大深度 8。 |
+
+## 调度算法
+
+两种模式，一套契约。**静态模式**给每个部署固定预算、能力值部署时冻结；**动态模式**给每台主机一个 cgroup 资源池，每 5 秒重算一次实例的公平份额。模式在根调度机上选定一次，整棵子树继承。两条路径共用同一套队列、租约、fencing 与中继代码，所有决策都是 PostgreSQL 行上的整数运算 —— 热路径里没有大模型、没有随机数、没有浮点。
+
+### 能力值
+
+```
+W = 1000 × ( 0.30·cpu/8 + 0.15·freq/4 + 0.20·mem/32
+           + 0.10·disk/256 + 0.15·model/10 + 0.10·api/10 )        （每项封顶 1）
+```
+
+动态模式把分数拆成与负载无关、与负载相关两半：
+
+```
+W_static = 1000 × (0.15·freq/4 + 0.10·disk/256 + 0.15·model/10 + 0.10·api/10)   ∈ [0, 500]
+W_res    = 1000 × (0.30·cpu/8 + 0.20·mem/32)                                    ∈ [0, 500]
+W0       = W_static + W_res(cap)                  -- 上限
+W_live   = W_static + H_res × W_res(cap)          -- 实时
+H_res    = clamp(1 − max(U_mem, U_cpu), 0.05, 1)  -- 真实用量，EWMA α = 0.3
+W_dispatch = P25(最近 15 s 的 W_live)             -- 派发实际使用的值
+```
+
+已承诺但未使用的授予不降低 `W_live`，只降低准入预算。同一个分配不会因此被惩罚两次。
+
+### 加权 max-min 注水
+
+每个实例的需求是 `demand = min(cap, max(reserved, used, idle_floor))` —— 预留、实际用量与地板先统一，再谈共享。权重来自声明的 cap，分配器按权重比例、全程整数地填满需求：
+
+```
+g_i = min(demand_i, cap_i, floor)
+while 还有容量 and 仍有 g_i < min(demand_i, cap_i):
+    每个实例增加 min(剩余空间_i, ⌊remaining × weight_i / Σweight⌋)
+余数 → 按 instance_id 一次一毫核 / 一字节补齐
+```
+
+空闲容量绝不强行摊出去；相同输入必然得到相同授予；CPU 与内存独立注水。授予写入 `memory.low` / `cpu.weight`，上限写入 `memory.max` / `cpu.max`；压力下 `memory.high` 被压到 `1.1 × 授予`（`PRESSURE`）或 `1.0 × 授予`（`CRITICAL`）。授予被压到已承诺量以下的实例标记为 `OVERCOMMITTED`：继续运行，但不再接收新任务。
+
+### 按任务类型的并发
+
+```
+k(i, τ) = min( ⌊(budget_cpu − reserved_cpu) / request_cpu(τ)⌋,
+               ⌊(budget_mem − reserved_mem) / request_mem(τ)⌋ )
+budget = min(cap, max(grant, fair_share))
+仅当 k ≥ 1 且 active_of_type(τ) < task_type_instance_limit 时准入
+```
+
+`k` 可以为 0，表示这台构建机完全接不了该类型。动态构建机只有当前代数的授予到达 `APPLIED` 后才启动任务，所以不存在「没有强制上限仍在跑」的情况。
+
+### 压力与降载
+
+池子沿 `NORMAL → BUSY → PRESSURE → CRITICAL → RECOVERING → NORMAL` 迁移，进入与退出阈值分离（进入 0.70/0.85/0.95，退出 0.60/0.75/0.90），因此不会抖动。新领取只在 `NORMAL`、`BUSY`、`RECOVERING` 放行；`PRESSURE` 与 `CRITICAL` 直接停止准入，而不是杀任务。为了回收内存触发 OOM 是不存在的。
+
+### 队列纪律
+
+```
+effective_priority = priority_class − ⌊等待秒数 / aging_after⌋      （P0 永不老化）
+ORDER BY effective_priority, enqueued_at, task_id
+```
+
+每次领取扫描最多 20 个有序候选，而不是 `LIMIT 1`；被阻塞的候选会持久化记录阻塞原因，并按指数退避重试（1 s 起翻倍，封顶 60 s）。需求永远放不下的任务在 8 次尝试后标记 `UNSCHEDULABLE`，不再空转。中继在 `D > 0` 时选**刚好够用**的子节点，`D = 0` 时选最空闲的，优先同模式与准入友好的压力状态，最大深度 8。
+
+完整推导、算例、授予生命周期与配置表（含哪些字段仍是预留项）见 [docs/scheduling-algorithm.zh-CN.md](docs/scheduling-algorithm.zh-CN.md)。
 
 ## 仓库结构
 
@@ -146,7 +209,7 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 | [`secret-store/`](secret-store/README.zh-CN.md) | Secret Store 参考实现，按实例解析短期凭据 |
 | [`agents/`](agents/README.zh-CN.md) | Claude Code / Codex / 自定义 CLI 的 Agent 适配器 |
 | [`deploy/`](deploy/README.zh-CN.md) | 单机 Compose、容器入口、部署载荷构建 |
-| [`docs/`](docs/) | 架构、构建机、调度机、管理应用、联邦、部署文档 |
+| [`docs/`](docs/) | 架构、调度算法、构建机、调度机、管理应用、联邦、部署文档 |
 | [`scripts/`](scripts/README.zh-CN.md) | 验收、压测、备份、PKI 与载荷脚本 |
 
 ## 安全模型
@@ -178,6 +241,7 @@ cd admin-app   && npm install && npm run build
 ## 文档
 
 - [总体架构](docs/architecture.zh-CN.md)
+- [分配调度算法](docs/scheduling-algorithm.zh-CN.md) —— 能力值评分、注水分配、压力处理、中继
 - [控制面与主机联邦](docs/federation.zh-CN.md)
 - [构建机](docs/builders.zh-CN.md)
 - [调度机](docs/scheduler.zh-CN.md)

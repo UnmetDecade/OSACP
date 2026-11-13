@@ -15,15 +15,15 @@ export class ApiError extends Error {
 
 export const err = {
   notFound: (what: string, id: string) =>
-    new ApiError(404, "NOT_FOUND", `${what} 不存在: ${id}`),
+    new ApiError(404, "NOT_FOUND", `${what} not found: ${id}`),
   stateConflict: (from: string, to: string, why = "") =>
-    new ApiError(409, "STATE_CONFLICT", `非法状态迁移 ${from} → ${to}${why ? "：" + why : ""}`),
+    new ApiError(409, "STATE_CONFLICT", `illegal state transition ${from} → ${to}${why ? ": " + why : ""}`),
   fencingStale: (taskId: string) =>
-    new ApiError(409, "FENCING_STALE", `fencing 已过期，该 attempt 的写入被拒绝（task ${taskId}）`),
+    new ApiError(409, "FENCING_STALE", `fencing token is stale; write for this attempt was rejected (task ${taskId})`),
   leaseExpired: () =>
-    new ApiError(409, "LEASE_EXPIRED", "租约已过期或已被回收"),
+    new ApiError(409, "LEASE_EXPIRED", "lease has expired or been reclaimed"),
   leaseMismatch: () =>
-    new ApiError(409, "LEASE_MISMATCH", "lease_token 与当前 attempt 不匹配"),
+    new ApiError(409, "LEASE_MISMATCH", "lease_token does not match the current attempt"),
   notEligible: (why: string) =>
     new ApiError(409, "INSTANCE_NOT_ELIGIBLE", why),
   invalid: (why: string) => new ApiError(400, "BAD_REQUEST", why),

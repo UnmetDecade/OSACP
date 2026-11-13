@@ -29,6 +29,10 @@ type RelayNode = {
   url: string;
   max_builder_score: number;
   idle_builder_count: number;
+  mode?: string;
+  max_builder_ceiling?: number;
+  max_builder_live?: number;
+  pressure_state?: string;
 };
 
 type TaskRow = {
@@ -82,7 +86,7 @@ export async function maybeRelayTask(
   try {
     return await relayToNode(node, task, input, depth);
   } catch (e) {
-    logRelay(`下推失败 ${task.task_id} → ${node.node_id}`, e instanceof Error ? e.message : e);
+    logRelay(`Push-down failed ${task.task_id} → ${node.node_id}`, e instanceof Error ? e.message : e);
     return null;
   }
 }
@@ -94,13 +98,15 @@ async function relayNodeForInstance(instanceId: string): Promise<RelayNode | nul
   ]);
   if (local) return null;
   return q1<RelayNode>(
-    `SELECT node_id, url, max_builder_score, idle_builder_count
+    `SELECT node_id, url, max_builder_score, idle_builder_count,
+            mode, max_builder_ceiling, max_builder_live, pressure_state
        FROM scheduler_nodes
       WHERE parent_node_id = $1
         AND url IS NOT NULL AND url <> ''
         AND updated_at > app_now() - make_interval(secs => $2)
         AND instances @> $3::jsonb
-      ORDER BY node_id
+      ORDER BY CASE WHEN pressure_state IN ('NORMAL','BUSY','RECOVERING') THEN 0 ELSE 1 END,
+               node_id
       LIMIT 1`,
     [selfNodeId(), RELAY_NODE_FRESH_SECONDS, JSON.stringify([{ instance_id: instanceId }])],
   );
@@ -124,7 +130,13 @@ async function relayNodeForCapacity(
         AND r.state = 'ONLINE'
         AND $1 = ANY(r.allowed_task_types)
         AND $2 = ANY(r.payload_schemas)
-        AND ($3 <= 0 OR r.capability_score >= $3)`,
+        -- Same-mode local routing compares W_live; static rows have live = frozen W.
+        AND (
+          $3 <= 0
+          OR (CASE WHEN r.scheduling_mode = 'dynamic'
+                   THEN GREATEST(r.capability_dispatch_score, r.capability_live_score, 0)
+                   ELSE r.capability_score END) >= $3
+        )`,
     [taskType, "1.0", d],
   );
   if (Number(local?.n ?? 0) > 0) return null;
@@ -135,21 +147,32 @@ async function relayNodeForCapacity(
   ]);
   if (relayed) return null;
 
+  // §12.3: cross-node eligibility always uses the ceiling. Live is a local/same-mode ordering key only,
+  // so a same-mode node is preferred and ordered by its live score, while a cross-mode node is ordered by ceiling.
+  const sameMode = config.schedulingMode;
   const order =
     d > 0
-      ? "max_builder_score ASC, idle_builder_count DESC, node_id"
-      : "idle_builder_count DESC, max_builder_score DESC, node_id";
+      ? `(mode = $4) DESC,
+         (pressure_state IN ('NORMAL','BUSY','RECOVERING')) DESC,
+         CASE WHEN mode = $4 THEN max_builder_live ELSE max_builder_ceiling END ASC,
+         idle_builder_count DESC, node_id`
+      : `(mode = $4) DESC,
+         (pressure_state IN ('NORMAL','BUSY','RECOVERING')) DESC,
+         idle_builder_count DESC,
+         CASE WHEN mode = $4 THEN max_builder_live ELSE max_builder_ceiling END DESC,
+         node_id`;
   return q1<RelayNode>(
-    `SELECT node_id, url, max_builder_score, idle_builder_count
+    `SELECT node_id, url, max_builder_score, idle_builder_count,
+            mode, max_builder_ceiling, max_builder_live, pressure_state
        FROM scheduler_nodes
       WHERE parent_node_id = $1
         AND url IS NOT NULL AND url <> ''
         AND builder_count > 0
         AND updated_at > app_now() - make_interval(secs => $2)
-        AND ($3 <= 0 OR max_builder_score >= $3)
+        AND ($3 <= 0 OR max_builder_ceiling >= $3)
       ORDER BY ${order}
       LIMIT 1`,
-    [selfNodeId(), RELAY_NODE_FRESH_SECONDS, d],
+    [selfNodeId(), RELAY_NODE_FRESH_SECONDS, d, sameMode],
   );
 }
 
@@ -189,16 +212,16 @@ async function relayToNode(
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`子结点返回 ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`child node returned ${res.status}: ${text.slice(0, 200)}`);
   }
   let out: any = null;
   try {
     out = JSON.parse(text);
   } catch {
-    throw new Error("子结点返回的不是 JSON");
+    throw new Error("child node did not return JSON");
   }
   const childTaskId = String(out?.task_id ?? "").trim();
-  if (!childTaskId) throw new Error("子结点没有返回 task_id");
+  if (!childTaskId) throw new Error("child node did not return task_id");
 
   await tx(async (c) => {
     const inserted = await c.query(
@@ -342,7 +365,7 @@ async function sendChildCancel(row: RelayRow): Promise<void> {
       },
     );
     if (!res.ok && res.status !== 409) {
-      throw new Error(`子结点取消返回 ${res.status}`);
+      throw new Error(`child node cancel returned ${res.status}`);
     }
     await q(
       `UPDATE task_relays SET cancel_sent = TRUE, updated_at = app_now()
@@ -352,7 +375,7 @@ async function sendChildCancel(row: RelayRow): Promise<void> {
   } catch (e) {
     await recordRelayFailure(
       row.parent_task_id,
-      `取消转发失败：${e instanceof Error ? e.message : String(e)}`,
+      `failed to forward cancellation: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 }
@@ -404,7 +427,7 @@ export async function syncRelays(limit = 50): Promise<{ checked: number; updated
         `${row.child_url.replace(/\/+$/, "")}/v1/tasks/${encodeURIComponent(row.child_task_id)}`,
         { signal: AbortSignal.timeout(RELAY_FETCH_TIMEOUT_MS) },
       );
-      if (!res.ok) throw new Error(`子结点返回 ${res.status}`);
+      if (!res.ok) throw new Error(`child node returned ${res.status}`);
       child = await res.json();
     } catch (e) {
       await recordRelayFailure(
@@ -417,7 +440,7 @@ export async function syncRelays(limit = 50): Promise<{ checked: number; updated
     const childStatus = String(child?.status ?? "").toUpperCase();
     const summary = childSummary(child);
     if (!childStatus) {
-      await recordRelayFailure(row.parent_task_id, "子结点任务缺少 status");
+      await recordRelayFailure(row.parent_task_id, "child task is missing status");
       continue;
     }
 

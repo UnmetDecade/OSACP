@@ -1,6 +1,6 @@
 import { t } from "../i18n";
 import type { BuilderOs, CapabilityDetail, HostRoleMode, Role, TaskAttachment, TaskAttachmentRef } from "../types";
-import { pcs, scheduler, schedulerFor } from "./client";
+import { ApiError, pcs, scheduler, schedulerFor } from "./client";
 import type { LiveConnection } from "./config";
 
 const MIB = 1024 ** 2;
@@ -200,6 +200,8 @@ export async function createScheduler(
     ssh_port: number;
     cpus: number;
     mem_mb: number;
+    /** Inherited by the schedulers and builders deployed under this root; node schedulers always inherit. */
+    scheduling_mode?: "static" | "dynamic";
   },
 ): Promise<void> {
   if (!connection.pcsUrl) throw new Error(t("未配置控制面地址，无法部署调度机"));
@@ -233,6 +235,9 @@ export async function createScheduler(
       },
       network_policy: "default",
       labels: { role: "scheduler" },
+      ...(input.role === "root" && input.scheduling_mode
+        ? { scheduling_mode: input.scheduling_mode }
+        : {}),
     },
   });
   await pcs(
@@ -291,11 +296,17 @@ export async function removeInstanceAndWait(
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
   const first = pick(((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[]);
   if (!first) return; // No deployment record remains; treat it as deleted.
-  await pcs(
-    connection,
-    `/api/v1/platform/deployments/${encodeURIComponent(first.deployment_id)}/remove`,
-    { method: "POST" },
-  );
+  try {
+    await pcs(
+      connection,
+      `/api/v1/platform/deployments/${encodeURIComponent(first.deployment_id)}/remove`,
+      { method: "POST" },
+    );
+  } catch (e) {
+    // An older control plane answers a repeated remove with 409 DEPLOYMENT_REMOVED: the remove was already
+    // requested, so keep waiting for the acknowledgement instead of aborting the host removal.
+    if (!(e instanceof ApiError) || e.code !== "DEPLOYMENT_REMOVED") throw e;
+  }
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
     await new Promise((r) => setTimeout(r, 1000));

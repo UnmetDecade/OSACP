@@ -36,7 +36,7 @@ export class SecretClient {
   /** The token appears only in the request header; credentials are never echoed in error messages either. */
   private authToken(): string {
     const token = typeof this.opts.token === "function" ? this.opts.token() : this.opts.token;
-    if (!token) throw new SecretDenied("SECRET_TOKEN_MISSING", "实例没有可用的身份令牌");
+    if (!token) throw new SecretDenied("SECRET_TOKEN_MISSING", "Instance has no usable identity token");
     return token;
   }
 
@@ -61,7 +61,7 @@ export class SecretClient {
     } catch (e) {
       throw new SecretDenied(
         "SECRET_STORE_UNAVAILABLE",
-        `Secret Store 不可达：${e instanceof Error ? e.message : String(e)}`,
+        `Secret Store is unreachable: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     const data = (await res.json().catch(() => ({}))) as any;
@@ -69,13 +69,13 @@ export class SecretClient {
       const err = data?.error ?? {};
       throw new SecretDenied(
         String(err.code ?? `SECRET_HTTP_${res.status}`),
-        String(err.message ?? `Secret Store 返回 ${res.status}`),
+        String(err.message ?? `Secret Store returned ${res.status}`),
       );
     }
     const credential = String(data.credential ?? "");
     const expiresAt = Date.parse(String(data.expires_at ?? ""));
     if (!credential || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-      throw new SecretDenied("SECRET_RESPONSE_INVALID", "Secret Store 返回的凭据无效");
+      throw new SecretDenied("SECRET_RESPONSE_INVALID", "Secret Store returned an invalid credential");
     }
     this.cache.set(secretRef, { credential, expiresAt });
     return { credential, expiresAt };

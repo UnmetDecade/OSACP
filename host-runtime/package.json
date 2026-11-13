@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Host Runtime（role-agent 侧）：注册、心跳、领取、本机二次准入、续租、结果上报",
+  "description": "Host Runtime (role-agent side): enrollment, heartbeat, claims, local second-level admission, lease renewal, result reporting",
   "scripts": {
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",

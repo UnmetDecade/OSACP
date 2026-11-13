@@ -11,7 +11,7 @@ const root = path.resolve(here, "..");
 
 function env(name: string, fallback?: string): string {
   const v = process.env[name] ?? fallback;
-  if (!v) throw new Error(`缺少环境变量 ${name}`);
+  if (!v) throw new Error(`Missing environment variable ${name}`);
   return v;
 }
 
@@ -55,23 +55,23 @@ async function body(req: http.IncomingMessage): Promise<Record<string, any>> {
   for await (const chunk of req) {
     const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += b.length;
-    if (size > 64 * 1024) throw new SecretError("BODY_TOO_LARGE", "请求体过大", 413);
+    if (size > 64 * 1024) throw new SecretError("BODY_TOO_LARGE", "Request body too large", 413);
     chunks.push(b);
   }
   try {
     return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
   } catch {
-    throw new SecretError("INVALID_JSON", "请求体不是 JSON", 400);
+    throw new SecretError("INVALID_JSON", "Request body is not JSON", 400);
   }
 }
 
 function instanceFrom(req: http.IncomingMessage): string {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
-  if (!m) throw new SecretError("TOKEN_REQUIRED", "缺少实例令牌", 401);
+  if (!m) throw new SecretError("TOKEN_REQUIRED", "Missing instance token", 401);
   try {
     return verifyInstanceToken(m[1], publicKey, audience).sub;
   } catch (e) {
-    throw new SecretError("TOKEN_INVALID", e instanceof Error ? e.message : "令牌无效", 401);
+    throw new SecretError("TOKEN_INVALID", e instanceof Error ? e.message : "Invalid token", 401);
   }
 }
 
@@ -80,10 +80,10 @@ const tlsKeyFile = (process.env.SECRET_STORE_TLS_KEY_FILE ?? "").trim();
 const tlsCaFile = (process.env.SECRET_STORE_TLS_CA_FILE ?? "").trim();
 const requireClientCert = process.env.SECRET_STORE_MTLS === "1";
 if (Boolean(tlsCertFile) !== Boolean(tlsKeyFile)) {
-  throw new Error("SECRET_STORE_TLS_CERT_FILE 与 SECRET_STORE_TLS_KEY_FILE 必须同时配置");
+  throw new Error("SECRET_STORE_TLS_CERT_FILE and SECRET_STORE_TLS_KEY_FILE must be configured together");
 }
 if (requireClientCert && (!tlsCertFile || !tlsCaFile)) {
-  throw new Error("SECRET_STORE_MTLS=1 需要同时配置 TLS 证书与客户端 CA");
+  throw new Error("SECRET_STORE_MTLS=1 requires both a TLS certificate and a client CA");
 }
 
 const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -102,7 +102,7 @@ const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
 
       if (req.method === "PUT" && url.pathname === "/v1/secrets") {
         if (!adminToken || req.headers.authorization !== `Bearer ${adminToken}`) {
-          throw new SecretError("ADMIN_AUTH_REQUIRED", "写入密钥需要管理员令牌", 401);
+          throw new SecretError("ADMIN_AUTH_REQUIRED", "Writing secrets requires an admin token", 401);
         }
         const b = await body(req);
         const out = store.put(
@@ -115,20 +115,20 @@ const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
 
       if (req.method === "POST" && url.pathname === "/v1/secrets/revoke") {
         if (!adminToken || req.headers.authorization !== `Bearer ${adminToken}`) {
-          throw new SecretError("ADMIN_AUTH_REQUIRED", "吊销需要管理员令牌", 401);
+          throw new SecretError("ADMIN_AUTH_REQUIRED", "Revocation requires an admin token", 401);
         }
         const b = await body(req);
         store.revoke(String(b.instance_id ?? ""));
         return send(res, 200, { ok: true });
       }
 
-      send(res, 404, { error: { code: "NOT_FOUND", message: "没有这个接口" } });
+      send(res, 404, { error: { code: "NOT_FOUND", message: "No such endpoint" } });
     } catch (e) {
       if (e instanceof SecretError) {
         send(res, e.status, { error: { code: e.code, message: e.message } });
       } else {
         console.error("[secret-store]", e instanceof Error ? e.message : String(e));
-        send(res, 500, { error: { code: "INTERNAL", message: "内部错误" } });
+        send(res, 500, { error: { code: "INTERNAL", message: "Internal error" } });
       }
     }
 };
@@ -147,6 +147,6 @@ const server: http.Server | https.Server = tlsCertFile
 
 server.listen(port, host, () => {
   console.log(
-    `[secret-store] 监听 ${tlsCertFile ? "https" : "http"}://${host}:${port}（TTL ${ttl}s，密钥值不落日志）`,
+    `[secret-store] listening on ${tlsCertFile ? "https" : "http"}://${host}:${port} (TTL ${ttl}s; secret values are never logged)`,
   );
 });

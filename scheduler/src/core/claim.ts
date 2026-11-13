@@ -2,6 +2,13 @@ import { tx, type Client } from "../db.js";
 import { ApiError } from "../errors.js";
 import { appendEvent } from "../events.js";
 import { newId, newToken } from "../ids.js";
+import { admissionAllowedByPressure, backoffSeconds, computeConcurrency } from "./resources.js";
+import {
+  instanceResourceState,
+  policyForScheduler,
+  recomputeHostGrants,
+  type ResourceGrantRow,
+} from "../repo/resources.js";
 
 /**
  * Claim: eligibility filtering + admission + lease creation, all in one transaction (§3.4).
@@ -11,6 +18,16 @@ import { newId, newToken } from "../ids.js";
 export interface ClaimInput {
   instance_id: string;
   trace_id?: string;
+}
+
+export interface AssignmentGrant {
+  generation: number;
+  state: string;
+  cpu_millicores: number;
+  memory_bytes: number;
+  memory_low_bytes: number;
+  memory_high_bytes: number;
+  cpu_weight: number;
 }
 
 export interface Assignment {
@@ -34,9 +51,10 @@ export interface Assignment {
   agent: { profile_id: string | null; version: string | null };
   api_profiles: string[];
   started: false;
+  /** Dynamic mode: the builder must apply this grant before starting the workload (§7.4). */
+  scheduling_mode: "static" | "dynamic";
+  resource_grant: AssignmentGrant | null;
 }
-
-const MAX_CANDIDATE_SCAN = 20;
 
 async function loadConfig(c: Client) {
   const res = await c.query("SELECT * FROM scheduler_config WHERE id = TRUE");
@@ -53,11 +71,67 @@ async function countActive(
   return res.rows[0].n as number;
 }
 
+interface Blocked {
+  reason:
+    | "INSUFFICIENT_MEMORY"
+    | "INSUFFICIENT_CPU"
+    | "CPU_PRESSURE_HIGH"
+    | "HOST_PRESSURE"
+    | "DISK_SPACE_LOW"
+    | "CONCURRENCY_LIMIT"
+    | "HOST_PROTECTING"
+    | "GRANT_PENDING"
+    | "GRANT_FAILED"
+    | "CGROUP_UNAVAILABLE";
+  detail: Record<string, unknown>;
+  /**
+   * `halt` = the whole instance/host cannot take any task right now (pressure, quota not applied,
+   * global/role saturation). Do not penalize the task; stop scanning.
+   * `permanent` = even an empty instance could not fit this task, so repeated blocks make it
+   * unschedulable instead of letting it churn forever.
+   */
+  halt?: boolean;
+  permanent?: boolean;
+}
+
+interface AdmissionContext {
+  cfg: any;
+  inst: any;
+  host: any;
+  mode: "static" | "dynamic";
+  res: Awaited<ReturnType<typeof instanceResourceState>> | null;
+  policy: ReturnType<typeof policyForScheduler>;
+}
+
+const dynamicScoreOf = (inst: any): number => {
+  const dispatch = Number(inst.capability_dispatch_score ?? 0);
+  if (dispatch > 0) return dispatch;
+  const live = Number(inst.capability_live_score ?? 0);
+  if (live > 0) return live;
+  return Number(inst.capability_score ?? 0);
+};
+
 export async function claim(input: ClaimInput): Promise<Assignment | null> {
-  if (!input.instance_id) throw new ApiError(400, "BAD_REQUEST", "instance_id 必填");
+  if (!input.instance_id) throw new ApiError(400, "BAD_REQUEST", "instance_id is required");
 
   return tx(async (c) => {
     const cfg = await loadConfig(c);
+    const policy = policyForScheduler(cfg?.dynamic_policy);
+
+    // Read the owner first (unlocked), then lock in host -> instance order. The allocator also
+    // locks host before touching instances, so claim and grant recomputation cannot deadlock.
+    const owner = (
+      await c.query(`SELECT host_id FROM role_instances WHERE instance_id = $1`, [input.instance_id])
+    ).rows[0];
+    if (!owner) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
+
+    // Lock the host row: concurrent claims on one host serialize, making the budget trustworthy
+    const hostRes = await c.query(
+      `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
+      [owner.host_id],
+    );
+    const host = hostRes.rows[0];
+    if (!host) throw new ApiError(409, "HOST_UNKNOWN", `host not registered: ${owner.host_id}`);
 
     // Lock the instance row: concurrent claims for one instance serialize, so one instance cannot take multiple tasks
     const instRes = await c.query(
@@ -65,44 +139,70 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
       [input.instance_id],
     );
     const inst = instRes.rows[0];
-    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `实例未注册: ${input.instance_id}`);
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
+    if (inst.host_id !== host.host_id) {
+      throw new ApiError(409, "HOST_CHANGED", `host of instance ${inst.instance_id} has changed to ${inst.host_id}`);
+    }
     if (inst.state !== "ONLINE") {
-      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `实例状态 ${inst.state}，只有 ONLINE 可领取`);
+      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", `instance state is ${inst.state}; only ONLINE instances can claim`);
     }
     if (!inst.agent_profile_id) {
-      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", "实例未绑定 Agent Profile");
+      throw new ApiError(409, "INSTANCE_NOT_ELIGIBLE", "instance is not bound to an Agent Profile");
     }
-
-    // Lock the host row: concurrent claims on one host serialize, making the budget trustworthy
-    const hostRes = await c.query(
-      `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
-      [inst.host_id],
-    );
-    const host = hostRes.rows[0];
-    if (!host) throw new ApiError(409, "HOST_UNKNOWN", `主机未注册: ${inst.host_id}`);
 
     // Host state: only NORMAL / WARNING may receive dispatches; THROTTLED / PROTECTING / RECOVERING are all excluded
     if (host.host_state !== "NORMAL" && host.host_state !== "WARNING") {
-      throw new ApiError(409, "HOST_NOT_ELIGIBLE", `主机 ${host.host_id} 状态 ${host.host_state}，暂停派发`);
+      throw new ApiError(409, "HOST_NOT_ELIGIBLE", `host ${host.host_id} is in state ${host.host_state}; dispatching paused`);
     }
 
-    // Instance-level concurrency limit
-    const instanceActive = await countActive(
-      c,
-      `SELECT count(*)::int AS n FROM leases
-        WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
-      [inst.instance_id],
-    );
-    if (instanceActive >= cfg.instance_limit) {
-      return null; // Instance is full: create no lease and record no blocking reason (not the task's fault)
+    const mode: "static" | "dynamic" = inst.scheduling_mode === "dynamic" ? "dynamic" : "static";
+
+    // Static mode keeps the frozen per-instance limit (§9.1). Dynamic mode replaces it with the
+    // per-task-type k(i, τ) check inside admit(), so a fixed limit here would make k unreachable.
+    if (mode === "static") {
+      const instanceActive = await countActive(
+        c,
+        `SELECT count(*)::int AS n FROM leases
+          WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
+        [inst.instance_id],
+      );
+      if (instanceActive >= cfg.instance_limit) {
+        return null; // Instance is full: create no lease and record no blocking reason (not the task's fault)
+      }
     }
+
+    let res = mode === "dynamic" ? await instanceResourceState(c, inst.instance_id) : null;
+    // A freshly deployed dynamic builder has no grant row yet: derive one now so its first claim
+    // does not wait for the periodic allocator. Later claims use the already computed grant.
+    if (mode === "dynamic" && !res?.grant) {
+      await recomputeHostGrants(c, host.host_id, policy);
+      res = await instanceResourceState(c, inst.instance_id);
+    }
+
+    // Global / role-pool saturation is not any single task's fault; return without scanning.
+    const globalActive = await countActive(
+      c,
+      `SELECT count(*)::int AS n FROM leases WHERE released_at IS NULL AND expires_at > app_now()`,
+      [],
+    );
+    if (globalActive >= cfg.global_limit) return null;
+    const roleActive = await countActive(
+      c,
+      `SELECT count(*)::int AS n
+         FROM leases l JOIN role_instances i USING (instance_id)
+        WHERE i.role_id = $1 AND l.released_at IS NULL AND l.expires_at > app_now()`,
+      [inst.role_id],
+    );
+    if (roleActive >= cfg.role_pool_limit) return null;
 
     const capabilities = (inst.capabilities?.healthy ?? []) as string[];
     const unhealthy = (inst.capabilities?.unhealthy ?? []) as string[];
     const usable = capabilities.filter((x) => !unhealthy.includes(x));
     // W=0 means "capability score not reported" (pre-upgrade instances): do not filter by difficulty, preserving old behavior.
-    const capabilityScore = Number(inst.capability_score ?? 0);
+    // Local claims use capability_live in dynamic mode; cross-node routing is handled in relay.ts.
+    const capabilityScore = mode === "dynamic" ? dynamicScoreOf(inst) : Number(inst.capability_score ?? 0);
 
+    const maxScan = Math.max(1, Number(cfg.max_candidate_scan ?? 20));
     const candidateSql = `
       SELECT t.*,
              effective_priority(t.priority_class, t.enqueued_at, $1) AS effective_priority,
@@ -115,6 +215,8 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
            SELECT 1 FROM task_relays r
             WHERE r.parent_task_id = t.task_id AND r.state = 'ACTIVE'
          )
+         AND t.unschedulable = FALSE
+         AND (t.resource_retry_after IS NULL OR t.resource_retry_after <= app_now())
          AND td.target_role = $2
          AND t.task_type = ANY($3::text[])
          AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= app_now())
@@ -127,90 +229,111 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
          AND ($7 <= 0 OR t.difficulty <= $7)
        ORDER BY effective_priority ASC, t.enqueued_at ASC, t.task_id ASC
        FOR UPDATE OF t SKIP LOCKED
-       LIMIT 1`;
+       LIMIT $8`;
 
-    for (let scanned = 0; scanned < MAX_CANDIDATE_SCAN; scanned++) {
-      const cand = await c.query(candidateSql, [
-        cfg.aging_after_seconds,
-        inst.role_id,
-        inst.allowed_task_types,
-        JSON.stringify(usable),
-        inst.payload_schemas,
-        inst.instance_id,
-        capabilityScore,
-      ]);
-      const task = cand.rows[0];
-      if (!task) return null;
+    const cand = await c.query(candidateSql, [
+      cfg.aging_after_seconds,
+      inst.role_id,
+      inst.allowed_task_types,
+      JSON.stringify(usable),
+      inst.payload_schemas,
+      inst.instance_id,
+      capabilityScore,
+      maxScan,
+    ]);
 
-      const blocked = await admit(c, cfg, inst, host, task);
+    const ctx: AdmissionContext = { cfg, inst, host, mode, res, policy };
+    for (const task of cand.rows) {
+      const blocked = await admit(c, ctx, task);
       if (blocked) {
-        const reasonChanged = task.resource_block_reason !== blocked.reason;
-        await c.query(
-          `UPDATE tasks SET resource_block_reason = $2, resource_evaluated_at = app_now(),
-                            version = version + 1, updated_at = app_now()
-            WHERE task_id = $1`,
-          [task.task_id, blocked.reason],
-        );
-        if (reasonChanged) {
-          await appendEvent(c, {
-            task_id: task.task_id,
-            event_type: "TASK_RESOURCE_BLOCKED",
-            from_status: "QUEUED",
-            to_status: "QUEUED",
-            actor: "scheduler",
-            payload: blocked,
-            trace_id: input.trace_id,
-          });
-        }
-        continue; // Stay QUEUED; try the next candidate
+        // Host/instance-wide blocks apply to every candidate: stop without touching the task.
+        if (blocked.halt) return null;
+        await recordBlock(c, task, blocked, cfg, input.trace_id);
+        continue;
       }
-
-      return assign(c, cfg, inst, host, task, input.trace_id);
+      const assignment = await assign(c, cfg, inst, host, task, input.trace_id, mode, res?.grant ?? null);
+      // The new reservation changes demand; refresh this host's ledger now so the next claim and
+      // the daemon see a grant that covers it instead of waiting for the periodic allocator.
+      // The assignment carries the refreshed grant, not the pre-reservation one.
+      if (mode === "dynamic") {
+        await recomputeHostGrants(c, host.host_id, policy);
+        const fresh = await instanceResourceState(c, inst.instance_id);
+        if (fresh?.grant) {
+          assignment.resource_grant = {
+            generation: fresh.grant.generation,
+            state: fresh.grant.state,
+            cpu_millicores: fresh.grant.cpu_millicores,
+            memory_bytes: fresh.grant.memory_bytes,
+            memory_low_bytes: fresh.grant.memory_low_bytes,
+            memory_high_bytes: fresh.grant.memory_high_bytes,
+            cpu_weight: fresh.grant.cpu_weight,
+          };
+        }
+      }
+      return assignment;
     }
 
     return null;
   });
 }
 
-interface Blocked {
-  reason:
-    | "INSUFFICIENT_MEMORY"
-    | "CPU_PRESSURE_HIGH"
-    | "DISK_SPACE_LOW"
-    | "CONCURRENCY_LIMIT"
-    | "HOST_PROTECTING";
-  detail: Record<string, unknown>;
+/** Persist the task-level block with exponential backoff (§11.3). */
+async function recordBlock(
+  c: Client,
+  task: any,
+  blocked: Blocked,
+  cfg: any,
+  traceId?: string,
+): Promise<void> {
+  const attempts = Number(task.blocked_attempts ?? 0) + 1;
+  const delay = backoffSeconds(
+    attempts - 1,
+    Number(cfg.backoff_base_seconds ?? 1),
+    Number(cfg.backoff_max_seconds ?? 60),
+  );
+  const unschedulable =
+    blocked.permanent === true && attempts >= Number(cfg.max_blocked_attempts ?? 8);
+  const reasonChanged = task.resource_block_reason !== blocked.reason;
+  await c.query(
+    `UPDATE tasks
+        SET resource_block_reason = $2,
+            resource_evaluated_at = app_now(),
+            blocked_attempts = $3,
+            resource_retry_after = app_now() + make_interval(secs => $4),
+            unschedulable = $5,
+            version = version + 1,
+            updated_at = app_now()
+      WHERE task_id = $1`,
+    [task.task_id, blocked.reason, attempts, delay, unschedulable],
+  );
+  if (reasonChanged || unschedulable) {
+    await appendEvent(c, {
+      task_id: task.task_id,
+      event_type: unschedulable ? "TASK_UNSCHEDULABLE" : "TASK_RESOURCE_BLOCKED",
+      from_status: "QUEUED",
+      to_status: "QUEUED",
+      actor: "scheduler",
+      payload: {
+        reason: blocked.reason,
+        detail: blocked.detail,
+        blocked_attempts: attempts,
+        retry_after_seconds: delay,
+        unschedulable,
+      },
+      trace_id: traceId,
+    });
+  }
 }
 
-/** Admission check (§6.2). Returns null when it passes. */
+/** Admission check (§6.2, §9.1). Returns null when it passes. */
 async function admit(
   c: Client,
-  cfg: any,
-  inst: any,
-  host: any,
+  ctx: AdmissionContext,
   task: any,
 ): Promise<Blocked | null> {
-  // Concurrency limits: global / role pool / task type
-  const globalActive = await countActive(
-    c,
-    `SELECT count(*)::int AS n FROM leases WHERE released_at IS NULL AND expires_at > app_now()`,
-    [],
-  );
-  if (globalActive >= cfg.global_limit) {
-    return { reason: "CONCURRENCY_LIMIT", detail: { scope: "global", limit: cfg.global_limit } };
-  }
+  const { cfg, inst, host, mode, res, policy } = ctx;
 
-  const roleActive = await countActive(
-    c,
-    `SELECT count(*)::int AS n
-       FROM leases l JOIN role_instances i USING (instance_id)
-      WHERE i.role_id = $1 AND l.released_at IS NULL AND l.expires_at > app_now()`,
-    [inst.role_id],
-  );
-  if (roleActive >= cfg.role_pool_limit) {
-    return { reason: "CONCURRENCY_LIMIT", detail: { scope: "role_pool", limit: cfg.role_pool_limit } };
-  }
-
+  // Per-task-type limit across the fleet. A different type may still fit, so keep scanning.
   const typeActive = await countActive(
     c,
     `SELECT count(*)::int AS n
@@ -219,17 +342,194 @@ async function admit(
     [task.task_type],
   );
   if (typeActive >= cfg.task_type_limit) {
-    return { reason: "CONCURRENCY_LIMIT", detail: { scope: "task_type", limit: cfg.task_type_limit } };
+    return {
+      reason: "CONCURRENCY_LIMIT",
+      detail: { scope: "task_type", limit: cfg.task_type_limit },
+    };
   }
 
-  // Host budget: already reserved (HELD/ACTIVE) + this request <= available
   const profile = (
     await c.query(`SELECT * FROM resource_profiles WHERE profile_id = $1`, [task.resource_profile_id])
   ).rows[0];
   if (!profile) {
-    return { reason: "INSUFFICIENT_MEMORY", detail: { why: "资源画像不存在", profile: task.resource_profile_id } };
+    return {
+      reason: "INSUFFICIENT_MEMORY",
+      detail: { why: "resource profile not found", profile: task.resource_profile_id },
+    };
   }
 
+  const needMem = BigInt(profile.memory_bytes);
+  const needCpu = Math.max(0, Math.trunc(Number(profile.cpu_millicores ?? 0)));
+
+  if (mode === "dynamic") {
+    const pool = res?.pool ?? null;
+    // A dynamic builder must be able to enforce its grant through a cgroup pool. Before the first
+    // report we allow a cap-shaped budget so the deployment can become reachable; after a report
+    // that says "no cgroup v2", scheduling stops with an explicit reason instead of pretending.
+    if (pool?.reported_at && !pool.cgroup_available) {
+      return {
+        reason: "CGROUP_UNAVAILABLE",
+        detail: { host: host.host_id, pool_id: pool.pool_id, driver: pool.cgroup_driver },
+        halt: true,
+      };
+    }
+    if (!admissionAllowedByPressure(pool?.pressure_state ?? "NORMAL")) {
+      return {
+        reason: "HOST_PRESSURE",
+        detail: {
+          host: host.host_id,
+          pressure_state: pool?.pressure_state,
+          mem_used_bytes: pool?.mem_used_bytes,
+          cpu_used_millicores: pool?.cpu_used_millicores,
+        },
+        halt: true,
+      };
+    }
+    const grant = res?.grant ?? null;
+    if (!grant) {
+      return {
+        reason: "GRANT_PENDING",
+        detail: { host: host.host_id, instance: inst.instance_id },
+        halt: true,
+      };
+    }
+    if (grant.state === "FAILED") {
+      return {
+        reason: "GRANT_FAILED",
+        detail: { host: host.host_id, instance: inst.instance_id, error: grant.last_error },
+        halt: true,
+      };
+    }
+    // §9.2 step 9: a dynamic builder may start only after its quota is applied to the cgroup.
+    // The host applies grants every few seconds and reports the applied generation back, so this
+    // is a short wait after a deployment; if the daemon never reports, execution is refused
+    // rather than run without an enforced cap. `require_applied_before_start` can be turned off
+    // for hosts whose runtime predates cgroup support.
+    if (policy.require_applied_before_start) {
+      const applied = Number(grant.applied_generation ?? 0);
+      if (grant.state !== "APPLIED" || applied < grant.generation) {
+        return {
+          reason: "GRANT_PENDING",
+          detail: {
+            host: host.host_id,
+            instance: inst.instance_id,
+            generation: grant.generation,
+            state: grant.state,
+            applied_generation: grant.applied_generation,
+          },
+          halt: true,
+        };
+      }
+    }
+
+    // §8.4: once the grant has been squeezed below what is already committed, the instance is
+    // OVERCOMMITTED and takes no new work until reservations fall or the allocator catches up.
+    const reservedMem = Number(res?.reservedMemBytes ?? 0);
+    const reservedCpu = Number(res?.reservedCpuMillicores ?? 0);
+    if (Number(grant.memory_bytes) < reservedMem || Number(grant.cpu_millicores) < reservedCpu) {
+      return {
+        reason: "INSUFFICIENT_MEMORY",
+        detail: {
+          scope: "instance_overcommitted",
+          host: host.host_id,
+          instance: inst.instance_id,
+          grant_bytes: grant.memory_bytes,
+          grant_millicores: grant.cpu_millicores,
+          reserved_bytes: reservedMem,
+          reserved_millicores: reservedCpu,
+          grant_generation: grant.generation,
+        },
+        halt: true,
+      };
+    }
+
+    // Admission may commit up to the guaranteed share F_i even while an idle builder's grant is
+    // only the idle floor; the grant covering the reservation is computed right after the claim.
+    const budgetMem = Math.min(
+      Number(inst.cap_mem_bytes || Number.MAX_SAFE_INTEGER),
+      Math.max(Number(grant.memory_bytes), Number(res?.fairShareMemBytes ?? 0)),
+    );
+    const budgetCpu = Math.min(
+      Number(inst.cap_cpu_millicores || Number.MAX_SAFE_INTEGER),
+      Math.max(Number(grant.cpu_millicores), Number(res?.fairShareCpuMillicores ?? 0)),
+    );
+    const remainingMem = Math.max(0, budgetMem - reservedMem);
+    const remainingCpu = Math.max(0, budgetCpu - reservedCpu);
+    const needMemNum = Number(needMem);
+
+    if (needMemNum > remainingMem) {
+      return {
+        reason: "INSUFFICIENT_MEMORY",
+        detail: {
+          scope: "instance_grant",
+          host: host.host_id,
+          instance: inst.instance_id,
+          grant_bytes: grant.memory_bytes,
+          grant_generation: grant.generation,
+          grant_state: grant.state,
+          reserved_bytes: res?.reservedMemBytes ?? 0,
+          remaining_bytes: remainingMem,
+          requested_bytes: needMemNum,
+        },
+        permanent: needMemNum > Number(inst.cap_mem_bytes || Number.MAX_SAFE_INTEGER),
+      };
+    }
+    if (needCpu > remainingCpu) {
+      return {
+        reason: "INSUFFICIENT_CPU",
+        detail: {
+          scope: "instance_grant",
+          host: host.host_id,
+          instance: inst.instance_id,
+          grant_millicores: grant.cpu_millicores,
+          grant_generation: grant.generation,
+          reserved_millicores: res?.reservedCpuMillicores ?? 0,
+          remaining_millicores: remainingCpu,
+          requested_millicores: needCpu,
+        },
+        permanent: needCpu > Number(inst.cap_cpu_millicores || Number.MAX_SAFE_INTEGER),
+      };
+    }
+
+    // k(i, τ) §9.1: per-type concurrency is bounded by the type cap and by the remaining grant.
+    const kMax = Math.max(1, Number(cfg.task_type_instance_limit ?? 4));
+    const typeOnInstance = await countActive(
+      c,
+      `SELECT count(*)::int AS n
+         FROM leases l JOIN tasks t USING (task_id)
+        WHERE l.instance_id = $1 AND t.task_type = $2
+          AND l.released_at IS NULL AND l.expires_at > app_now()`,
+      [inst.instance_id, task.task_type],
+    );
+    if (typeOnInstance >= kMax) {
+      return {
+        reason: "CONCURRENCY_LIMIT",
+        detail: { scope: "instance_task_type", limit: kMax, active: typeOnInstance },
+      };
+    }
+    const k = computeConcurrency({
+      remainingCpuMillicores: remainingCpu,
+      remainingMemBytes: remainingMem,
+      requestCpuMillicores: needCpu,
+      requestMemBytes: needMemNum,
+      kMax,
+    });
+    if (k < 1) {
+      return {
+        reason: needMemNum > remainingMem ? "INSUFFICIENT_MEMORY" : "INSUFFICIENT_CPU",
+        detail: {
+          scope: "instance_grant",
+          k,
+          grant_generation: grant.generation,
+          remaining_millicores: remainingCpu,
+          remaining_bytes: remainingMem,
+        },
+      };
+    }
+    return null;
+  }
+
+  // Static mode keeps the existing deploy-time memory budget check.
   const used = (
     await c.query(
       `SELECT COALESCE(SUM(memory_bytes),0)::bigint AS mem,
@@ -241,7 +541,6 @@ async function admit(
   ).rows[0];
 
   const usedMem = BigInt(used.mem);
-  const needMem = BigInt(profile.memory_bytes);
   if (usedMem + needMem > BigInt(host.mem_available_bytes)) {
     return {
       reason: "INSUFFICIENT_MEMORY",
@@ -251,6 +550,7 @@ async function admit(
         reserved_bytes: usedMem.toString(),
         requested_bytes: needMem.toString(),
       },
+      permanent: needMem > BigInt(host.mem_available_bytes),
     };
   }
   return null;
@@ -262,7 +562,9 @@ async function assign(
   inst: any,
   host: any,
   task: any,
-  traceId?: string,
+  traceId: string | undefined,
+  mode: "static" | "dynamic",
+  grant: ResourceGrantRow | null,
 ): Promise<Assignment> {
   // attempt_number is max(existing attempt) + 1, not attempt_count + 1.
   // A rejected admission rolls attempt_count back (no retry consumed), but the attempt row must be kept;
@@ -334,6 +636,10 @@ async function assign(
             attempt_count = attempt_count + 1,
             current_attempt_id = $2,
             resource_block_reason = NULL,
+            resource_evaluated_at = NULL,
+            resource_retry_after = NULL,
+            blocked_attempts = 0,
+            unschedulable = FALSE,
             version = version + 1,
             updated_at = app_now()
       WHERE task_id = $1
@@ -371,6 +677,8 @@ async function assign(
       host_id: host.host_id,
       grant_id: grantId,
       capability_score: Number(inst.capability_score ?? 0),
+      scheduling_mode: mode,
+      grant_generation: grant?.generation ?? null,
       difficulty: Number(task.difficulty ?? 0),
     },
     trace_id: traceId,
@@ -399,5 +707,17 @@ async function assign(
     },
     api_profiles: inst.api_profile_ids ?? [],
     started: false,
+    scheduling_mode: mode,
+    resource_grant: grant
+      ? {
+          generation: grant.generation,
+          state: grant.state,
+          cpu_millicores: grant.cpu_millicores,
+          memory_bytes: grant.memory_bytes,
+          memory_low_bytes: grant.memory_low_bytes,
+          memory_high_bytes: grant.memory_high_bytes,
+          cpu_weight: grant.cpu_weight,
+        }
+      : null,
   };
 }

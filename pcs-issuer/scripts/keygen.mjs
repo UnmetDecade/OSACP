@@ -22,28 +22,28 @@ function writePair(name, { publicKey, privateKey }) {
   const publicPath = path.join(dir, `${name}-public.pem`);
   const exists = fs.existsSync(privatePath) || fs.existsSync(publicPath);
   if (exists && !force) {
-    console.log(`保留已有密钥：${privatePath}`);
+    console.log(`Keeping existing key: ${privatePath}`);
     return;
   }
   fs.writeFileSync(privatePath, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   fs.writeFileSync(publicPath, publicKey.export({ type: "spki", format: "pem" }), { mode: 0o644 });
-  console.log(`已生成：\n  ${privatePath}\n  ${publicPath}`);
+  console.log(`Generated:\n  ${privatePath}\n  ${publicPath}`);
 }
 
 // Backward-compatible with legacy filenames: private.pem / public.pem are the JWT keys.
 const jwtPrivate = path.join(dir, "private.pem");
 const jwtPublic = path.join(dir, "public.pem");
 if ((fs.existsSync(jwtPrivate) || fs.existsSync(jwtPublic)) && !force) {
-  console.log(`保留已有密钥：${jwtPrivate}`);
+  console.log(`Keeping existing key: ${jwtPrivate}`);
 } else {
   const pair = generateKeyPairSync("ec", { namedCurve: "P-256" });
   fs.writeFileSync(jwtPrivate, pair.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   fs.writeFileSync(jwtPublic, pair.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o644 });
-  console.log(`已生成：\n  ${jwtPrivate}\n  ${jwtPublic}`);
+  console.log(`Generated:\n  ${jwtPrivate}\n  ${jwtPublic}`);
 }
 
 writePair("command", generateKeyPairSync("ed25519"));
 
 console.log(
-  "\n私钥只留在 PCS：调度机只需 public.pem 验 JWT；Host Runtime 只需 command-public.pem 验部署意图。",
+  "\nPrivate keys stay in PCS: the scheduler only needs public.pem to verify JWTs, and Host Runtime only needs command-public.pem to verify deployment intents.",
 );

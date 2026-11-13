@@ -15,7 +15,7 @@ if (hasToken || hasProxy) {
 }
 const ambient = process.env.AMBIENT_SECRET ? "visible" : "hidden";
 
-const chat = /操作员当前消息：(.*)/.exec(prompt);
+const chat = /Operator.s current message: (.*)/.exec(prompt);
 if (chat) {
   process.stdout.write(`STUB_REPLY(${chat[1].trim()}) token=stripped ambient=${ambient}\n`);
   process.exit(0);

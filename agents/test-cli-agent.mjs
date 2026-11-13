@@ -95,26 +95,26 @@ function start(taskType, deadlineMs = 60_000, extraArgs = []) {
 async function chatTest() {
   const s = start("task.chat.worker");
   const health = await s.request("agent.health", {});
-  ok(health.result?.healthy === true && health.result?.available === true, "health: CLI 可用");
+  ok(health.result?.healthy === true && health.result?.available === true, "health: CLI available");
   const prep = await s.request("agent.prepare", {
     task: { task_id: "t_chat", task_type: "task.chat.worker", requirements: {} },
     workspace,
   });
-  ok(prep.result?.ready === true, "prepare: 就绪");
+  ok(prep.result?.ready === true, "prepare: ready");
   const exec = await s.request("agent.execute", {
     task: {
       task_id: "t_chat",
       task_type: "task.chat.worker",
-      requirements: { chat: { message: "你好，进度如何？", history: [] } },
+      requirements: { chat: { message: "Hello, how is it going?", history: [] } },
     },
     workspace,
   });
   const result = await s.waitNotification();
-  ok(exec.result?.status === "SUCCEEDED", "execute: chat 成功");
-  ok(String(result?.reply ?? "").includes("STUB_REPLY(你好，进度如何？)"), "chat: reply 透传");
-  ok(String(result?.reply ?? "").includes("token=stripped"), "chat: 外部 CLI 看不到工具令牌");
-  ok(String(result?.reply ?? "").includes("ambient=hidden"), "chat: 未声明的宿主环境变量默认不继承");
-  ok(!s.stderr.join("").includes("must-not-leak"), "chat: 令牌没有出现在 stderr");
+  ok(exec.result?.status === "SUCCEEDED", "execute: chat succeeded");
+  ok(String(result?.reply ?? "").includes("STUB_REPLY(Hello, how is it going?)"), "chat: reply passed through");
+  ok(String(result?.reply ?? "").includes("token=stripped"), "chat: the external CLI cannot see the tool token");
+  ok(String(result?.reply ?? "").includes("ambient=hidden"), "chat: undeclared host environment variables are not inherited by default");
+  ok(!s.stderr.join("").includes("must-not-leak"), "chat: the token did not appear on stderr");
   s.child.kill("SIGKILL");
 }
 
@@ -129,11 +129,11 @@ async function passEnvTest() {
     task: {
       task_id: "t_env",
       task_type: "task.chat.worker",
-      requirements: { chat: { message: "环境测试", history: [] } },
+      requirements: { chat: { message: "environment test", history: [] } },
     },
     workspace,
   });
-  ok(String(exec.result?.reply ?? "").includes("ambient=visible"), "pass-env: 显式声明的变量可传给 CLI");
+  ok(String(exec.result?.reply ?? "").includes("ambient=visible"), "pass-env: explicitly declared variables reach the CLI");
   s.child.kill("SIGKILL");
 }
 
@@ -148,10 +148,10 @@ async function buildTest() {
     task: { task_id: "t_build", task_type: "task.build", requirements: { change: "demo" } },
     workspace,
   });
-  ok(exec.result?.status === "SUCCEEDED", "execute: build 成功");
-  ok(exec.result?.summary === "STUB_BUILD_OK", "build: 读取 result.json 摘要");
-  ok(exec.result?.outputs?.[0]?.path === "artifact.txt", "build: 声明产物");
-  ok(fs.existsSync(path.join(workspace, "artifact.txt")), "build: 产物落在工作区");
+  ok(exec.result?.status === "SUCCEEDED", "execute: build succeeded");
+  ok(exec.result?.summary === "STUB_BUILD_OK", "build: reads the result.json summary");
+  ok(exec.result?.outputs?.[0]?.path === "artifact.txt", "build: declares artifacts");
+  ok(fs.existsSync(path.join(workspace, "artifact.txt")), "build: artifacts land in the workspace");
   s.child.kill("SIGKILL");
 }
 
@@ -178,7 +178,7 @@ async function missingCliTest() {
   } catch {
     health = {};
   }
-  ok(health.result?.available === false, "health: 缺失 CLI 明确不可用");
+  ok(health.result?.available === false, "health: a missing CLI reports unavailable");
   child.stdin.write(
     `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "agent.prepare", params: { task: {}, workspace } })}\n`,
   );
@@ -189,7 +189,7 @@ async function missingCliTest() {
   } catch {
     prep = {};
   }
-  ok(prep.result?.ready === false && /CLI_NOT_INSTALLED/.test(String(prep.result?.reason)), "prepare: 缺失 CLI 拒绝执行");
+  ok(prep.result?.ready === false && /CLI_NOT_INSTALLED/.test(String(prep.result?.reason)), "prepare: a missing CLI refuses execution");
   child.kill("SIGKILL");
 }
 
@@ -202,7 +202,7 @@ try {
   fs.rmSync(workspace, { recursive: true, force: true });
 }
 if (failures) {
-  console.error(`\n${failures} 项失败`);
+  console.error(`\n${failures} failed`);
   process.exit(1);
 }
-console.log("\n全部通过");
+console.log("\nAll passed");

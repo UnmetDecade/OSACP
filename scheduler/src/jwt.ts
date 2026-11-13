@@ -42,7 +42,7 @@ export function pcsPublicKeyPem(): string | null {
     try {
       return fs.readFileSync(file, "utf8");
     } catch {
-      throw new ApiError(503, "AUTH_NOT_CONFIGURED", `无法读取 PCS 公钥：${file}`);
+      throw new ApiError(503, "AUTH_NOT_CONFIGURED", `failed to read PCS public key: ${file}`);
     }
   }
   return null;
@@ -60,7 +60,7 @@ function parsePart<T>(part: string, what: string): T {
   try {
     return JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as T;
   } catch {
-    throw new ApiError(401, "TOKEN_INVALID", `令牌 ${what} 不是合法 JSON`);
+    throw new ApiError(401, "TOKEN_INVALID", `token ${what} is not valid JSON`);
   }
 }
 
@@ -88,23 +88,23 @@ export interface VerifyOptions {
 
 export function verifyJwt(token: string, opts: VerifyOptions = {}): TokenClaims {
   const parts = token.split(".");
-  if (parts.length !== 3) throw new ApiError(401, "TOKEN_INVALID", "令牌格式无效");
+  if (parts.length !== 3) throw new ApiError(401, "TOKEN_INVALID", "invalid token format");
 
-  const header = parsePart<{ alg?: string; typ?: string }>(parts[0], "头部");
+  const header = parsePart<{ alg?: string; typ?: string }>(parts[0], "header");
   if (header.alg !== "ES256") {
-    throw new ApiError(401, "TOKEN_INVALID", `不支持的签名算法：${header.alg ?? "none"}`);
+    throw new ApiError(401, "TOKEN_INVALID", `unsupported signature algorithm: ${header.alg ?? "none"}`);
   }
 
   const pem = pcsPublicKeyPem();
   if (!pem) {
-    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "未配置 PCS 公钥，无法验签");
+    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "PCS public key is not configured; cannot verify signature");
   }
 
   let key: KeyObject;
   try {
     key = createPublicKey(pem);
   } catch {
-    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "PCS 公钥格式无效");
+    throw new ApiError(503, "AUTH_NOT_CONFIGURED", "invalid PCS public key format");
   }
 
   const ok = verify(
@@ -113,26 +113,26 @@ export function verifyJwt(token: string, opts: VerifyOptions = {}): TokenClaims 
     { key, dsaEncoding: "ieee-p1363" },
     Buffer.from(parts[2], "base64url"),
   );
-  if (!ok) throw new ApiError(401, "TOKEN_INVALID", "令牌签名无效");
+  if (!ok) throw new ApiError(401, "TOKEN_INVALID", "invalid token signature");
 
-  const claims = parsePart<TokenClaims>(parts[1], "载荷");
+  const claims = parsePart<TokenClaims>(parts[1], "payload");
   const skew = opts.skewSeconds ?? 60;
   const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
 
   if (typeof claims.exp !== "number") {
-    throw new ApiError(401, "TOKEN_INVALID", "令牌缺少 exp");
+    throw new ApiError(401, "TOKEN_INVALID", "token is missing exp");
   }
-  if (claims.exp + skew < now) throw new ApiError(401, "TOKEN_EXPIRED", "令牌已过期");
+  if (claims.exp + skew < now) throw new ApiError(401, "TOKEN_EXPIRED", "token has expired");
   if (typeof claims.nbf === "number" && claims.nbf - skew > now) {
-    throw new ApiError(401, "TOKEN_INVALID", "令牌尚未生效");
+    throw new ApiError(401, "TOKEN_INVALID", "token is not valid yet");
   }
   if (opts.issuer && claims.iss !== opts.issuer) {
-    throw new ApiError(401, "TOKEN_INVALID", `签发者不受信任：${claims.iss ?? "-"}`);
+    throw new ApiError(401, "TOKEN_INVALID", `untrusted issuer: ${claims.iss ?? "-"}`);
   }
   if (opts.audience) {
     const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!aud.includes(opts.audience)) {
-      throw new ApiError(401, "TOKEN_INVALID", "令牌受众不匹配");
+      throw new ApiError(401, "TOKEN_INVALID", "token audience mismatch");
     }
   }
   return claims;
@@ -142,7 +142,7 @@ export function verifyJwt(token: string, opts: VerifyOptions = {}): TokenClaims 
 export function requireScope(claims: TokenClaims, scope: string): void {
   const scopes = Array.isArray(claims.scopes) ? claims.scopes : [];
   if (!scopes.includes(scope)) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", `令牌缺少权限范围：${scope}`, {
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", `token is missing required scope: ${scope}`, {
       required: scope,
       scopes,
     });
@@ -166,17 +166,17 @@ export interface ApprovalClaims extends TokenClaims {
 export function verifyApprovalToken(token: string): ApprovalClaims {
   const claims = verifyJwt(token, { issuer: ISSUER, audience: AUDIENCE });
   if (claims.typ !== "approval") {
-    throw new ApiError(401, "TOKEN_INVALID", "不是审批令牌");
+    throw new ApiError(401, "TOKEN_INVALID", "not an approval token");
   }
   requireScope(claims, "approval:decide");
 
   for (const k of ["approval_request_id", "operator_id"] as const) {
     if (typeof claims[k] !== "string" || !claims[k]) {
-      throw new ApiError(401, "TOKEN_INVALID", `审批令牌缺少 ${k}`);
+      throw new ApiError(401, "TOKEN_INVALID", `approval token is missing ${k}`);
     }
   }
   if (!Array.isArray(claims.action_scope)) {
-    throw new ApiError(401, "TOKEN_INVALID", "审批令牌缺少 action_scope");
+    throw new ApiError(401, "TOKEN_INVALID", "approval token is missing action_scope");
   }
   return claims as ApprovalClaims;
 }

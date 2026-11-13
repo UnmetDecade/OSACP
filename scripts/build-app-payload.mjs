@@ -91,15 +91,15 @@ fs.copyFileSync(
 
 let total = 0;
 for (const [label, dir] of [
-  ["调度机", schedulerOut],
-  ["构建机", builderOut],
+  ["Scheduler", schedulerOut],
+  ["Builder", builderOut],
 ]) {
   let size = 0;
   for (const file of listFiles(dir)) size += fs.statSync(file).size;
   total += size;
-  console.log(`${label}载荷 ${(size / 1024).toFixed(0)}K → ${path.relative(repo, dir)}/`);
+  console.log(`${label} payload ${(size / 1024).toFixed(0)}K → ${path.relative(repo, dir)}/`);
 }
-console.log(`合计 ${(total / 1024).toFixed(0)}K`);
+console.log(`Total ${(total / 1024).toFixed(0)}K`);
 
 function listFiles(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {

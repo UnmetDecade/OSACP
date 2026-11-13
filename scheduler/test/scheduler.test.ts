@@ -38,6 +38,7 @@ import { latestEventId, listOutbox } from "../src/repo/outbox.js";
 import { capabilitySnapshot, listNodes, upsertNodeReport } from "../src/repo/federation.js";
 import { cancelTask, createTask, getTask, listEvents } from "../src/repo/tasks.js";
 import { syncRelays } from "../src/core/relay.js";
+import { getGrants, markGrantApplied } from "../src/repo/resources.js";
 import { advance, claimOrFail, newTask, reset, runToSuccess, uploadArtifactFor } from "./helpers.js";
 
 beforeEach(async () => {
@@ -51,32 +52,32 @@ after(async () => {
 async function expectApiError(fn: () => Promise<unknown>, code: string) {
   try {
     await fn();
-    assert.fail(`期望抛出 ${code}，实际成功`);
+    assert.fail(`expected ${code} to be thrown, but the call succeeded`);
   } catch (e) {
-    assert.ok(e instanceof ApiError, `期望 ApiError，实际 ${e}`);
-    assert.equal(e.code, code, `错误码不匹配：${e.code} / ${JSON.stringify((e as ApiError).detail)}`);
+    assert.ok(e instanceof ApiError, `expected ApiError, got ${e}`);
+    assert.equal(e.code, code, `error code mismatch: ${e.code} / ${JSON.stringify((e as ApiError).detail)}`);
   }
 }
 
-describe("M1 任务与状态机", () => {
-  it("创建任务后为 QUEUED，且写入 TASK_CREATED 事件", async () => {
+describe("M1 tasks and state machine", () => {
+  it("a created task is QUEUED and writes a TASK_CREATED event", async () => {
     const t = await newTask();
     assert.equal(t.status, "QUEUED");
     const events = await listEvents(t.task_id);
     assert.equal(events[0].event_type, "TASK_CREATED");
   });
 
-  it("未定义的任务类型被拒绝", async () => {
+  it("undefined task types are rejected", async () => {
     await expectApiError(() => newTask({ task_type: "nope" }), "TASK_TYPE_UNKNOWN");
   });
 
-  it("非法状态迁移被拒绝（表驱动）", async () => {
+  it("illegal state transitions are rejected (table-driven)", async () => {
     const t = await newTask();
     await cancelTask(t.task_id);
     await expectApiError(() => cancelTask(t.task_id), "STATE_CONFLICT");
   });
 
-  it("task_events 只允许追加", async () => {
+  it("task_events is append-only", async () => {
     const t = await newTask();
     await assert.rejects(
       () => pool.query(`UPDATE task_events SET event_type = 'X' WHERE task_id = $1`, [t.task_id]),
@@ -85,8 +86,8 @@ describe("M1 任务与状态机", () => {
   });
 });
 
-describe("M2 领取与租约", () => {
-  it("领取后任务 ASSIGNED，生成租约、attempt、HELD 预留", async () => {
+describe("M2 claiming and leases", () => {
+  it("claiming makes the task ASSIGNED and creates a lease, attempt, and HELD reservation", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
 
@@ -103,14 +104,14 @@ describe("M2 领取与租约", () => {
     assert.equal(res?.state, "HELD");
   });
 
-  it("实例并发上限默认 1：同一实例第二次领取返回空", async () => {
+  it("the default per-instance concurrency limit is 1: a second claim by the same instance returns empty", async () => {
     await newTask();
     await newTask();
     await claimOrFail("worker-a");
     assert.equal(await claim({ instance_id: "worker-a" }), null);
   });
 
-  it("两个实例并发领取不会拿到同一个任务", async () => {
+  it("two instances claiming concurrently never get the same task", async () => {
     await q(`UPDATE scheduler_config SET instance_limit = 5, task_type_limit = 50`);
     for (let i = 0; i < 10; i++) await newTask();
     const results = await Promise.all(
@@ -120,10 +121,10 @@ describe("M2 领取与租约", () => {
     );
     const ids = results.filter(Boolean).map((r) => r!.task_id);
     assert.equal(ids.length, 10);
-    assert.equal(new Set(ids).size, 10, "出现重复领取");
+    assert.equal(new Set(ids).size, 10, "a duplicate claim occurred");
   });
 
-  it("start-ack 后 RUNNING，预留转 ACTIVE", async () => {
+  it("start-ack moves the task to RUNNING and the reservation to ACTIVE", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     await startAck(a.attempt_id, {
@@ -140,7 +141,7 @@ describe("M2 领取与租约", () => {
     assert.equal(res?.state, "ACTIVE");
   });
 
-  it("重复 start-ack 幂等", async () => {
+  it("repeated start-ack is idempotent", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     const proof = {
@@ -153,7 +154,7 @@ describe("M2 领取与租约", () => {
     assert.equal((again as any).idempotent, true);
   });
 
-  it("未 start-ack 直接报结果 → STATE_CONFLICT", async () => {
+  it("reporting a result without start-ack → STATE_CONFLICT", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     await expectApiError(
@@ -167,7 +168,7 @@ describe("M2 领取与租约", () => {
     );
   });
 
-  it("续租延长 expires_at", async () => {
+  it("renewal extends expires_at", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     const before = new Date(a.lease_expires_at).getTime();
@@ -180,8 +181,8 @@ describe("M2 领取与租约", () => {
   });
 });
 
-describe("M3 fencing 与重复执行", () => {
-  it("成功结果幂等：同一 attempt 重复上报返回首次结果", async () => {
+describe("M3 fencing and duplicate execution", () => {
+  it("successful results are idempotent: reporting again for the same attempt returns the first result", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     const proof = {
@@ -190,13 +191,13 @@ describe("M3 fencing 与重复执行", () => {
       instance_id: "worker-a",
     };
     await startAck(a.attempt_id, proof);
-    await submitResult(a.attempt_id, { ...proof, status: "SUCCEEDED", summary: "第一次" });
+    await submitResult(a.attempt_id, { ...proof, status: "SUCCEEDED", summary: "first time" });
     const second = await submitResult(a.attempt_id, { ...proof, status: "FAILED" });
     assert.equal((second as any).idempotent, true);
     assert.equal((second as any).attempt_status, "SUCCEEDED");
   });
 
-  it("fencing 不匹配的写入被拒绝", async () => {
+  it("writes with mismatched fencing are rejected", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     await expectApiError(
@@ -210,7 +211,7 @@ describe("M3 fencing 与重复执行", () => {
     );
   });
 
-  it("租约被回收后，旧 attempt 的结果写入被 FENCING_STALE 挡住", async () => {
+  it("after the lease is reclaimed, result writes from the old attempt are blocked with FENCING_STALE", async () => {
     const t = await newTask();
     const first = await claimOrFail("worker-a");
     await startAck(first.attempt_id, {
@@ -237,7 +238,7 @@ describe("M3 fencing 与重复执行", () => {
           lease_token: first.lease_token,
           fencing_token: first.fencing_token,
           status: "SUCCEEDED",
-          summary: "迟到的成功（毒消息）",
+          summary: "late success (poison message)",
         }),
       "FENCING_STALE",
     );
@@ -262,7 +263,7 @@ describe("M3 fencing 与重复执行", () => {
     assert.ok(types.includes("TASK_SUCCEEDED"));
   });
 
-  it("启动窗口 30s 未 ack 即回收，且不把 RUNNING 任务判成失败", async () => {
+  it("no ack within the 30s startup window triggers reclamation without marking the RUNNING task failed", async () => {
     await newTask();
     await claimOrFail("worker-a");
     await advance(31);
@@ -271,7 +272,7 @@ describe("M3 fencing 与重复执行", () => {
     assert.equal(r.reclaimed[0].to, "QUEUED");
   });
 
-  it("本机准入拒绝不消耗重试次数", async () => {
+  it("local admission rejection does not consume retries", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
     const out = await startAck(a.attempt_id, {
@@ -296,8 +297,8 @@ describe("M3 fencing 与重复执行", () => {
   });
 });
 
-describe("M4 重试与死信", () => {
-  it("可重试失败 → 退避回队，退避期内不可领取", async () => {
+describe("M4 retries and dead letters", () => {
+  it("retryable failure → requeued with backoff and not claimable during the backoff", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
     const proof = {
@@ -322,7 +323,7 @@ describe("M4 重试与死信", () => {
     assert.ok(await claim({ instance_id: "worker-a" }));
   });
 
-  it("重试耗尽 → FAILED + 死信", async () => {
+  it("exhausted retries → FAILED + dead letter", async () => {
     const t = await newTask({ max_attempts: 2 });
     for (let i = 0; i < 2; i++) {
       const a = await claimOrFail("worker-a");
@@ -346,7 +347,7 @@ describe("M4 重试与死信", () => {
     assert.ok(types.includes("TASK_DEAD_LETTERED"));
   });
 
-  it("不可重试错误立即失败，不消耗后续重试", async () => {
+  it("non-retryable errors fail immediately without consuming further retries", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
     await startAck(a.attempt_id, {
@@ -365,8 +366,8 @@ describe("M4 重试与死信", () => {
   });
 });
 
-describe("预留核对与孤儿 grant", () => {
-  it("租约回收后旧预留关闭，新 attempt 使用新 grant，无残留 HELD/ACTIVE", async () => {
+describe("reservation reconciliation and orphan grants", () => {
+  it("after lease reclamation the old reservation closes, the new attempt uses a new grant, and no HELD/ACTIVE remains", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
     const old = await q1<{ grant_id: string; state: string }>(
@@ -406,7 +407,7 @@ describe("预留核对与孤儿 grant", () => {
     assert.equal((await getTask(t.task_id)).status, "ASSIGNED");
   });
 
-  it("取消 ack 后预留按 RELEASED 关闭", async () => {
+  it("after cancel-ack the reservation closes as RELEASED", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     const proof = {
@@ -426,8 +427,8 @@ describe("预留核对与孤儿 grant", () => {
   });
 });
 
-describe("M2 心跳与健康", () => {
-  it("45s 无心跳 → SUSPECT 且不再领取；90s → OFFLINE", async () => {
+describe("M2 heartbeat and health", () => {
+  it("45s without a heartbeat → SUSPECT and no more claims; 90s → OFFLINE", async () => {
     await newTask();
     await advance(46);
     const hb = await sweepHeartbeats({ suspectAfter: 45, offlineAfter: 90 });
@@ -446,7 +447,7 @@ describe("M2 心跳与健康", () => {
     ]);
   });
 
-  it("SUSPECT 不回收在途租约", async () => {
+  it("SUSPECT does not reclaim in-flight leases", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     await startAck(a.attempt_id, {
@@ -465,14 +466,14 @@ describe("M2 心跳与健康", () => {
   });
 });
 
-describe("排序与准入", () => {
-  it("老化：P2 等够 600s 后与 P1 同权，按入队时间先出", async () => {
+describe("ordering and admission", () => {
+  it("aging: P2 gains parity with P1 after 600s and is ordered by enqueue time", async () => {
     const older = await newTask({ priority_class: 2 });
     await advance(700);
     const newer = await newTask({ priority_class: 1 });
 
     const a = await claimOrFail("worker-a");
-    assert.equal(a.task_id, older.task_id, "老化后应先领取更早入队的任务");
+    assert.equal(a.task_id, older.task_id, "after aging, the earlier-enqueued task should be claimed first");
 
     const events = await listEvents(older.task_id);
     assert.ok(events.some((e) => e.event_type === "TASK_AGED"));
@@ -481,7 +482,7 @@ describe("排序与准入", () => {
     assert.equal((await getTask(newer.task_id)).status, "QUEUED");
   });
 
-  it("P0 不参与老化", async () => {
+  it("P0 does not participate in aging", async () => {
     const p0 = await newTask({ priority_class: 0 });
     await advance(1800);
     await newTask({ priority_class: 1 });
@@ -489,13 +490,13 @@ describe("排序与准入", () => {
     assert.equal(a.task_id, p0.task_id);
   });
 
-  it("主机 PROTECTING 时停止派发", async () => {
+  it("dispatch stops while the host is PROTECTING", async () => {
     await newTask();
     await q(`UPDATE hosts SET host_state = 'PROTECTING' WHERE host_id = 'host-a'`);
     await expectApiError(() => claim({ instance_id: "worker-a" }), "HOST_NOT_ELIGIBLE");
   });
 
-  it("宿主机内存不足 → 任务保持 QUEUED 并写 resource_block_reason", async () => {
+  it("insufficient host memory → the task stays QUEUED and resource_block_reason is written", async () => {
     await q(`UPDATE hosts SET mem_available_bytes = 1000 WHERE host_id = 'host-a'`);
     const t = await newTask();
     assert.equal(await claim({ instance_id: "worker-a" }), null);
@@ -510,14 +511,14 @@ describe("排序与准入", () => {
   });
 });
 
-describe("取消", () => {
-  it("QUEUED 取消立即生效", async () => {
+describe("cancellation", () => {
+  it("cancelling QUEUED takes effect immediately", async () => {
     const t = await newTask();
     const out = await cancelTask(t.task_id, "tester");
     assert.equal((out as any).status, "CANCELLED");
   });
 
-  it("RUNNING 取消只登记请求，等实例 ack", async () => {
+  it("cancelling RUNNING only records the request until the instance acks", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
     const proof = {
@@ -535,8 +536,8 @@ describe("取消", () => {
   });
 });
 
-describe("M5 实例生命周期", () => {
-  it("能力只能收窄：缩小成功，扩大 403", async () => {
+describe("M5 instance lifecycle", () => {
+  it("capabilities can only narrow: shrinking succeeds and expanding returns 403", async () => {
     await register({
       instance_id: "worker-a",
       role_id: "worker",
@@ -564,7 +565,7 @@ describe("M5 实例生命周期", () => {
     );
   });
 
-  it("drain 停止领取、在途继续；心跳不能撤销 drain，resume 恢复", async () => {
+  it("drain stops claims while in-flight work continues; heartbeats cannot undo drain and resume restores it", async () => {
     const t1 = await newTask();
     const a = await claimOrFail("worker-a");
     await startAck(a.attempt_id, {
@@ -602,7 +603,7 @@ describe("M5 实例生命周期", () => {
     assert.notEqual(next.task_id, t1.task_id);
   });
 
-  it("drain 超时未完成 → OFFLINE", async () => {
+  it("an incomplete drain timeout → OFFLINE", async () => {
     await drain("worker-a", { timeout_seconds: 60 });
     await advance(61);
     assert.deepEqual(await sweepDrainTimeouts(), ["worker-a"]);
@@ -612,7 +613,7 @@ describe("M5 实例生命周期", () => {
     assert.equal(inst?.state, "OFFLINE");
   });
 
-  it("有在途任务时不能注销；force=true 放行", async () => {
+  it("unregistration is blocked with in-flight tasks; force=true allows it", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
     await startAck(a.attempt_id, {
@@ -629,7 +630,7 @@ describe("M5 实例生命周期", () => {
     await expectApiError(() => claim({ instance_id: "worker-a" }), "INSTANCE_NOT_ELIGIBLE");
   });
 
-  it("config-sync：版本未变返回 null（HTTP 304），变了返回新配置", async () => {
+  it("config-sync: an unchanged version returns null (HTTP 304), a changed one returns the new config", async () => {
     const cfg = await syncConfig("worker-a");
     assert.equal((cfg as any).config_version, 1);
     assert.deepEqual((cfg as any).allowed_task_types, ["task.build"]);
@@ -640,7 +641,7 @@ describe("M5 实例生命周期", () => {
     assert.equal((cfg2 as any).config_version, 2);
   });
 
-  it("P4：信封只带 Agent/API Profile 引用，config-sync 只同步引用", async () => {
+  it("P4: the envelope only carries Agent/API Profile references and config-sync only syncs references", async () => {
     await register({
       instance_id: "worker-a",
       role_id: "worker",
@@ -706,7 +707,7 @@ describe("M5 实例生命周期", () => {
     assert.equal(t.task_id !== b.task_id, true);
   });
 
-  it("设置 AUTH_TOKEN 后，实例接口缺令牌/错令牌 → 401", () => {
+  it("with AUTH_TOKEN set, a missing or wrong instance token → 401", () => {
     const old = process.env.AUTH_TOKEN;
     process.env.AUTH_TOKEN = "s3cret-token";
     try {
@@ -725,11 +726,11 @@ describe("M5 实例生命周期", () => {
   });
 });
 
-describe("M6 Outbox 与事件推送", () => {
-  it("创建任务与 outbox 同事务写入，字段完整", async () => {
+describe("M6 Outbox and event push", () => {
+  it("task creation and the outbox entry are written in one transaction with complete fields", async () => {
     const t = await newTask();
     const created = (await listOutbox(0)).find((e) => e.event_type === "TASK_CREATED");
-    assert.ok(created, "outbox 里应有 TASK_CREATED");
+    assert.ok(created, "the outbox should contain TASK_CREATED");
     assert.equal(created.aggregate_type, "task");
     assert.equal(created.aggregate_id, t.task_id);
     assert.equal(created.schema_version, "1.0");
@@ -739,7 +740,7 @@ describe("M6 Outbox 与事件推送", () => {
     assert.equal(payload.to_status, "QUEUED");
   });
 
-  it("状态迁移事件带 attempt / fencing，顺序可续传", async () => {
+  it("state transition events carry attempt / fencing and can be resumed in order", async () => {
     await newTask();
     const a = await claimOrFail("worker-a");
 
@@ -749,7 +750,7 @@ describe("M6 Outbox 与事件推送", () => {
     const payload = assigned.payload as any;
     assert.equal(payload.payload.attempt_id, a.attempt_id);
     assert.equal(payload.payload.fencing_token, a.fencing_token);
-    assert.equal(assigned.aggregate_version, "2", "assign 后 version 应为 2");
+    assert.equal(assigned.aggregate_version, "2", "version should be 2 after assign");
 
     // Cursor: after only returns newer events
     const firstId = Number(all[0].event_id);
@@ -759,7 +760,7 @@ describe("M6 Outbox 与事件推送", () => {
     assert.equal(await latestEventId(), Number(all[all.length - 1].event_id));
   });
 
-  it("outbox 只允许追加", async () => {
+  it("outbox is append-only", async () => {
     await newTask();
     await assert.rejects(
       () => pool.query(`UPDATE outbox_events SET event_type = 'X'`),
@@ -768,8 +769,8 @@ describe("M6 Outbox 与事件推送", () => {
   });
 });
 
-describe("并发压力", () => {
-  it("30 个任务、3 个实例（含提升并发）不重不漏", async () => {
+describe("concurrency stress", () => {
+  it("30 tasks and 3 instances (including raised concurrency) are neither duplicated nor lost", async () => {
     await q(
       `UPDATE scheduler_config SET instance_limit = 10, role_pool_limit = 200,
               global_limit = 200, task_type_limit = 200`,
@@ -790,8 +791,8 @@ describe("并发压力", () => {
       for (const b of batch) if (b) ids.push(b.task_id);
     }
 
-    assert.equal(new Set(ids).size, ids.length, "有任务被重复领取");
-    assert.equal(ids.length, 30, `领取数量不对：${ids.length}`);
+    assert.equal(new Set(ids).size, ids.length, "a task was claimed twice");
+    assert.equal(ids.length, 30, `wrong claim count: ${ids.length}`);
 
     const counts = await q<{ status: string; n: number }>(
       `SELECT status, count(*)::int AS n FROM tasks GROUP BY status`,
@@ -800,7 +801,7 @@ describe("并发压力", () => {
   });
 });
 
-describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
+describe("M7 workflows and approvals (signed tokens + artifact digests)", () => {
   // Each test process generates a one-off ES256 key pair; the private key lives only in test memory
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const PUBLIC_PEM = publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -905,7 +906,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     };
   }
 
-  it("工作流创建不能自带制品交接或审批字段", async () => {
+  it("workflow creation cannot include artifact handoff or approval fields", async () => {
     const { task } = await createWorkflowRun({
       workflow_template_id: "wft_test",
       requirements: {
@@ -920,7 +921,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.deepEqual((task as any).requirements, { capabilities: ["code.edit"] });
   });
 
-  it("阶段推进：EXECUTE → REVIEW → WAITING_APPROVAL，审批后 COMMIT → VERIFY → COMPLETED", async () => {
+  it("stage progression: EXECUTE → REVIEW → WAITING_APPROVAL, then COMMIT → VERIFY → COMPLETED after approval", async () => {
     const { runId, reviewTaskId, requestId, digest } = await reachApproval();
 
     const waiting = (await getWorkflowRun(runId)) as any;
@@ -932,7 +933,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     // Data source for the admin app approval center: includes task / workflow context, so the admin app need not write SQL.
     const listed = (await listApprovalRequests({ status: "PENDING" })) as any[];
     const row = listed.find((x) => x.approval_request_id === requestId);
-    assert.ok(row, "待审批列表应包含当前请求");
+    assert.ok(row, "the pending-approval list should contain the current request");
     assert.equal(row.task_id, reviewTaskId);
     assert.equal(row.target_role, "reviewer");
     assert.equal(row.workflow_status, "WAITING_APPROVAL");
@@ -985,14 +986,14 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(verifying.current_phase, "VERIFY");
 
     const verifyTask = verifying.tasks.find((t: any) => t.status === "QUEUED");
-    assert.ok(verifyTask, "应创建 VERIFY 阶段任务");
+    assert.ok(verifyTask, "a VERIFY stage task should be created");
     assert.equal(verifyTask.task_type, "task.test.run");
     await runToSuccess("tester-a", verifyTask.task_id);
 
     const done = (await getWorkflowRun(runId)) as any;
     assert.equal(done.status, "COMPLETED");
     assert.equal(done.current_task_id, null);
-    assert.equal(done.tasks.length, 4, "EXECUTE/REVIEW/COMMIT/VERIFY 各一个任务");
+    assert.equal(done.tasks.length, 4, "one task each for EXECUTE/REVIEW/COMMIT/VERIFY");
 
     const types = done.tasks.map((t: any) => t.task_type).sort();
     assert.deepEqual(types, ["task.build", "task.commit", "task.review.snapshot", "task.test.run"]);
@@ -1008,11 +1009,11 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       "APPROVAL_DECIDED",
       "WORKFLOW_COMPLETED",
     ]) {
-      assert.ok(typesSeen.includes(t), `outbox 缺少 ${t}: ${typesSeen.join(",")}`);
+      assert.ok(typesSeen.includes(t), `outbox is missing ${t}: ${typesSeen.join(",")}`);
     }
   });
 
-  it("拒绝审批 → 工作流 FAILED，不创建 COMMIT 任务", async () => {
+  it("rejecting approval → workflow FAILED without creating a COMMIT task", async () => {
     const { runId, reviewTaskId, requestId, digest } = await reachApproval();
 
     const out = await decideApproval({
@@ -1020,7 +1021,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
       decision: "REJECTED",
       operator_id: OP,
       approval_token: approvalToken({ requestId, digest }),
-      comment: "diff 有问题",
+      comment: "the diff has issues",
     });
     assert.equal((out.run as any).status, "FAILED");
     assert.equal(out.task, null);
@@ -1030,12 +1031,12 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(
       run.tasks.some((t: any) => t.task_type === "task.commit"),
       false,
-      "拒绝后不应有 COMMIT 任务",
+      "no COMMIT task should exist after rejection",
     );
     assert.equal(run.approval_requests[0].status, "REJECTED");
   });
 
-  it("审批令牌一次性：jti 已落库的令牌不能再用", async () => {
+  it("approval tokens are single-use: a token whose jti is already stored cannot be reused", async () => {
     const { reviewTaskId, requestId, digest } = await reachApproval();
     const token = approvalToken({ requestId, digest, jti: "tok-fixed-once" });
 
@@ -1065,7 +1066,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
   });
 
-  it("审批人必须是令牌里的 operator", async () => {
+  it("the approver must be the operator in the token", async () => {
     const { reviewTaskId, requestId, digest } = await reachApproval();
     await expectApiError(
       () =>
@@ -1079,7 +1080,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
   });
 
-  it("无 PCS 公钥时审批 fail closed；实例令牌签名、受众、scope、自证都校验", async () => {
+  it("approval fails closed without the PCS public key; instance token signature, audience, scope, and self-proof are all validated", async () => {
     const saved = process.env.PCS_PUBLIC_KEY;
     // 1) No public key configured: approval returns 503 directly
     delete process.env.PCS_PUBLIC_KEY;
@@ -1139,7 +1140,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.doesNotThrow(() => requireScope(limited!.claims!, "instance:claim"));
   });
 
-  it("制品摘要由服务端重算：内容被换掉时 complete 失败", async () => {
+  it("the artifact digest is recomputed server-side: complete fails when the content is swapped", async () => {
     const t = await newTask();
     const declared = digestOf(Buffer.from("expected content"));
     const meta = await createArtifact(
@@ -1158,7 +1159,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     assert.equal(failed?.status, "FAILED");
   });
 
-  it("制品内容：属主可读，未交接的实例不可读，交接随 attempt 结束收回", async () => {
+  it("artifact content: readable by the owner, unreadable by instances without a handoff, and the handoff is revoked when the attempt ends", async () => {
     const buildTask = await newTask();
     const sha = await uploadArtifactFor(buildTask.task_id, "build output", "worker-a");
     const art = await q1<{ artifact_id: string }>(
@@ -1213,7 +1214,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
   });
 
-  it("未完成校验的制品不能读", async () => {
+  it("artifacts that have not finished verification cannot be read", async () => {
     const t = await newTask();
     const meta = await createArtifact(
       { task_id: t.task_id, sha256: digestOf(Buffer.from("x")), media_type: "text/plain" },
@@ -1226,7 +1227,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
   });
 
-  it("不可重试失败 → 工作流 FAILED；取消 → 工作流 CANCELLED", async () => {
+  it("non-retryable failure → workflow FAILED; cancellation → workflow CANCELLED", async () => {
     const { run: run1, task: task1 } = await createWorkflowRun({
       workflow_template_id: "wft_test",
     });
@@ -1256,7 +1257,7 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
     );
   });
 
-  it("未知模板 → 404；工作流列表可查", async () => {
+  it("unknown template → 404; the workflow list is queryable", async () => {
     await expectApiError(
       () => createWorkflowRun({ workflow_template_id: "wft_missing" }),
       "WORKFLOW_TEMPLATE_UNKNOWN",
@@ -1268,8 +1269,8 @@ describe("M7 工作流与审批（签名令牌 + 制品摘要）", () => {
   });
 });
 
-describe("工作能力值 W 与任务难度 D", () => {
-  it("只有 W >= D 的构建机可以领取任务", async () => {
+describe("work capability W and task difficulty D", () => {
+  it("only builders with W >= D can claim tasks", async () => {
     await q(`UPDATE role_instances SET capability_score = 120 WHERE instance_id = 'worker-a'`);
     await q(`UPDATE role_instances SET capability_score = 600 WHERE instance_id = 'worker-b'`);
 
@@ -1287,14 +1288,14 @@ describe("工作能力值 W 与任务难度 D", () => {
     assert.equal(b.task_id, easy.task_id);
   });
 
-  it("未上报 W 的实例保持旧行为（不按难度过滤）", async () => {
+  it("instances that do not report W keep the old behavior (no difficulty filtering)", async () => {
     const t = await newTask({ difficulty: 800 });
     const a = await claimOrFail("worker-a");
     assert.equal(a.task_id, t.task_id);
     assert.equal(a.difficulty, 800);
   });
 
-  it("结点上报的 ΣW 逐级相加，根节点不重复计算孙结点", async () => {
+  it("reported node ΣW adds up level by level, and the root does not double-count grandchildren", async () => {
     // This machine has one builder with W=320
     await q(
       `INSERT INTO role_instances (instance_id, role_id, host_id, state, agent_profile_id,
@@ -1334,8 +1335,8 @@ describe("工作能力值 W 与任务难度 D", () => {
   });
 });
 
-describe("跨调度机中继", () => {
-  it("已下推的父任务留在本地但不再被领取", async () => {
+describe("cross-scheduler relay", () => {
+  it("a pushed-down parent task stays local but is no longer claimed", async () => {
     const t = await newTask();
     await q(
       `INSERT INTO task_relays (parent_task_id, child_node_id, child_url, child_task_id, state)
@@ -1347,11 +1348,11 @@ describe("跨调度机中继", () => {
     assert.equal((await getTask(t.task_id)).status, "QUEUED");
   });
 
-  it("中继同步把子结点终态与输出镜像回父任务", async () => {
+  it("relay sync mirrors the child's terminal state and output back to the parent task", async () => {
     const child = {
       task_id: "task_child",
       status: "SUCCEEDED",
-      result_summary: "子结点完成",
+      result_summary: "child node finished",
       attempts: [{ outputs: { stdout: "relay-ok\n", exit_code: 0 } }],
     };
     const server: Server = createServer((req, res) => {
@@ -1388,17 +1389,17 @@ describe("跨调度机中继", () => {
     }
   });
 
-  it("多级中继：中间结点没有 attempt 时从嵌套 child_result 取输出", async () => {
+  it("multi-level relay: when an intermediate node has no attempt, outputs come from the nested child_result", async () => {
     const child = {
       task_id: "task_grandchild_holder",
       status: "SUCCEEDED",
-      result_summary: "孙结点完成",
+      result_summary: "grandchild node finished",
       // The intermediate node did not execute; attempts is empty and outputs hang off its relay result
       attempts: [],
       relay: {
         state: "DONE",
         child_state: "SUCCEEDED",
-        child_result: { summary: "孙结点完成", outputs: { stdout: "deep-ok\n", exit_code: 0 } },
+        child_result: { summary: "grandchild node finished", outputs: { stdout: "deep-ok\n", exit_code: 0 } },
       },
     };
     const server: Server = createServer((req, res) => {
@@ -1427,5 +1428,200 @@ describe("跨调度机中继", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("dynamic scheduling (v0.3)", () => {
+  const GIB = 1024 ** 3;
+
+  /** Turn worker-a into a dynamic builder on a constrained host pool and silence the applied gate unless a test needs it. */
+  async function dynamicHost(
+    opts: {
+      capCpu?: number;
+      capMem?: number;
+      poolCpu?: number;
+      poolMem?: number;
+      requireApplied?: boolean;
+    } = {},
+  ): Promise<void> {
+    const capCpu = opts.capCpu ?? 4000;
+    const capMem = opts.capMem ?? 4 * GIB;
+    const poolCpu = opts.poolCpu ?? 8000;
+    const poolMem = opts.poolMem ?? 8 * GIB;
+    await q(
+      `UPDATE role_instances
+          SET scheduling_mode = 'dynamic', cap_cpu_millicores = $1, cap_mem_bytes = $2
+        WHERE instance_id = 'worker-a'`,
+      [capCpu, capMem],
+    );
+    await q(
+      `INSERT INTO host_resource_pools (host_id, cpu_total_millicores, mem_total_bytes)
+       VALUES ('host-a', $1, $2)
+       ON CONFLICT (host_id) DO UPDATE SET
+         cpu_total_millicores = EXCLUDED.cpu_total_millicores,
+         mem_total_bytes = EXCLUDED.mem_total_bytes`,
+      [poolCpu, poolMem],
+    );
+    if (!opts.requireApplied) {
+      await q(
+        `UPDATE scheduler_config SET dynamic_policy = '{"require_applied_before_start": false}'::jsonb`,
+      );
+    }
+  }
+
+  it("claim results for static instances keep their original shape", async () => {
+    const t = await newTask();
+    const a = await claimOrFail("worker-a");
+    assert.equal(a.task_id, t.task_id);
+    assert.equal(a.scheduling_mode, "static");
+    assert.equal(a.resource_grant, null);
+  });
+
+  it("dynamic instance claims generate a quota and return it with the assignment", async () => {
+    await dynamicHost();
+    const t = await newTask();
+    const a = await claimOrFail("worker-a");
+    assert.equal(a.task_id, t.task_id);
+    assert.equal(a.scheduling_mode, "dynamic");
+    assert.ok(a.resource_grant, "a dynamic claim must return a quota");
+    assert.ok(a.resource_grant!.generation >= 2, "a reservation change after allocation should raise the generation");
+    // 2 GiB reservation is reflected in the refreshed grant.
+    assert.ok(a.resource_grant!.memory_bytes >= 2 * GIB);
+    assert.ok(a.resource_grant!.memory_low_bytes <= a.resource_grant!.memory_bytes);
+
+    const grants = await getGrants("host-a");
+    assert.equal(grants.length, 1);
+    assert.equal(grants[0].instance_id, "worker-a");
+    assert.equal(grants[0].state, "PENDING", "the quota stays PENDING until the host reports applied");
+  });
+
+  it("with require_applied_before_start, nothing is dispatched before the quota is APPLIED", async () => {
+    await dynamicHost({ requireApplied: true });
+    const t = await newTask();
+    assert.equal(await claim({ instance_id: "worker-a" }), null);
+
+    const queued = await getTask(t.task_id);
+    assert.equal(queued.status, "QUEUED");
+    // GRANT_PENDING is a host-wide wait, not the task's fault: no backoff is recorded.
+    const row = await q1<any>(
+      `SELECT blocked_attempts, resource_block_reason FROM tasks WHERE task_id = $1`,
+      [t.task_id],
+    );
+    assert.equal(Number(row.blocked_attempts), 0);
+    assert.equal(row.resource_block_reason, null);
+
+    const [grant] = await getGrants("host-a");
+    assert.ok(grant, "the first claim should compute the quota inline");
+    await markGrantApplied({
+      host_id: "host-a",
+      instance_id: "worker-a",
+      generation: grant.generation,
+      cpu_millicores: grant.cpu_millicores,
+      memory_bytes: grant.memory_bytes,
+    });
+
+    const a = await claimOrFail("worker-a");
+    assert.equal(a.task_id, t.task_id);
+  });
+
+  it("when host pressure disallows admission nothing is dispatched and the task is not penalized", async () => {
+    await dynamicHost();
+    // High usage keeps the state machine in PRESSURE; an idle pool would exit to RECOVERING and admit.
+    await q(
+      `UPDATE host_resource_pools
+          SET pressure_state = 'PRESSURE', mem_used_bytes = $1, mem_working_set_bytes = 0
+        WHERE host_id = 'host-a'`,
+      [7 * GIB],
+    );
+    const t = await newTask();
+    assert.equal(await claim({ instance_id: "worker-a" }), null);
+    const row = await q1<any>(
+      `SELECT blocked_attempts, status FROM tasks WHERE task_id = $1`,
+      [t.task_id],
+    );
+    assert.equal(row.status, "QUEUED");
+    assert.equal(Number(row.blocked_attempts), 0);
+  });
+
+  it("limits are not pretended to be enforced when the host provides no cgroup", async () => {
+    await dynamicHost();
+    await q(
+      `UPDATE host_resource_pools
+          SET cgroup_available = FALSE, cgroup_driver = 'none', reported_at = app_now()
+        WHERE host_id = 'host-a'`,
+    );
+    const t = await newTask();
+    assert.equal(await claim({ instance_id: "worker-a" }), null);
+    assert.equal((await getTask(t.task_id)).status, "QUEUED");
+  });
+
+  it("when the head task lacks resources it is skipped, scanning continues, and it is retried after backoff", async () => {
+    await dynamicHost();
+    await q(
+      `INSERT INTO resource_profiles (profile_id, cpu_millicores, memory_bytes, disk_bytes, timeout_seconds)
+       VALUES ('rp_big', 6000, $1, 0, 3600)`,
+      [6 * GIB],
+    );
+    // The big task is enqueued first and can never fit this instance's 4 GiB cap.
+    const big = await newTask({ resource_profile_id: "rp_big" });
+    const small = await newTask();
+
+    const a = await claimOrFail("worker-a");
+    assert.equal(a.task_id, small.task_id, "skips the blocked head task and claims a runnable one behind it");
+
+    const blocked = await q1<any>(
+      `SELECT blocked_attempts, resource_block_reason, resource_retry_after, unschedulable
+         FROM tasks WHERE task_id = $1`,
+      [big.task_id],
+    );
+    assert.equal(blocked.resource_block_reason, "INSUFFICIENT_MEMORY");
+    assert.equal(Number(blocked.blocked_attempts), 1);
+    assert.ok(blocked.resource_retry_after, "a retry-after is written after blocking");
+    assert.equal(blocked.unschedulable, false);
+
+    // Still inside the backoff window: the task is skipped, not attempted again.
+    const small2 = await newTask();
+    const b = await claimOrFail("worker-a");
+    assert.equal(b.task_id, small2.task_id);
+    const still = await q1<any>(
+      `SELECT blocked_attempts FROM tasks WHERE task_id = $1`,
+      [big.task_id],
+    );
+    assert.equal(Number(still.blocked_attempts), 1);
+
+    // After the window it is evaluated again and the counter advances.
+    await advance(2);
+    assert.equal(await claim({ instance_id: "worker-a" }), null);
+    const retried = await q1<any>(
+      `SELECT blocked_attempts FROM tasks WHERE task_id = $1`,
+      [big.task_id],
+    );
+    assert.equal(Number(retried.blocked_attempts), 2);
+  });
+
+  it("new claims stop when the quota is below committed amounts (OVERCOMMITTED)", async () => {
+    await dynamicHost();
+    await claimOrFail("worker-a");
+    await q(
+      `UPDATE resource_grants SET cpu_millicores = 1000, memory_bytes = $1
+        WHERE host_id = 'host-a' AND instance_id = 'worker-a'`,
+      [GIB],
+    );
+    const t = await newTask();
+    assert.equal(await claim({ instance_id: "worker-a" }), null);
+    const row = await q1<any>(
+      `SELECT blocked_attempts FROM tasks WHERE task_id = $1`,
+      [t.task_id],
+    );
+    assert.equal(Number(row.blocked_attempts), 0);
+  });
+
+  it("dynamic mode uses k(i,τ) instead of a fixed instance_limit", async () => {
+    await dynamicHost();
+    const t1 = await newTask();
+    const t2 = await newTask();
+    const a = await claimOrFail("worker-a");
+    const b = await claimOrFail("worker-a");
+    assert.deepEqual(new Set([a.task_id, b.task_id]), new Set([t1.task_id, t2.task_id]));
   });
 });

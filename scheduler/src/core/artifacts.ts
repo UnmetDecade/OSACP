@@ -30,7 +30,7 @@ function ensureDir(): string {
 export function normalizeDigest(value: string): string {
   const hex = value.startsWith("sha256:") ? value.slice(7) : value;
   if (!/^[0-9a-f]{64}$/i.test(hex)) {
-    throw new ApiError(400, "BAD_REQUEST", "sha256 必须是 64 位十六进制");
+    throw new ApiError(400, "BAD_REQUEST", "sha256 must be 64 hex characters");
   }
   return `sha256:${hex.toLowerCase()}`;
 }
@@ -48,11 +48,11 @@ export interface CreateArtifactInput {
 }
 
 export async function createArtifact(input: CreateArtifactInput, instanceId?: string) {
-  if (!input.task_id) throw new ApiError(400, "BAD_REQUEST", "task_id 必填");
+  if (!input.task_id) throw new ApiError(400, "BAD_REQUEST", "task_id is required");
   const declared = normalizeDigest(input.sha256);
 
   const task = await q1(`SELECT task_id FROM tasks WHERE task_id = $1`, [input.task_id]);
-  if (!task) throw new ApiError(404, "NOT_FOUND", `任务不存在: ${input.task_id}`);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${input.task_id}`);
 
   let owner = instanceId;
   if (input.attempt_id) {
@@ -60,16 +60,16 @@ export async function createArtifact(input: CreateArtifactInput, instanceId?: st
       `SELECT task_id, instance_id FROM task_attempts WHERE attempt_id = $1`,
       [input.attempt_id],
     );
-    if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt 不存在: ${input.attempt_id}`);
+    if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${input.attempt_id}`);
     if (attempt.task_id !== input.task_id) {
-      throw new ApiError(409, "STATE_CONFLICT", "attempt 不属于该任务");
+      throw new ApiError(409, "STATE_CONFLICT", "attempt does not belong to this task");
     }
     if (instanceId && attempt.instance_id !== instanceId) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "只能为自身的 attempt 上传制品");
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "artifacts may only be uploaded for your own attempt");
     }
     owner = attempt.instance_id;
   }
-  if (!owner) throw new ApiError(400, "BAD_REQUEST", "缺少 instance_id");
+  if (!owner) throw new ApiError(400, "BAD_REQUEST", "missing instance_id");
 
   const artifactId = newId("art");
   const row = (
@@ -109,15 +109,15 @@ function storagePath(storageRef: string): string {
 
 export async function putArtifactContent(artifactId: string, data: Buffer, instanceId?: string) {
   if (data.length > MAX_BYTES) {
-    throw new ApiError(413, "PAYLOAD_TOO_LARGE", "制品超过 64MB");
+    throw new ApiError(413, "PAYLOAD_TOO_LARGE", "artifact exceeds 64MB");
   }
   const row = await q1<any>(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `制品不存在: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   if (instanceId && row.instance_id !== instanceId) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "只能上传自身实例的制品");
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "artifacts may only be uploaded for your own instance");
   }
   if (row.status !== "PENDING") {
-    throw new ApiError(409, "STATE_CONFLICT", `制品已是 ${row.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `artifact is already ${row.status}`);
   }
 
   const file = storagePath(row.storage_ref);
@@ -131,9 +131,9 @@ export async function putArtifactContent(artifactId: string, data: Buffer, insta
 
 export async function completeArtifact(artifactId: string, instanceId?: string) {
   const row = await q1<any>(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `制品不存在: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   if (instanceId && row.instance_id !== instanceId) {
-    throw new ApiError(403, "ROLE_NOT_ALLOWED", "只能确认自身实例的制品");
+    throw new ApiError(403, "ROLE_NOT_ALLOWED", "artifacts may only be confirmed for your own instance");
   }
 
   // Idempotent: a repeated complete returns the result directly
@@ -141,12 +141,12 @@ export async function completeArtifact(artifactId: string, instanceId?: string) 
     return { ...row, idempotent: true };
   }
   if (row.status !== "PENDING") {
-    throw new ApiError(409, "STATE_CONFLICT", `制品已是 ${row.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `artifact is already ${row.status}`);
   }
 
   const file = storagePath(row.storage_ref);
   if (!fs.existsSync(file)) {
-    throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "制品内容尚未上传");
+    throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "artifact content has not been uploaded");
   }
   const actual = digestOf(fs.readFileSync(file));
 
@@ -155,7 +155,7 @@ export async function completeArtifact(artifactId: string, instanceId?: string) 
       artifactId,
       actual,
     ]);
-    throw new ApiError(422, "ARTIFACT_DIGEST_MISMATCH", "制品内容与声明摘要不一致", {
+    throw new ApiError(422, "ARTIFACT_DIGEST_MISMATCH", "artifact content does not match the declared digest", {
       declared: row.declared_sha256,
       actual,
     });
@@ -173,7 +173,7 @@ export async function completeArtifact(artifactId: string, instanceId?: string) 
 
 export async function getArtifact(artifactId: string) {
   const row = await q1(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `制品不存在: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   return row;
 }
 
@@ -189,9 +189,9 @@ export async function getArtifact(artifactId: string) {
  */
 export async function readArtifactContent(artifactId: string, instanceId?: string) {
   const row = await q1<any>(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
-  if (!row) throw new ApiError(404, "NOT_FOUND", `制品不存在: ${artifactId}`);
+  if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   if (row.status !== "COMPLETE") {
-    throw new ApiError(409, "STATE_CONFLICT", `制品尚未通过校验: ${row.status}`);
+    throw new ApiError(409, "STATE_CONFLICT", `artifact has not passed verification: ${row.status}`);
   }
 
   if (instanceId && row.instance_id !== instanceId) {
@@ -210,12 +210,12 @@ export async function readArtifactContent(artifactId: string, instanceId?: strin
       [artifactId, instanceId],
     );
     if (!allowed) {
-      throw new ApiError(403, "ROLE_NOT_ALLOWED", "只能读取本实例的制品，或调度机交接给当前任务的上游制品");
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "you may only read artifacts of your own instance, or upstream artifacts handed to the current task by the scheduler");
     }
   }
 
   const file = storagePath(row.storage_ref);
-  if (!fs.existsSync(file)) throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "制品内容不存在");
+  if (!fs.existsSync(file)) throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "artifact content does not exist");
   return {
     artifact_id: row.artifact_id,
     media_type: row.media_type ?? "application/octet-stream",

@@ -4,7 +4,7 @@
 
 **Run Claude Code, Codex, DeepSeek or plain shell on any number of hosts — with deterministic scheduling, recursive schedulers and full-root builders.**
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Screenshots](#product-tour) · [Docs](#documentation) · **[简体中文](README.zh-CN.md)**
+[Quick start](#quick-start) · [Architecture](#architecture) · [Scheduling](#scheduling-algorithm) · [Screenshots](#product-tour) · [Docs](#documentation) · **[简体中文](README.zh-CN.md)**
 
 [![CI](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -127,13 +127,76 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 | Concept | How it works |
 |---|---|
 | **Root / node scheduler** | One root per host, any number of node schedulers underneath. A node owns its own builders and database; it never schedules another node's builders directly. |
-| **Capability `W`** | CPU, memory, disk, OS, Agent and API profiles are normalized to 0–1000 when a builder is created, then frozen. |
+| **Capability `W`** | CPU cores, frequency, memory, disk, model and API capability are normalized to 0–1000. Static mode freezes `W` at deploy time; dynamic mode keeps the load-dependent half live (`W_static + H_res × W_res`). |
 | **Task difficulty `D`** | Supplied at submission. A builder is eligible only when `W ≥ D` and its capability subset matches. |
 | **`ΣW`** | A scheduler reports the sum of its subtree's online builders. The root sees the whole federation's capacity. |
 | **Leases + fencing** | Every claim creates an attempt with a lease token and fencing token. A stale writer gets `409 FENCING_STALE`. |
 | **Profiles** | PCS stores Agent/API profiles and bindings. The scheduler only sees `profile_id` references, never keys. |
 | **Secret Store** | Profiles hold `secret://` refs. The store resolves them per instance into short-lived credentials; audit never records values. |
 | **Relay** | A task with `D > W` is pushed to a child scheduler, never copied. Results bubble back up the chain; max depth 8. |
+
+## Scheduling algorithm
+
+Two modes, one contract. **Static** gives every deployment a fixed budget and freezes its capability score. **Dynamic** gives every host a cgroup pool and recomputes per-instance fair-share grants every 5 seconds. The mode is chosen once on the root scheduler and inherited by every node and builder underneath. Both paths use the same queue, lease, fencing and relay code, and every decision is integer arithmetic over PostgreSQL rows — no LLM, no randomness, no floating point in the hot path.
+
+### Capability score
+
+```
+W = 1000 × ( 0.30·cpu/8 + 0.15·freq/4 + 0.20·mem/32
+           + 0.10·disk/256 + 0.15·model/10 + 0.10·api/10 )        (each term capped at 1)
+```
+
+Dynamic mode splits the score into a load-independent half and a load-dependent half:
+
+```
+W_static = 1000 × (0.15·freq/4 + 0.10·disk/256 + 0.15·model/10 + 0.10·api/10)   ∈ [0, 500]
+W_res    = 1000 × (0.30·cpu/8 + 0.20·mem/32)                                    ∈ [0, 500]
+W0       = W_static + W_res(cap)                  -- ceiling
+W_live   = W_static + H_res × W_res(cap)          -- live
+H_res    = clamp(1 − max(U_mem, U_cpu), 0.05, 1)  -- usage, EWMA α = 0.3
+W_dispatch = P25(W_live over the last 15 s)       -- what dispatch uses
+```
+
+Committed-but-unused grants do not lower `W_live`; they lower admission budgets instead. Scheduling therefore never penalises a builder twice for the same allocation.
+
+### Weighted max-min water filling
+
+Each instance demands `demand = min(cap, max(reserved, used, idle_floor))`, so reserved, actual and floor are reconciled before anything is shared. Weights come from declared caps, and the allocator fills toward demand proportionally to weight, integer-only and stable:
+
+```
+g_i = min(demand_i, cap_i, floor)
+while capacity remains and some g_i < min(demand_i, cap_i):
+    give each instance min(room_i, ⌊remaining × weight_i / Σweight⌋)
+remainder → one millicore / one byte at a time, by instance_id
+```
+
+Unused capacity is never forced out; identical inputs produce identical grants; CPU and memory are filled independently. Grants map to `memory.low` / `cpu.weight`, caps to `memory.max` / `cpu.max`, and under pressure `memory.high` is squeezed to `1.1 × grant` (`PRESSURE`) or `1.0 × grant` (`CRITICAL`). An instance whose grant falls below what it has committed becomes `OVERCOMMITTED`: it keeps running, but takes no new work.
+
+### Concurrency per task type
+
+```
+k(i, τ) = min( ⌊(budget_cpu − reserved_cpu) / request_cpu(τ)⌋,
+               ⌊(budget_mem − reserved_mem) / request_mem(τ)⌋ )
+budget = min(cap, max(grant, fair_share))
+admit only if k ≥ 1 and active_of_type(τ) < task_type_instance_limit
+```
+
+`k` can be 0, which means the builder cannot take that task type at all. Dynamic builders start work only after their grant reaches `APPLIED` for the current generation, so nothing runs without an enforced cap.
+
+### Pressure and load shedding
+
+The pool moves through `NORMAL → BUSY → PRESSURE → CRITICAL → RECOVERING → NORMAL` with separate enter and exit thresholds (0.70/0.85/0.95 in, 0.60/0.75/0.90 out), so it cannot flap. New claims are accepted only in `NORMAL`, `BUSY` and `RECOVERING`; `PRESSURE` and `CRITICAL` halt admission rather than kill work. Nothing is ever OOM-killed to reclaim memory.
+
+### Queue discipline
+
+```
+effective_priority = priority_class − ⌊waited / aging_after⌋      (P0 never ages)
+ORDER BY effective_priority, enqueued_at, task_id
+```
+
+Each claim scans up to 20 ordered candidates instead of `LIMIT 1`, durably records why a candidate was blocked, and retries it with exponential backoff (1 s doubling to a 60 s cap). A task whose request can never fit is marked `UNSCHEDULABLE` after 8 attempts instead of churning. Relay picks the **smallest sufficient** child when `D > 0` and the idlest one when `D = 0`, preferring same-mode children and admission-friendly pressure states, to a maximum depth of 8.
+
+Full derivations, worked examples, the grant lifecycle and the configuration table — including which policy fields are still reserved — are in [docs/scheduling-algorithm.md](docs/scheduling-algorithm.md).
 
 ## Repository layout
 
@@ -146,7 +209,7 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 | [`secret-store/`](secret-store/) | Reference Secret Store with per-instance resolution |
 | [`agents/`](agents/) | CLI Agent adapter for Claude Code / Codex / custom CLIs |
 | [`deploy/`](deploy/) | Single-machine Compose, container entrypoints, payload build |
-| [`docs/`](docs/) | Architecture, builders, scheduler, admin app, federation, deployment |
+| [`docs/`](docs/) | Architecture, scheduling algorithm, builders, scheduler, admin app, federation, deployment |
 | [`scripts/`](scripts/) | Acceptance, load, backup, PKI and payload scripts |
 
 ## Security model
@@ -177,9 +240,10 @@ Acceptance and load scripts: [scripts/README.md](scripts/README.md). They create
 
 ## Documentation
 
-The detailed design docs are currently written in Chinese. The architecture diagram above is available in English as an HTML file.
+Every design doc exists in English and 简体中文; each page links to its counterpart.
 
 - [Architecture](docs/architecture.md)
+- [Scheduling algorithm](docs/scheduling-algorithm.md) — capability scoring, water filling, pressure handling, relay
 - [Control plane & host federation](docs/federation.md)
 - [Builders](docs/builders.md)
 - [Scheduler](docs/scheduler.md)

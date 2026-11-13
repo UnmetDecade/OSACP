@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "调度机：任务状态机、队列、租约与 fencing、事件、重试与死信",
+  "description": "Scheduler: task state machine, queue, leases and fencing, events, retries, and dead letters",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",

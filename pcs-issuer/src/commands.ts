@@ -104,14 +104,14 @@ export function verifyCommandSignature(payload: CommandPayload, publicKeyPem: st
 /** The image must be pinned by digest and its repository must match the allowlist. */
 export function assertPinnedImage(image: string, allowlist: string[]): void {
   if (!/@sha256:[0-9a-f]{64}$/.test(image)) {
-    throw new PcsError(400, "IMAGE_NOT_PINNED", "镜像必须用 @sha256:<64 位十六进制> 固定 digest");
+    throw new PcsError(400, "IMAGE_NOT_PINNED", "the image must be pinned by digest using @sha256:<64 hex chars>");
   }
   const repo = image.replace(/@sha256:[0-9a-f]{64}$/, "");
   const allowed = allowlist.some((prefix) =>
     prefix.endsWith("/") ? repo.startsWith(prefix) : repo === prefix || repo.startsWith(`${prefix}/`),
   );
   if (!allowed) {
-    throw new PcsError(400, "IMAGE_NOT_ALLOWED", `镜像仓库不在白名单：${repo}`, {
+    throw new PcsError(400, "IMAGE_NOT_ALLOWED", `image repository is not in the allowlist: ${repo}`, {
       allowlist,
     });
   }
@@ -131,11 +131,11 @@ export function assertNoSecretsInEnv(env: Record<string, string>): void {
     (k) => SECRET_KEY.test(k) && !PLATFORM_INJECTED_SECRETS.has(k),
   );
   if (bad.length) {
-    throw new PcsError(400, "SECRET_IN_ENVELOPE", "部署意图的 env 不能包含凭据类键", { keys: bad });
+    throw new PcsError(400, "SECRET_IN_ENVELOPE", "the deployment intent env must not contain credential-like keys", { keys: bad });
   }
   for (const [key, value] of Object.entries(env)) {
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value)) {
-      throw new PcsError(400, "SECRET_IN_ENVELOPE", `env ${key} 含私钥内容`);
+      throw new PcsError(400, "SECRET_IN_ENVELOPE", `env ${key} contains private key material`);
     }
   }
 }
@@ -153,7 +153,7 @@ export function validateFilesAndAgentEnv(
 ): void {
   if (files !== undefined) {
     if (!Array.isArray(files) || files.length > 16) {
-      throw new PcsError(400, "INVALID_FILES", "files 必须是最多 16 项的数组");
+      throw new PcsError(400, "INVALID_FILES", "files must be an array of at most 16 items");
     }
     for (const f of files) {
       if (
@@ -164,16 +164,16 @@ export function validateFilesAndAgentEnv(
         typeof f.content !== "string" ||
         Buffer.byteLength(f.content) > 1024 * 1024
       ) {
-        throw new PcsError(400, "INVALID_FILES", `文件规格非法：${String(f?.path)}`);
+        throw new PcsError(400, "INVALID_FILES", `invalid file spec: ${String(f?.path)}`);
       }
       if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(f.content)) {
-        throw new PcsError(400, "SECRET_IN_ENVELOPE", `文件 ${f.path} 含私钥内容`);
+        throw new PcsError(400, "SECRET_IN_ENVELOPE", `file ${f.path} contains private key material`);
       }
     }
   }
   if (agentEnv !== undefined) {
     if (!Array.isArray(agentEnv) || agentEnv.length > 32) {
-      throw new PcsError(400, "INVALID_AGENT_ENV", "agent_env 必须是最多 32 项的数组");
+      throw new PcsError(400, "INVALID_AGENT_ENV", "agent_env must be an array of at most 32 items");
     }
     for (const name of agentEnv) {
       if (
@@ -181,7 +181,7 @@ export function validateFilesAndAgentEnv(
         !/^[A-Z][A-Z0-9_]{0,63}$/.test(name) ||
         Object.prototype.hasOwnProperty.call(env, name)
       ) {
-        throw new PcsError(400, "INVALID_AGENT_ENV", `agent_env 变量名非法：${String(name)}`);
+        throw new PcsError(400, "INVALID_AGENT_ENV", `invalid agent_env variable name: ${String(name)}`);
       }
     }
   }
@@ -204,18 +204,18 @@ export function normalizeResourceProfile(input: Partial<ResourceProfile>): Resou
   const cpu = Number(input.cpu_limit ?? 1);
   const memory = Number(input.memory_limit_bytes ?? 1024 ** 3);
   if (!Number.isFinite(cpu) || cpu <= 0 || cpu > 128) {
-    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "cpu_limit 必须在 (0, 128] 内");
+    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "cpu_limit must be within (0, 128]");
   }
   if (!Number.isFinite(memory) || memory < 64 * 1024 ** 2 || memory > 1024 ** 4) {
-    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "memory_limit_bytes 必须在 64MiB..1TiB 内");
+    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "memory_limit_bytes must be within 64MiB..1TiB");
   }
   const pids = Number(input.pids_limit ?? 512);
   if (!Number.isInteger(pids) || pids < 16 || pids > 1_000_000) {
-    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "pids_limit 必须在 16..1000000 内");
+    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "pids_limit must be within 16..1000000");
   }
   const io = Number(input.io_weight ?? 500);
   if (!Number.isInteger(io) || io < 10 || io > 1000) {
-    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "io_weight 必须在 10..1000 内");
+    throw new PcsError(400, "INVALID_RESOURCE_PROFILE", "io_weight must be within 10..1000");
   }
   return {
     cpu_limit: cpu,

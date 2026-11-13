@@ -28,7 +28,7 @@ export async function ensureRuntimeBundle(): Promise<RuntimeBundle> {
   const runtimeEntry = path.join(source, "src", "runtime.ts");
   const watchdogEntry = path.join(source, "src", "watchdog.ts");
   if (!fs.existsSync(runtimeEntry) || !fs.existsSync(watchdogEntry)) {
-    throw new Error(`找不到 host-runtime 源码：${source}（可设置 PCS_RUNTIME_SOURCE_DIR）`);
+    throw new Error(`host-runtime source not found: ${source} (set PCS_RUNTIME_SOURCE_DIR to override)`);
   }
 
   const dir = process.env.PCS_RUNTIME_BUNDLE_DIR

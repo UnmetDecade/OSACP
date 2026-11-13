@@ -71,16 +71,16 @@ function makeCtx(instanceId = "builder-ubuntu22-a") {
 async function expectTaskFailed(fn: () => Promise<unknown>, code: string) {
   try {
     await fn();
-    assert.fail(`期望抛出 ${code}，实际成功`);
+    assert.fail(`expected ${code} to be thrown, but the call succeeded`);
   } catch (e) {
-    assert.ok(e instanceof TaskFailed, `期望 TaskFailed，实际 ${e}`);
-    assert.equal(e.code, code, `错误码不匹配：${e.code} / ${JSON.stringify(e.detail)}`);
+    assert.ok(e instanceof TaskFailed, `expected TaskFailed, got ${e}`);
+    assert.equal(e.code, code, `error code mismatch: ${e.code} / ${JSON.stringify(e.detail)}`);
     return e;
   }
 }
 
-describe("v4 builder 执行器", () => {
-  it("执行 requirements.build.command，并把完整日志落为制品", async () => {
+describe("v4 builder executor", () => {
+  it("runs requirements.build.command and persists the full log as an artifact", async () => {
     const { ctx, store, uploads } = makeCtx();
     const task = assignment({
       task_id: "task_build",
@@ -102,10 +102,10 @@ describe("v4 builder 执行器", () => {
     assert.match(log, /command: printf 'hello-build'/);
     assert.equal(out.outputs?.exit_code, 0);
     assert.equal(out.outputs?.stdout_tail, "hello-build");
-    assert.match(String(out.summary), /构建完成/);
+    assert.match(String(out.summary), /Build completed/);
   });
 
-  it("工作目录固定在 workspace 内，命令以该目录为 cwd", async () => {
+  it("the working directory is pinned inside the workspace and the command uses it as cwd", async () => {
     const { ctx } = makeCtx();
     const out = await roleExecutors["task.build"](
       assignment({ requirements: { build: { command: "pwd", workdir: "." } } }),
@@ -114,7 +114,7 @@ describe("v4 builder 执行器", () => {
     assert.equal(String(out.outputs?.stdout_tail).trim(), fs.realpathSync(ctx.workspaceDir));
   });
 
-  it("管理应用传入 workspace 根路径时映射到本次 attempt 目录", async () => {
+  it("a workspace root passed by the control plane maps to this attempt's directory", async () => {
     const { ctx } = makeCtx();
     const out = await roleExecutors["task.build"](
       assignment({
@@ -127,7 +127,7 @@ describe("v4 builder 执行器", () => {
     assert.equal(String(out.outputs?.stdout_tail).trim(), fs.realpathSync(ctx.workspaceDir));
   });
 
-  it("工作目录越界直接拒绝", async () => {
+  it("out-of-bounds working directories are rejected outright", async () => {
     const { ctx } = makeCtx();
     await expectTaskFailed(
       () =>
@@ -139,7 +139,7 @@ describe("v4 builder 执行器", () => {
     );
   });
 
-  it("非零退出码 → BUILD_FAILED，并保留日志制品与 stderr 尾部", async () => {
+  it("non-zero exit → BUILD_FAILED, keeping the log artifact and stderr tail", async () => {
     const { ctx, store, uploads } = makeCtx();
     const err = await expectTaskFailed(
       () =>
@@ -156,7 +156,7 @@ describe("v4 builder 执行器", () => {
     assert.match(store.get(uploads[0].artifact_id)!.data.toString("utf8"), /boom/);
   });
 
-  it("没有 command 时保留确定性清单构建（演示 / 冒烟）", async () => {
+  it("without a command, the deterministic manifest build is kept (demo / smoke)", async () => {
     const { ctx, store, uploads } = makeCtx();
     const task = assignment({ task_id: "task_build", payload_ref: "git://repo" });
     const out = await roleExecutors["task.build"](task, ctx);
@@ -167,7 +167,7 @@ describe("v4 builder 执行器", () => {
     assert.equal(manifest.files.length, 3);
     for (const f of manifest.files) {
       const file = path.join(ctx.workspaceDir, f.path);
-      assert.ok(fs.existsSync(file), `工作目录缺少 ${f.path}`);
+      assert.ok(fs.existsSync(file), `working directory is missing ${f.path}`);
       assert.equal(sha256Of(fs.readFileSync(file)), f.sha256);
     }
     assert.equal(out.outputs?.artifact_id, uploads[0].artifact_id);

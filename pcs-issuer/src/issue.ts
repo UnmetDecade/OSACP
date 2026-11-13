@@ -34,7 +34,7 @@ function parse(argv: string[]): { command: string; opts: Record<string, string> 
   const opts: Record<string, string> = {};
   for (let i = 0; i < rest.length; i += 2) {
     const k = rest[i];
-    if (!k?.startsWith("--")) throw new Error(`无法解析参数：${k}`);
+    if (!k?.startsWith("--")) throw new Error(`unable to parse argument: ${k}`);
     opts[k.slice(2)] = rest[i + 1];
   }
   return { command, opts };
@@ -42,7 +42,7 @@ function parse(argv: string[]): { command: string; opts: Record<string, string> 
 
 function need(opts: Record<string, string>, key: string): string {
   const v = opts[key];
-  if (!v) throw new Error(`缺少 --${key}`);
+  if (!v) throw new Error(`missing --${key}`);
   return v;
 }
 
@@ -50,7 +50,7 @@ function emit(token: string, out?: string): void {
   if (out) {
     fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
     fs.writeFileSync(out, token + "\n", { mode: 0o600 });
-    console.error(`已写入 ${out}`);
+    console.error(`Wrote ${out}`);
   } else {
     console.log(token);
   }
@@ -80,7 +80,7 @@ function main(): void {
       jti: `tok_${randomUUID()}`,
     };
     emit(signJwt(claims, privateKey), opts.out);
-    console.error(`实例令牌：sub=${claims.sub} 有效期至 ${new Date(exp * 1000).toISOString()}`);
+    console.error(`Instance token: sub=${claims.sub} valid until ${new Date(exp * 1000).toISOString()}`);
     return;
   }
 
@@ -101,7 +101,7 @@ function main(): void {
       jti: `tok_${randomUUID()}`,
     };
     emit(signJwt(claims, privateKey), opts.out);
-    console.error(`审批令牌：request=${claims.approval_request_id} 有效期至 ${new Date(exp * 1000).toISOString()}`);
+    console.error(`Approval token: request=${claims.approval_request_id} valid until ${new Date(exp * 1000).toISOString()}`);
     return;
   }
 
@@ -125,11 +125,11 @@ function main(): void {
       jti: `tok_${randomUUID()}`,
     };
     emit(signJwt(claims, privateKey), opts.out);
-    console.error(`管理员令牌：operator=${operator} 有效期至 ${new Date(exp * 1000).toISOString()}`);
+    console.error(`Admin token: operator=${operator} valid until ${new Date(exp * 1000).toISOString()}`);
     return;
   }
 
-  console.error("用法：issue.ts instance|approval|admin [--key value ...]");
+  console.error("Usage: issue.ts instance|approval|admin [--key value ...]");
   process.exit(1);
 }
 

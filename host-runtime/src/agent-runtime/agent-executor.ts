@@ -78,11 +78,11 @@ async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | nu
   try {
     target = new URL(rawUrl);
   } catch {
-    throw new TaskFailed("ATTACHMENT_URL_INVALID", "附件地址不合法");
+    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Invalid attachment URL");
   }
   // Only http(s) is allowed; a task URL should not lead the builder to schemes such as file:/gopher:.
   if (target.protocol !== "http:" && target.protocol !== "https:") {
-    throw new TaskFailed("ATTACHMENT_URL_INVALID", "附件地址必须是 http 或 https");
+    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Attachment URL must use http or https");
   }
   let res: Response;
   try {
@@ -93,11 +93,11 @@ async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | nu
   } catch (err: any) {
     throw new TaskFailed(
       "ATTACHMENT_FETCH_FAILED",
-      `取附件失败：${String(err?.message ?? err)}`,
+      `Failed to fetch attachment: ${String(err?.message ?? err)}`,
     );
   }
   if (!res.ok) {
-    throw new TaskFailed("ATTACHMENT_FETCH_FAILED", `取附件失败：HTTP ${res.status}`);
+    throw new TaskFailed("ATTACHMENT_FETCH_FAILED", `Failed to fetch attachment: HTTP ${res.status}`);
   }
   const buf = Buffer.from(await res.arrayBuffer());
   return buf.length ? buf : null;
@@ -132,7 +132,7 @@ async function materializeAttachments(
     const buf = await loadAttachment(rec);
     if (!buf) continue;
     if (buf.length > MAX_ATTACHMENT_BYTES) {
-      throw new TaskFailed("ATTACHMENT_TOO_LARGE", "附件超过 32MiB");
+      throw new TaskFailed("ATTACHMENT_TOO_LARGE", "Attachment exceeds 32MiB");
     }
     total += buf.length;
     if (total > MAX_ATTACHMENT_TOTAL_BYTES) break;
@@ -259,7 +259,7 @@ export async function runAgentTask(
         } catch (err: any) {
           artifactError = new TaskFailed(
             "ARTIFACT_PATH_DENIED",
-            String(err?.message ?? "制品路径不在工作区"),
+            String(err?.message ?? "Artifact path is outside the workspace"),
           );
         }
       }
@@ -316,7 +316,7 @@ export async function runAgentTask(
   const agentTask = await materializeAttachments(task, ctx.workspaceDir);
   if (agentTask !== task) {
     const count = (agentTask.requirements.build as Record<string, unknown>).attachments as unknown[];
-    ctx.log(`已把 ${count.length} 个附件写入工作区 attachments/`);
+    ctx.log(`Wrote ${count.length} attachments to workspace attachments/`);
   }
 
   try {
@@ -333,7 +333,7 @@ export async function runAgentTask(
     );
     if (aborted) throw new TaskAborted(ctx.signal.reason === "lease_lost" ? "lease_lost" : "cancelled");
     if (!prepared || prepared.ready !== true) {
-      throw new TaskFailed("AGENT_NOT_READY", "Agent prepare 未就绪", prepared);
+      throw new TaskFailed("AGENT_NOT_READY", "Agent prepare is not ready", prepared);
     }
 
     const result = await adapter.execute(
@@ -345,7 +345,7 @@ export async function runAgentTask(
     if (!result || result.status === "FAILED") {
       throw new TaskFailed(
         String(result?.error?.code ?? "AGENT_FAILED"),
-        String(result?.error?.message ?? result?.summary ?? "Agent 返回失败"),
+        String(result?.error?.message ?? result?.summary ?? "Agent returned a failure"),
       );
     }
 
@@ -355,7 +355,7 @@ export async function runAgentTask(
       assertInsideWorkspace(rel, ctx.workspaceDir);
       const file = path.join(ctx.workspaceDir, rel);
       if (!fs.existsSync(file)) {
-        throw new TaskFailed("AGENT_OUTPUT_MISSING", `Agent 声明的产物不存在：${rel}`);
+        throw new TaskFailed("AGENT_OUTPUT_MISSING", `Artifact declared by the Agent does not exist: ${rel}`);
       }
       const uploaded = await ctx.uploadArtifact(fs.readFileSync(file), mediaFor(rel));
       outputs.push({ name: out.name, ...uploaded });
@@ -363,7 +363,7 @@ export async function runAgentTask(
     // Artifacts declared in artifact events but absent from result.outputs are only noted in the log, not uploaded automatically
     for (const e of artifactPaths) {
       if (!outputs.some((o) => o.name === e.name)) {
-        ctx.log(`Agent 事件声明了产物 ${e.name}，但未在最终 result 中返回，已忽略`);
+        ctx.log(`Agent event declared artifact ${e.name} but it was not returned in the final result; ignored`);
       }
     }
 
@@ -387,7 +387,7 @@ export async function runAgentTask(
     }
 
     return {
-      summary: String(result.summary ?? `Agent ${profile.agent_profile_id} 执行完成`),
+      summary: String(result.summary ?? `Agent ${profile.agent_profile_id} execution completed`),
       outputs: outputsPayload,
     };
   } catch (e) {

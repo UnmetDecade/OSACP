@@ -24,8 +24,8 @@ before(async () => {
 
 after(() => new Promise<void>((r) => server.close(() => r())));
 
-describe("调度机客户端", () => {
-  it("5xx 会自动重试", async () => {
+describe("scheduler client", () => {
+  it("5xx responses are retried automatically", async () => {
     hits = [];
     script = [
       { status: 503, body: { error: { code: "UNAVAILABLE", message: "db down" } } },
@@ -37,10 +37,10 @@ describe("调度机客户端", () => {
     assert.equal(hits.length, 2);
   });
 
-  it("409 FENCING_STALE 不重试，直接抛给调用方", async () => {
+  it("409 FENCING_STALE is not retried and is thrown to the caller", async () => {
     hits = [];
     script = [
-      { status: 409, body: { error: { code: "FENCING_STALE", message: "fencing 已过期" } } },
+      { status: 409, body: { error: { code: "FENCING_STALE", message: "fencing has expired" } } },
     ];
     const c = new SchedulerClient(base);
     await assert.rejects(
@@ -52,16 +52,16 @@ describe("调度机客户端", () => {
         return true;
       },
     );
-    assert.equal(hits.length, 1, "业务错误不应重试");
+    assert.equal(hits.length, 1, "business errors should not be retried");
   });
 
-  it("claim 返回 204 时得到 null", async () => {
+  it("claim returns null on 204", async () => {
     script = [{ status: 204 }];
     const c = new SchedulerClient(base);
     assert.equal(await c.claim("worker-a"), null);
   });
 
-  it("config 的 304 归一化成 null，并转发 Bearer 令牌", async () => {
+  it("config's 304 normalizes to null and forwards the Bearer token", async () => {
     hits = [];
     auths = [];
     script = [{ status: 304 }];
@@ -71,7 +71,7 @@ describe("调度机客户端", () => {
     assert.equal(auths[0], "Bearer tok-123");
   });
 
-  it("调度机不可达时归一化成 status 0", async () => {
+  it("an unreachable scheduler normalizes to status 0", async () => {
     const c = new SchedulerClient("http://127.0.0.1:1", 300);
     await assert.rejects(
       () => c.claim("worker-a"),

@@ -19,7 +19,7 @@ const cfg = loadConfig(argValue("--config"));
 const instances = selectInstances(cfg, process.argv);
 
 if (instances.length === 0) {
-  console.error("没有可启动的实例，检查 runtime.config.json");
+  console.error("No instances to start; check runtime.config.json");
   process.exit(1);
 }
 
@@ -45,7 +45,7 @@ function tokenFor(instanceId: string): string | (() => string | undefined) | und
 let profilesFile: ProfilesFile | null = null;
 if (cfg.profiles_file) {
   profilesFile = loadProfilesFile(cfg.profiles_file);
-  console.log(`Profile 文件：${path.resolve(cfg.profiles_file)}`);
+  console.log(`Profile file: ${path.resolve(cfg.profiles_file)}`);
 }
 
 /**
@@ -98,9 +98,9 @@ const agents = instances.map((i) => {
   });
 });
 
-console.log(`调度机 ${cfg.scheduler_url}，启动 ${agents.length} 个实例：${instances.map((i) => i.instance_id).join(", ")}`);
+console.log(`Scheduler ${cfg.scheduler_url}; starting ${agents.length} instances: ${instances.map((i) => i.instance_id).join(", ")}`);
 if (!tokenDir && !process.env.SCHEDULER_TOKEN) {
-  console.warn("未配置实例令牌（INSTANCE_TOKEN_DIR / SCHEDULER_TOKEN）：调度机若启用鉴权，注册会被拒绝");
+  console.warn("No instance token configured (INSTANCE_TOKEN_DIR / SCHEDULER_TOKEN): registration will be rejected if the scheduler enables auth");
 }
 await Promise.all(agents.map((a) => a.start()));
 
@@ -108,9 +108,9 @@ let stopping = false;
 async function shutdown(signal: string): Promise<void> {
   if (stopping) return;
   stopping = true;
-  console.log(`\n收到 ${signal}，停止领取并 drain…`);
+  console.log(`\nReceived ${signal}; stopping claims and draining…`);
   await Promise.all(agents.map((a) => a.stop()));
-  console.log("已退出");
+  console.log("Exited");
   process.exit(0);
 }
 

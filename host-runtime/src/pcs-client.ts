@@ -116,7 +116,7 @@ export class PcsClient {
               data = JSON.parse(text);
             } catch {
               return reject(
-                new PcsClientError(status, "INVALID_RESPONSE", "PCS 返回了非 JSON 响应"),
+                new PcsClientError(status, "INVALID_RESPONSE", "PCS returned a non-JSON response"),
               );
             }
           }
@@ -134,7 +134,7 @@ export class PcsClient {
           resolve(data as T);
         });
       });
-      req.on("timeout", () => req.destroy(new Error(`请求超时（${timeoutMs}ms）`)));
+      req.on("timeout", () => req.destroy(new Error(`Request timed out (${timeoutMs}ms)`)));
       req.on("error", (e) =>
         reject(new PcsClientError(0, "PCS_UNREACHABLE", String((e as Error)?.message ?? e))),
       );
@@ -147,8 +147,19 @@ export class PcsClient {
     return (await this.request<EnrollResponse>("POST", "/api/v1/platform/hosts/enroll", input))!;
   }
 
-  async heartbeat(body: Record<string, unknown>): Promise<void> {
-    await this.request("POST", "/api/v1/platform/runtime/heartbeat", body);
+  async heartbeat(body: Record<string, unknown>): Promise<{
+    ok?: boolean;
+    server_time?: string;
+    schedulers?: Array<{
+      deployment_id?: string;
+      role?: string;
+      url?: string;
+      scheduling_mode?: string;
+    }>;
+  }> {
+    return (
+      (await this.request("POST", "/api/v1/platform/runtime/heartbeat", body)) ?? {}
+    );
   }
 
   async nextCommand(waitSeconds: number): Promise<CommandPayload | null> {

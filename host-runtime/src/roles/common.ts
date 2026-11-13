@@ -84,14 +84,14 @@ export async function fetchVerified(ctx: ExecContext, ref: UpstreamRef): Promise
   if (ref.sha256 && actual !== ref.sha256) {
     throw new TaskFailed(
       "UPSTREAM_ARTIFACT_DIGEST_MISMATCH",
-      `上游制品 ${ref.artifact_id} 摘要不符：交接 ${ref.sha256}，实际 ${actual}`,
+      `Upstream artifact ${ref.artifact_id} digest mismatch: handoff ${ref.sha256}, actual ${actual}`,
       { artifact_id: ref.artifact_id, expected: ref.sha256, actual },
     );
   }
   if (got.sha256 && got.sha256 !== actual) {
     throw new TaskFailed(
       "UPSTREAM_ARTIFACT_DIGEST_MISMATCH",
-      `上游制品 ${ref.artifact_id} 与调度机确认的摘要不符`,
+      `Upstream artifact ${ref.artifact_id} does not match the digest confirmed by the scheduler`,
       { artifact_id: ref.artifact_id, scheduler: got.sha256, actual },
     );
   }
@@ -103,7 +103,7 @@ export function parseJson<T = any>(buf: Buffer, what: string): T {
   try {
     return JSON.parse(buf.toString("utf8")) as T;
   } catch {
-    throw new TaskFailed("UPSTREAM_ARTIFACT_INVALID", `${what} 不是合法 JSON`, {
+    throw new TaskFailed("UPSTREAM_ARTIFACT_INVALID", `${what} is not valid JSON`, {
       bytes: buf.length,
     });
   }
@@ -113,7 +113,7 @@ export function parseJson<T = any>(buf: Buffer, what: string): T {
 export function safeJoin(root: string, rel: string): string {
   const abs = path.resolve(root, rel);
   if (abs !== root && !abs.startsWith(root + path.sep)) {
-    throw new TaskFailed("PAYLOAD_INVALID", `工作目录路径越界: ${rel}`);
+    throw new TaskFailed("PAYLOAD_INVALID", `Workdir path escapes the boundary: ${rel}`);
   }
   return abs;
 }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Secret Store 参考实现：实例级短期凭据，值不落日志/信封/镜像",
+  "description": "Secret Store reference implementation: short-lived per-instance credentials that never reach logs, envelopes, or images",
   "scripts": {
     "start": "tsx src/main.ts",
     "test": "tsx --test test/*.test.ts",

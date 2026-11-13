@@ -20,17 +20,17 @@ start_one() {
   local name="$1" script="$2" pidfile="$3" logfile="$4"
   local running
   running="$(find_pid "$pidfile" "node --import tsx src/$script")"
-  if [[ -n "$running" ]]; then echo "$name 已在运行（pid $running）"; return; fi
+  if [[ -n "$running" ]]; then echo "$name is already running (pid $running)"; return; fi
   setsid bash -c "cd '$DIR'; echo \$\$ > '$pidfile'; exec node --import tsx src/$script --config '$CFG'" \
     > "$logfile" 2>&1 < /dev/null &
   sleep 0.5
-  echo "$name 启动，pid $(cat "$pidfile" 2>/dev/null || echo '?')，日志 $logfile"
+  echo "$name started, pid $(cat "$pidfile" 2>/dev/null || echo '?'), log $logfile"
 }
 
 case "${1:-}" in
   start)
     if [[ ! -f "$CFG" ]]; then
-      echo "找不到配置 $CFG（可从 runtime.host.example.json 复制）" >&2
+      echo "Config not found: $CFG (copy it from runtime.host.example.json)" >&2
       exit 1
     fi
     start_one "watchdog" "watchdog.ts" "$WD_PID" "$DIR/run/watchdog.log"
@@ -43,9 +43,9 @@ case "${1:-}" in
       if [[ -n "$pid" ]]; then
         kill "$pid" 2>/dev/null || true
         rm -f "$pidfile"
-        echo "$name 已停止（pid $pid）"
+        echo "$name stopped (pid $pid)"
       else
-        echo "$name 未运行"
+        echo "$name is not running"
       fi
     done
     rm -f "$DIR/run/runtime.sock"

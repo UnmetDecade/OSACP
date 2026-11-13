@@ -126,7 +126,7 @@ export class SchedulerClient {
                 resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }),
               );
             });
-            req.on("timeout", () => req.destroy(new Error(`请求超时（${timeout}ms）`)));
+            req.on("timeout", () => req.destroy(new Error(`Request timed out (${timeout}ms)`)));
             req.on("error", reject);
             if (payload) req.write(payload);
             req.end();
@@ -195,7 +195,7 @@ export class SchedulerClient {
             }),
           );
         });
-        req.on("timeout", () => req.destroy(new Error(`请求超时（${timeoutMs}ms）`)));
+        req.on("timeout", () => req.destroy(new Error(`Request timed out (${timeoutMs}ms)`)));
         req.on("error", reject);
         if (body) req.write(body);
         req.end();

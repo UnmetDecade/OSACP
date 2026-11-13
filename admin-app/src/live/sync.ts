@@ -467,6 +467,10 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
           : undefined) ?? (row?.capability_detail && typeof row.capability_detail === "object"
           ? row.capability_detail
           : undefined),
+      scheduling_mode:
+        String(row?.scheduling_mode ?? dep?.env?.SCHEDULING_MODE ?? "") === "dynamic"
+          ? "dynamic"
+          : "static",
       scheduler_role:
         role === "scheduler"
           ? dep?.scheduler_role === "node"

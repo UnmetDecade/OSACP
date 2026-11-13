@@ -58,7 +58,7 @@ export interface VerifyOptions {
 
 export function verifyJwt(token: string, publicKeyPem: string, opts: VerifyOptions): JwtClaims {
   const parts = token.split(".");
-  if (parts.length !== 3) throw new PcsError(401, "TOKEN_INVALID", "令牌格式错误");
+  if (parts.length !== 3) throw new PcsError(401, "TOKEN_INVALID", "malformed token");
   const [headerB64, payloadB64, signatureB64] = parts;
 
   let header: { alg?: string; typ?: string };
@@ -67,9 +67,9 @@ export function verifyJwt(token: string, publicKeyPem: string, opts: VerifyOptio
     header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8"));
     claims = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
   } catch {
-    throw new PcsError(401, "TOKEN_INVALID", "令牌内容不是合法 JSON");
+    throw new PcsError(401, "TOKEN_INVALID", "token payload is not valid JSON");
   }
-  if (header.alg !== "ES256") throw new PcsError(401, "TOKEN_INVALID", "只接受 ES256 令牌");
+  if (header.alg !== "ES256") throw new PcsError(401, "TOKEN_INVALID", "only ES256 tokens are accepted");
 
   const input = Buffer.from(`${headerB64}.${payloadB64}`);
   const ok = verify(
@@ -78,29 +78,29 @@ export function verifyJwt(token: string, publicKeyPem: string, opts: VerifyOptio
     { key: createPublicKey(publicKeyPem), dsaEncoding: "ieee-p1363" },
     Buffer.from(signatureB64, "base64url"),
   );
-  if (!ok) throw new PcsError(401, "TOKEN_INVALID", "签名校验失败");
+  if (!ok) throw new PcsError(401, "TOKEN_INVALID", "signature verification failed");
 
   const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
   const skew = opts.skewSeconds ?? 5;
   if (typeof claims.exp === "number" && now > claims.exp + skew) {
-    throw new PcsError(401, "TOKEN_EXPIRED", "令牌已过期");
+    throw new PcsError(401, "TOKEN_EXPIRED", "token has expired");
   }
   if (typeof claims.nbf === "number" && now + skew < claims.nbf) {
-    throw new PcsError(401, "TOKEN_NOT_YET_VALID", "令牌尚未生效");
+    throw new PcsError(401, "TOKEN_NOT_YET_VALID", "token is not valid yet");
   }
-  if (claims.iss !== ISSUER) throw new PcsError(401, "TOKEN_INVALID", "签发方不匹配");
+  if (claims.iss !== ISSUER) throw new PcsError(401, "TOKEN_INVALID", "issuer mismatch");
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!audiences.includes(opts.audience)) {
-    throw new PcsError(401, "TOKEN_INVALID", `受众不匹配：需要 ${opts.audience}`);
+    throw new PcsError(401, "TOKEN_INVALID", `audience mismatch: expected ${opts.audience}`);
   }
   if (opts.typ && claims.typ !== opts.typ) {
-    throw new PcsError(401, "TOKEN_INVALID", `令牌类型不是 ${opts.typ}`);
+    throw new PcsError(401, "TOKEN_INVALID", `token type is not ${opts.typ}`);
   }
   return claims;
 }
 
 export function requireClaimScope(claims: JwtClaims, scope: string): void {
   if (!claims.scopes?.includes(scope)) {
-    throw new PcsError(403, "ROLE_NOT_ALLOWED", `缺少 scope：${scope}`);
+    throw new PcsError(403, "ROLE_NOT_ALLOWED", `missing scope: ${scope}`);
   }
 }

@@ -27,7 +27,7 @@ export interface RuntimeProfiles {
 export function loadProfilesFile(file: string): ProfilesFile {
   const abs = path.resolve(file);
   if (!fs.existsSync(abs)) {
-    throw new Error(`找不到 Profile 文件：${abs}`);
+    throw new Error(`Profile file not found: ${abs}`);
   }
   const raw = JSON.parse(fs.readFileSync(abs, "utf8")) as ProfilesFile;
   return raw;
@@ -44,26 +44,26 @@ export function resolveInstanceProfiles(
   instance: InstanceConfig,
 ): RuntimeProfiles {
   const agentId = instance.agent_profile_id;
-  if (!agentId) throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", "实例未绑定 Agent Profile");
+  if (!agentId) throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", "Instance has no Agent Profile bound");
 
   const agent = (file.agent_profiles ?? []).find((p) => p.agent_profile_id === agentId);
   if (!agent) {
-    throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", `Profile 文件里没有 ${agentId}`);
+    throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", `Profile file does not contain ${agentId}`);
   }
   if (agent.enabled === false) {
-    throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", `Agent Profile 已停用：${agentId}`);
+    throw new ProfileRejected("AGENT_PROFILE_NOT_ALLOWED", `Agent Profile is disabled: ${agentId}`);
   }
   if (agent.role_id !== instance.role_id) {
     throw new ProfileRejected(
       "AGENT_PROFILE_NOT_ALLOWED",
-      `Agent Profile 属于 ${agent.role_id}，实例角色是 ${instance.role_id}`,
+      `Agent Profile belongs to ${agent.role_id}, but the instance role is ${instance.role_id}`,
     );
   }
   const allowed = ADAPTERS[instance.role_id];
   if (!allowed || !allowed.includes(agent.adapter)) {
     throw new ProfileRejected(
       "ADAPTER_NOT_ALLOWED",
-      `角色 ${instance.role_id} 不允许 ${agent.adapter}`,
+      `Role ${instance.role_id} does not allow ${agent.adapter}`,
     );
   }
 
@@ -72,7 +72,7 @@ export function resolveInstanceProfiles(
     if (binding.agent_profile_id !== agentId) {
       throw new ProfileRejected(
         "AGENT_PROFILE_NOT_ALLOWED",
-        `实例配置的 Agent ${agentId} 与 PCS 绑定 ${binding.agent_profile_id} 不一致`,
+        `Instance-configured Agent ${agentId} does not match the PCS binding ${binding.agent_profile_id}`,
       );
     }
     const configured = new Set(instance.api_profile_ids ?? []);
@@ -80,14 +80,14 @@ export function resolveInstanceProfiles(
       if (!configured.has(id)) {
         throw new ProfileRejected(
           "API_PROFILE_NOT_ALLOWED",
-          `PCS 绑定了 ${id}，但实例启动配置没有加载它`,
+          `PCS bound ${id}, but the instance startup config did not load it`,
         );
       }
     }
     if (configured.size !== new Set(binding.api_profile_ids ?? []).size) {
       throw new ProfileRejected(
         "API_PROFILE_NOT_ALLOWED",
-        "实例加载了 PCS 未绑定的 API Profile",
+        "Instance loaded an API Profile that PCS has not bound",
       );
     }
   }
@@ -95,9 +95,9 @@ export function resolveInstanceProfiles(
   const api = new Map<string, ApiProfile>();
   for (const id of instance.api_profile_ids ?? []) {
     const p = (file.api_profiles ?? []).find((x) => x.api_profile_id === id);
-    if (!p) throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `Profile 文件里没有 API ${id}`);
+    if (!p) throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `Profile file does not contain API ${id}`);
     if (p.enabled === false) {
-      throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `API Profile 已停用：${id}`);
+      throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `API Profile is disabled: ${id}`);
     }
     api.set(id, p);
   }
@@ -111,7 +111,7 @@ export function resolveInstanceProfiles(
     if (!api.has(id)) {
       throw new ProfileRejected(
         "API_PROFILE_NOT_ALLOWED",
-        `Agent Profile 引用了未绑定的 API：${id}`,
+        `Agent Profile references an unbound API: ${id}`,
       );
     }
   }
@@ -130,7 +130,7 @@ export function assertEnvelopeAllowed(
   if (!envelope.agent || envelope.agent.profile_id !== profiles.agent.agent_profile_id) {
     throw new ProfileRejected(
       "AGENT_PROFILE_NOT_ALLOWED",
-      `任务指定 Agent ${envelope.agent?.profile_id ?? "(空)"}，实例绑定 ${profiles.agent.agent_profile_id}`,
+      `Task specifies Agent ${envelope.agent?.profile_id ?? "(empty)"}, but the instance is bound to ${profiles.agent.agent_profile_id}`,
     );
   }
   if (
@@ -140,12 +140,12 @@ export function assertEnvelopeAllowed(
   ) {
     throw new ProfileRejected(
       "AGENT_PROFILE_NOT_ALLOWED",
-      `任务指定版本 ${envelope.agent.version}，实例加载 ${profiles.agent.version}`,
+      `Task specifies version ${envelope.agent.version}, but the instance loaded ${profiles.agent.version}`,
     );
   }
   for (const id of envelope.api_profiles ?? []) {
     if (!profiles.boundApiIds.has(id)) {
-      throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `任务引用了未绑定的 API ${id}`);
+      throw new ProfileRejected("API_PROFILE_NOT_ALLOWED", `Task references an unbound API ${id}`);
     }
   }
 }

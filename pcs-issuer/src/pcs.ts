@@ -37,12 +37,12 @@ function parseArgs(argv: string[]): {
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (!arg.startsWith("--")) {
-      throw new Error(`无法解析参数：${arg}`);
+      throw new Error(`unable to parse argument: ${arg}`);
     }
     const key = arg.slice(2);
     const value = rest[i + 1];
     if (value === undefined || value.startsWith("--")) {
-      throw new Error(`--${key} 缺少值`);
+      throw new Error(`--${key} is missing a value`);
     }
     i++;
     (opts[key] ??= []).push(value);
@@ -56,7 +56,7 @@ function one(opts: Record<string, string[]>, key: string): string | undefined {
 
 function need(opts: Record<string, string[]>, key: string): string {
   const v = one(opts, key);
-  if (!v) throw new Error(`缺少 --${key}`);
+  if (!v) throw new Error(`missing --${key}`);
   return v;
 }
 
@@ -64,7 +64,7 @@ function parsePairs(values: string[] | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   for (const item of values ?? []) {
     const idx = item.indexOf("=");
-    if (idx <= 0) throw new Error(`期望 KEY=VALUE：${item}`);
+    if (idx <= 0) throw new Error(`expected KEY=VALUE: ${item}`);
     out[item.slice(0, idx)] = item.slice(idx + 1);
   }
   return out;
@@ -73,7 +73,7 @@ function parsePairs(values: string[] | undefined): Record<string, string> {
 function parseVolumes(values: string[] | undefined): Array<{ name: string; mount: string }> {
   return (values ?? []).map((item) => {
     const idx = item.indexOf(":");
-    if (idx <= 0) throw new Error(`期望 name:mount：${item}`);
+    if (idx <= 0) throw new Error(`expected name:mount: ${item}`);
     return { name: item.slice(0, idx), mount: item.slice(idx + 1) };
   });
 }
@@ -84,7 +84,7 @@ async function call(
   body?: unknown,
 ): Promise<Record<string, any>> {
   const token = process.env.PCS_ADMIN_TOKEN;
-  if (!token) throw new Error("缺少 PCS_ADMIN_TOKEN（用 admin-token 生成后 export）");
+  if (!token) throw new Error("PCS_ADMIN_TOKEN is required (generate one with admin-token and export it)");
   const res = await fetch(`${PCS_URL}${path}`, {
     method,
     headers: {
@@ -97,7 +97,7 @@ async function call(
   const data = text ? JSON.parse(text) : {};
   if (!res.ok) {
     const err = data.error ?? {};
-    throw new Error(`${res.status} ${err.code ?? "HTTP_ERROR"}：${err.message ?? text}`);
+    throw new Error(`${res.status} ${err.code ?? "HTTP_ERROR"}: ${err.message ?? text}`);
   }
   return data;
 }
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
       const path = await import("node:path");
       fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
       fs.writeFileSync(out, token + "\n", { mode: 0o600 });
-      console.error(`已写入 ${out}`);
+      console.error(`Wrote ${out}`);
     } else {
       console.log(token);
     }
@@ -149,7 +149,7 @@ async function main(): Promise<void> {
 
   if (command === "deploy") {
     const memoryMib = Number(one(opts, "memory-mib") ?? 1024);
-    if (!Number.isFinite(memoryMib) || memoryMib <= 0) throw new Error("--memory-mib 必须是正数");
+    if (!Number.isFinite(memoryMib) || memoryMib <= 0) throw new Error("--memory-mib must be a positive number");
     const commandParts = one(opts, "command")?.split(",").filter((s) => s.length > 0);
     const body = {
       host_id: need(opts, "host"),
@@ -288,14 +288,14 @@ async function main(): Promise<void> {
     const id = encodeURIComponent(need(opts, "deployment"));
     const action = need(opts, "action");
     if (!["start", "stop", "restart", "remove"].includes(action)) {
-      throw new Error("--action 只能是 start|stop|restart|remove");
+      throw new Error("--action must be one of start|stop|restart|remove");
     }
     print(await call("POST", `/api/v1/platform/deployments/${id}/${action}`));
     return;
   }
 
   console.error(
-    "用法：pcs.ts admin-token|host-add|host-list|host-revoke|deploy|deployments|action [--key value ...]",
+    "Usage: pcs.ts admin-token|host-add|host-list|host-revoke|deploy|deployments|action [--key value ...]",
   );
   process.exit(1);
 }

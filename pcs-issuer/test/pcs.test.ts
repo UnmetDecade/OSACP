@@ -81,7 +81,7 @@ async function enrolledHost(name = "test-host"): Promise<{
   return { ...out, enrollment_token: created.enrollment_token };
 }
 
-test("注册令牌一次性且注册返回命令公钥", async () => {
+test("a registration token is single-use and registration returns the command public key", async () => {
   const host = await svc.createHost({ name: "one-shot" });
   const input = {
     enrollment_token: host.enrollment_token,
@@ -107,7 +107,7 @@ test("注册令牌一次性且注册返回命令公钥", async () => {
   );
 });
 
-test("过期注册令牌被拒绝", async () => {
+test("an expired registration token is rejected", async () => {
   const host = await svc.createHost({ name: "expired" });
   await query(
     `UPDATE pcs_enrollment_tokens SET expires_at = now() - interval '1 second' WHERE host_id=$1`,
@@ -128,7 +128,7 @@ test("过期注册令牌被拒绝", async () => {
   );
 });
 
-test("主机令牌可鉴权，管理员令牌按 scope 拒绝", async () => {
+test("host tokens authenticate while admin tokens are rejected per scope", async () => {
   const host = await enrolledHost("auth-host");
   const row = await svc.authenticateHost(host.host_token);
   assert.equal(row.host_id, host.host_id);
@@ -143,7 +143,7 @@ test("主机令牌可鉴权，管理员令牌按 scope 拒绝", async () => {
   );
 });
 
-test("部署命令带签名、固定镜像和 grant，取走后不可再取", async () => {
+test("deploy commands are signed and carry a pinned image and grant, and cannot be fetched twice", async () => {
   const host = await enrolledHost("deploy-host");
   const { deployment, command_id } = await svc.createDeployment({
     host_id: host.host_id,
@@ -186,7 +186,7 @@ test("部署命令带签名、固定镜像和 grant，取走后不可再取", as
   assert.equal(dep?.actual_state, "STARTING");
 });
 
-test("主机上报把部署推进到 HEALTHY，缺席则标 MISSING", async () => {
+test("a host report advances the deployment to HEALTHY, while absence marks it MISSING", async () => {
   const host = await enrolledHost("report-host");
   const { deployment } = await svc.createDeployment({
     host_id: host.host_id,
@@ -222,7 +222,7 @@ test("主机上报把部署推进到 HEALTHY，缺席则标 MISSING", async () =
   assert.equal(dep?.actual_state, "MISSING");
 });
 
-test("吊销的主机拿不到令牌鉴权，也不能再部署或接收命令", async () => {
+test("a revoked host cannot authenticate with a token, be deployed, or receive commands", async () => {
   const host = await enrolledHost("revoked-host");
   const { deployment } = await svc.createDeployment({
     host_id: host.host_id,
@@ -251,7 +251,7 @@ test("吊销的主机拿不到令牌鉴权，也不能再部署或接收命令",
   );
 });
 
-test("部署输入校验：镜像、env、网络策略", async () => {
+test("deployment input validation: image, env, network policy", async () => {
   const host = await enrolledHost("validate-host");
   const base = { host_id: host.host_id, role_id: "builder", created_by: "operator:tester" };
 
@@ -282,7 +282,7 @@ test("部署输入校验：镜像、env、网络策略", async () => {
   );
 });
 
-test("命令按 host 隔离，其他主机不能取或确认", async () => {
+test("commands are isolated per host; other hosts cannot fetch or acknowledge them", async () => {
   const a = await enrolledHost("iso-a");
   const b = await enrolledHost("iso-b");
   const { deployment, command_id } = await svc.createDeployment({
@@ -306,7 +306,7 @@ test("命令按 host 隔离，其他主机不能取或确认", async () => {
 
 const AGENT_IMAGE = `registry.test/agents/builder@sha256:${"b".repeat(64)}`;
 
-test("Agent Profile 校验角色/Adapter 矩阵与固定 digest", async () => {
+test("Agent Profiles validate the role/Adapter matrix and pinned digest", async () => {
   const base = {
     role_id: "builder",
     name: "builder-agent",
@@ -348,7 +348,7 @@ test("Agent Profile 校验角色/Adapter 矩阵与固定 digest", async () => {
   );
 });
 
-test("API Profile 只保存 secret 引用，拒绝明文与 http", async () => {
+test("API Profiles store only secret references and reject plaintext and http", async () => {
   const p = await svc.createApiProfile(
     {
       api_profile_id: "api_llm_test",
@@ -396,7 +396,7 @@ test("API Profile 只保存 secret 引用，拒绝明文与 http", async () => {
   );
 });
 
-test("绑定跨角色被拒绝，解析结果不含密钥值并写审计", async () => {
+test("cross-role bindings are rejected; resolution omits secret values and writes an audit record", async () => {
   const host = await svc.createHost({ name: "bind-host" });
   const agent = await svc.createAgentProfile(
     {
@@ -448,7 +448,7 @@ test("绑定跨角色被拒绝，解析结果不含密钥值并写审计", async
   assert.ok(logs.some((l) => l.action === "role_api_binding.add" && l.instance_id === "builder-p4"));
 });
 
-test("同名实例在不同主机各有绑定，解析互不影响", async () => {
+test("an instance with the same name on different hosts has separate bindings that resolve independently", async () => {
   const hostA = await svc.createHost({ name: "bind-scope-a" });
   const hostB = await svc.createHost({ name: "bind-scope-b" });
   for (const [id, host] of [
@@ -486,7 +486,7 @@ test("同名实例在不同主机各有绑定，解析互不影响", async () =>
   );
 });
 
-test("部署计划摘要可校验，资源不足/摘要不一致/过期都被拒绝", async () => {
+test("the deployment plan digest is verifiable; insufficient resources, digest mismatch, and expiry are all rejected", async () => {
   const host = await enrolledHost("plan-host");
   await query(
     `UPDATE pcs_hosts
@@ -555,7 +555,7 @@ test("部署计划摘要可校验，资源不足/摘要不一致/过期都被拒
   assert.equal(tooBig.code, "DEPLOYMENT_CHECK_FAILED");
 });
 
-test("预览后同主机出现新部署，apply 返回 PLAN_CHANGED", async () => {
+test("a new deployment on the same host after preview makes apply return PLAN_CHANGED", async () => {
   const host = await enrolledHost("plan-tamper");
   await query(
     `UPDATE pcs_hosts
@@ -587,7 +587,7 @@ test("预览后同主机出现新部署，apply 返回 PLAN_CHANGED", async () =
   );
 });
 
-test("计划应用后自动写入 Agent / API 绑定", async () => {
+test("applying a plan automatically writes Agent / API bindings", async () => {
   const host = await enrolledHost("plan-bind");
   await query(
     `UPDATE pcs_hosts
@@ -639,7 +639,7 @@ test("计划应用后自动写入 Agent / API 绑定", async () => {
   assert.ok(logs.some((l) => l.action === "deployment.plan.apply"));
 });
 
-test("审批令牌签发要求 MFA、绑定操作者，并带 approval:decide scope", async () => {
+test("approval token issuance requires MFA, binds the operator, and carries the approval:decide scope", async () => {
   const adminToken = svc.issueAdminToken("approver");
   const claims = svc.authenticateAdmin(adminToken, "approval:issue");
   const input = {
@@ -694,7 +694,7 @@ async function onlineHost(name: string, memBytes = 8589934592): Promise<string> 
   return host.host_id;
 }
 
-test("构建机部署冻结 W 并注入 CAPABILITY_SCORE / CAPABILITY_DETAIL", async () => {
+test("builder deployments freeze W and inject CAPABILITY_SCORE / CAPABILITY_DETAIL", async () => {
   const hostId = await onlineHost("cap-host");
   const detail = { cores: 8, freq_ghz: 4, mem_gb: 32, disk_gb: 256, model: 10, api: 10 };
   const plan = await svc.previewDeploymentPlan(
@@ -756,7 +756,7 @@ test("构建机部署冻结 W 并注入 CAPABILITY_SCORE / CAPABILITY_DETAIL", a
   assert.equal(sched.env.CAPABILITY_SCORE, undefined);
 });
 
-test("主机并入形成联邦树，ΣW 逐级累加且拒绝环", async () => {
+test("joining hosts form a federation tree; ΣW accumulates per level and cycles are rejected", async () => {
   const a = await onlineHost("fleet-a");
   const b = await onlineHost("fleet-b");
   const c = await onlineHost("fleet-c");
@@ -836,7 +836,7 @@ test("主机并入形成联邦树，ΣW 逐级累加且拒绝环", async () => {
   assert.equal(afterById.get(a)!.subtree_score, 350);
 });
 
-test("主机角色三选一，裸机角色不能再部署另一种角色", async () => {
+test("a host role is one of three; a bare-metal role cannot additionally deploy another role", async () => {
   // Only local/SSH-onboarded hosts have a credential row; updateHost goes through the credential table, so use a local host here.
   const hostId = (await svc.createLocalHost({ name: "role-host" })).host_id;
   await svc.updateHost(hostId, { role_mode: "builder" });
@@ -864,7 +864,7 @@ test("主机角色三选一，裸机角色不能再部署另一种角色", async
   );
 });
 
-test("同一主机可跑多个调度机容器：根唯一，结点挂父调度机，构建机绑定到指定调度机", async () => {
+test("one host can run multiple scheduler containers: a single root, nodes attached to a parent scheduler, and builders bound to a chosen scheduler", async () => {
   const hostId = await onlineHost("tree-host");
   // Scheduler addresses are derived from "host address + host port"; the test adds an SSH access address.
   await query(

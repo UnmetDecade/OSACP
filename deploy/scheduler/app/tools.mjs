@@ -75,11 +75,11 @@ function render(task, extra = {}) {
   if (!TERMINAL.has(status)) {
     lines.push(
       "",
-      `任务还在运行。用 task_status 轮询 task_id=${task?.task_id ?? "-"} 取最终输出。`,
+      `The task is still running. Poll task_status with task_id=${task?.task_id ?? "-"} for the final output.`,
     );
   } else if (status !== "SUCCEEDED") {
-    const summary = task?.result_summary ? `（${task.result_summary}）` : "";
-    lines.push("", `任务未成功${summary}。`);
+    const summary = task?.result_summary ? ` (${task.result_summary})` : "";
+    lines.push("", `The task did not succeed${summary}.`);
   }
   return lines.join("\n");
 }
@@ -88,24 +88,24 @@ const TOOLS = [
   {
     name: "list_builders",
     description:
-      "列出本调度机管辖的构建机（实例 ID、状态、主机、可用能力）。执行命令前先用它确认目标。",
+      "List the builders under this scheduler (instance ID, state, host, available capability). Use it to confirm the target before running a command.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "builder_exec",
     description:
-      "在一台构建机容器里执行 shell 命令（完整权限，等价于 SSH），返回退出码和输出。" +
-      "适合查看环境、安装软件包、编译。长命令会先返回 RUNNING 和 task_id，再用 task_status 取结果。",
+      "Run a shell command inside a builder container (full privileges, equivalent to SSH) and return the exit code and output. " +
+      "Use it to inspect the environment, install packages, or compile. Long commands return RUNNING and a task_id first; fetch the result with task_status.",
     inputSchema: {
       type: "object",
       properties: {
-        instance_id: { type: "string", description: "构建机实例 ID，例如 builder-a" },
-        command: { type: "string", description: "要执行的 shell 命令" },
+        instance_id: { type: "string", description: "Builder instance ID, e.g. builder-a" },
+        command: { type: "string", description: "Shell command to run" },
         timeout_seconds: {
           type: "integer",
           minimum: 1,
           maximum: 900,
-          description: "命令最长运行秒数，默认 120；apt 安装建议 300",
+          description: "Maximum run time in seconds, default 120; 300 is recommended for apt installs",
         },
       },
       required: ["instance_id", "command"],
@@ -114,12 +114,12 @@ const TOOLS = [
   },
   {
     name: "builder_ask",
-    description: "把一条消息发给某台构建机上的 Agent，返回它的回复（适合让构建机自查环境或给建议）。",
+    description: "Send a message to the agent on a builder and return its reply (useful for letting the builder inspect its own environment or give advice).",
     inputSchema: {
       type: "object",
       properties: {
-        instance_id: { type: "string", description: "构建机实例 ID" },
-        message: { type: "string", description: "要问构建机的内容" },
+        instance_id: { type: "string", description: "Builder instance ID" },
+        message: { type: "string", description: "Message to send to the builder" },
       },
       required: ["instance_id", "message"],
       additionalProperties: false,
@@ -127,7 +127,7 @@ const TOOLS = [
   },
   {
     name: "task_status",
-    description: "查询一条任务的状态与输出。用于 builder_exec 返回 RUNNING 后取最终结果。",
+    description: "Look up a task's state and output. Use it to fetch the final result after builder_exec returns RUNNING.",
     inputSchema: {
       type: "object",
       properties: { task_id: { type: "string" } },
@@ -141,7 +141,7 @@ async function callTool(name, args) {
   if (name === "list_builders") {
     const out = await api("/v1/instances");
     const rows = (out?.items ?? []).filter((r) => r.role_id === "builder");
-    if (!rows.length) return "本调度机下还没有注册的构建机。";
+    if (!rows.length) return "No builders are registered under this scheduler yet.";
     return rows
       .map((r) => {
         const healthy = r?.capabilities?.healthy;
@@ -154,8 +154,8 @@ async function callTool(name, args) {
   if (name === "builder_exec") {
     const instanceId = String(args?.instance_id ?? "").trim();
     const command = String(args?.command ?? "");
-    if (!instanceId) throw new Error("instance_id 必填");
-    if (!command.trim()) throw new Error("command 不能为空");
+    if (!instanceId) throw new Error("instance_id is required");
+    if (!command.trim()) throw new Error("command must not be empty");
     const timeout = Math.min(Math.max(Number(args?.timeout_seconds) || 120, 1), 900);
     const task = await api("/v1/tasks", {
       method: "POST",
@@ -177,8 +177,8 @@ async function callTool(name, args) {
   if (name === "builder_ask") {
     const instanceId = String(args?.instance_id ?? "").trim();
     const message = String(args?.message ?? "");
-    if (!instanceId) throw new Error("instance_id 必填");
-    if (!message.trim()) throw new Error("message 不能为空");
+    if (!instanceId) throw new Error("instance_id is required");
+    if (!message.trim()) throw new Error("message must not be empty");
     const task = await api("/v1/tasks", {
       method: "POST",
       body: JSON.stringify({
@@ -200,12 +200,12 @@ async function callTool(name, args) {
 
   if (name === "task_status") {
     const taskId = String(args?.task_id ?? "").trim();
-    if (!taskId) throw new Error("task_id 必填");
+    if (!taskId) throw new Error("task_id is required");
     const task = await api(`/v1/tasks/${encodeURIComponent(taskId)}`);
     return render(task);
   }
 
-  throw new Error(`未知工具：${name}`);
+  throw new Error(`Unknown tool: ${name}`);
 }
 
 function send(msg) {
@@ -251,14 +251,14 @@ async function handle(msg) {
           jsonrpc: "2.0",
           id,
           result: {
-            content: [{ type: "text", text: `工具执行失败：${e instanceof Error ? e.message : String(e)}` }],
+            content: [{ type: "text", text: `Tool execution failed: ${e instanceof Error ? e.message : String(e)}` }],
             isError: true,
           },
         });
       }
       return;
     }
-    send({ jsonrpc: "2.0", id, error: { code: -32601, message: `未知方法：${method}` } });
+    send({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } });
   } catch (e) {
     send({ jsonrpc: "2.0", id, error: { code: -32603, message: String(e?.message ?? e) } });
   }
@@ -279,7 +279,7 @@ rl.on("line", (line) => {
   try {
     msg = JSON.parse(text);
   } catch {
-    log(`丢弃无法解析的消息：${text.slice(0, 120)}`);
+    log(`Dropped unparseable message: ${text.slice(0, 120)}`);
     return;
   }
   inflight += 1;

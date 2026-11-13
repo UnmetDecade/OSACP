@@ -106,7 +106,7 @@ const SECRET_KEY = /(secret|token|password|passwd|credential|private[_-]?key)/i;
 const PLATFORM_INJECTED_SECRETS = new Set(["SCHEDULER_FEDERATION_TOKEN"]);
 
 function assertArray<T>(value: unknown, name: string): asserts value is T[] {
-  if (!Array.isArray(value)) throw new CommandRejected("INVALID_COMMAND", `${name} 必须是数组`);
+  if (!Array.isArray(value)) throw new CommandRejected("INVALID_COMMAND", `${name} must be an array`);
 }
 
 /**
@@ -124,51 +124,51 @@ export function validateCommand(
   },
 ): CommandPayload {
   if (!payload || typeof payload !== "object") {
-    throw new CommandRejected("INVALID_COMMAND", "命令不是对象");
+    throw new CommandRejected("INVALID_COMMAND", "Command is not an object");
   }
   if (!verifyCommandSignature(payload, opts.publicKeyPem)) {
-    throw new CommandRejected("COMMAND_SIGNATURE_INVALID", "命令签名校验失败");
+    throw new CommandRejected("COMMAND_SIGNATURE_INVALID", "Command signature verification failed");
   }
   if (payload.host_id !== opts.hostId) {
-    throw new CommandRejected("COMMAND_WRONG_HOST", "命令不是发给本主机的");
+    throw new CommandRejected("COMMAND_WRONG_HOST", "Command is not addressed to this host");
   }
   if (!COMMAND_TYPES.has(payload.command_type)) {
-    throw new CommandRejected("COMMAND_TYPE_NOT_ALLOWED", `不接受命令类型 ${payload.command_type}`);
+    throw new CommandRejected("COMMAND_TYPE_NOT_ALLOWED", `Unsupported command type ${payload.command_type}`);
   }
   if (!Number.isInteger(payload.generation) || payload.generation < 1) {
-    throw new CommandRejected("INVALID_GENERATION", "generation 必须是正整数");
+    throw new CommandRejected("INVALID_GENERATION", "generation must be a positive integer");
   }
   const now = opts.nowMs ?? Date.now();
   if (!payload.expires_at || Date.parse(payload.expires_at) <= now - 5000) {
-    throw new CommandRejected("COMMAND_EXPIRED", "命令已过期");
+    throw new CommandRejected("COMMAND_EXPIRED", "Command has expired");
   }
   const issued = Date.parse(payload.issued_at);
   if (!Number.isFinite(issued) || issued > now + 60_000) {
-    throw new CommandRejected("COMMAND_CLOCK_SKEW", "命令签发时间在未来");
+    throw new CommandRejected("COMMAND_CLOCK_SKEW", "Command issue time is in the future");
   }
   if (!payload.deployment_id || !payload.instance_id) {
-    throw new CommandRejected("INVALID_COMMAND", "缺少 deployment_id / instance_id");
+    throw new CommandRejected("INVALID_COMMAND", "Missing deployment_id / instance_id");
   }
 
   if (payload.command_type !== "DEPLOY") return payload;
 
   const spec = payload.instance;
   if (!spec || spec.instance_id !== payload.instance_id) {
-    throw new CommandRejected("INVALID_COMMAND", "DEPLOY 缺少实例规格");
+    throw new CommandRejected("INVALID_COMMAND", "DEPLOY is missing the instance spec");
   }
   if (spec.execution !== undefined && spec.execution !== "container" && spec.execution !== "native") {
-    throw new CommandRejected("INVALID_COMMAND", `不支持的执行方式：${String(spec.execution)}`);
+    throw new CommandRejected("INVALID_COMMAND", `Unsupported execution mode: ${String(spec.execution)}`);
   }
   const native = spec.execution === "native";
   if (!native) {
     if (!/@sha256:[0-9a-f]{64}$/.test(spec.image)) {
-      throw new CommandRejected("IMAGE_NOT_PINNED", "镜像必须固定 digest");
+      throw new CommandRejected("IMAGE_NOT_PINNED", "Image must be pinned to a digest");
     }
     const repo = spec.image.replace(/@sha256:[0-9a-f]{64}$/, "");
     const allowed = opts.allowlist.some((prefix) =>
       prefix.endsWith("/") ? repo.startsWith(prefix) : repo === prefix || repo.startsWith(`${prefix}/`),
     );
-    if (!allowed) throw new CommandRejected("IMAGE_NOT_ALLOWED", `镜像仓库不在白名单：${repo}`);
+    if (!allowed) throw new CommandRejected("IMAGE_NOT_ALLOWED", `Image repository is not in the allowlist: ${repo}`);
   }
 
   const profile = spec.resource_profile;
@@ -178,26 +178,26 @@ export function validateCommand(
     !(profile.memory_limit_bytes >= 64 * 1024 ** 2) ||
     !(Number(profile.pids_limit) >= 16)
   ) {
-    throw new CommandRejected("INVALID_RESOURCE_PROFILE", "资源画像不合法");
+    throw new CommandRejected("INVALID_RESOURCE_PROFILE", "Invalid resource profile");
   }
   if (!Object.prototype.hasOwnProperty.call(opts.networkPolicies, spec.network_policy)) {
-    throw new CommandRejected("NETWORK_POLICY_NOT_ALLOWED", `网络策略不合法：${spec.network_policy}`);
+    throw new CommandRejected("NETWORK_POLICY_NOT_ALLOWED", `Invalid network policy: ${spec.network_policy}`);
   }
   const badEnv = Object.keys(spec.env ?? {}).filter(
     (k) => SECRET_KEY.test(k) && !PLATFORM_INJECTED_SECRETS.has(k),
   );
   if (badEnv.length) {
-    throw new CommandRejected("SECRET_IN_ENVELOPE", "部署意图 env 含凭据类键", { keys: badEnv });
+    throw new CommandRejected("SECRET_IN_ENVELOPE", "Deployment intent env contains credential-like keys", { keys: badEnv });
   }
   assertArray<{ name: string; mount: string }>(spec.volumes ?? [], "volumes");
   for (const v of spec.volumes ?? []) {
     if (!v?.mount?.startsWith("/opt/platform/") || v.mount.includes("..")) {
-      throw new CommandRejected("INVALID_VOLUME", `卷挂载点非法：${v?.mount}`);
+      throw new CommandRejected("INVALID_VOLUME", `Invalid volume mount point: ${v?.mount}`);
     }
   }
   assertArray<PortMapping>(spec.ports ?? [], "ports");
   if ((spec.ports ?? []).length > 8) {
-    throw new CommandRejected("INVALID_COMMAND", "端口映射最多 8 条");
+    throw new CommandRejected("INVALID_COMMAND", "At most 8 port mappings are allowed");
   }
   const seenContainer = new Set<number>();
   const seenHost = new Set<number>();
@@ -212,7 +212,10 @@ export function validateCommand(
       seenContainer.has(p.container) ||
       seenHost.has(p.host)
     ) {
-      throw new CommandRejected("INVALID_COMMAND", "端口映射必须是唯一且合法的 1–65535 TCP 端口");
+      throw new CommandRejected(
+        "INVALID_COMMAND",
+        "Port mappings must be unique valid TCP ports in 1–65535",
+      );
     }
     seenContainer.add(p.container);
     seenHost.add(p.host);
@@ -220,13 +223,13 @@ export function validateCommand(
   if (spec.command !== undefined) {
     assertArray<string>(spec.command, "command");
     if (!spec.command.length || spec.command.some((x) => typeof x !== "string" || x.length > 4096)) {
-      throw new CommandRejected("INVALID_COMMAND", "command 参数非法");
+      throw new CommandRejected("INVALID_COMMAND", "Invalid command argument");
     }
   }
   if (spec.files !== undefined) {
     assertArray<{ path: string; content: string }>(spec.files, "files");
     if (spec.files.length > 16) {
-      throw new CommandRejected("INVALID_COMMAND", "files 最多 16 个");
+      throw new CommandRejected("INVALID_COMMAND", "At most 16 files are allowed");
     }
     for (const f of spec.files) {
       if (
@@ -237,14 +240,14 @@ export function validateCommand(
         typeof f.content !== "string" ||
         Buffer.byteLength(f.content) > 1024 * 1024
       ) {
-        throw new CommandRejected("INVALID_COMMAND", `文件规格非法：${f?.path}`);
+        throw new CommandRejected("INVALID_COMMAND", `Invalid file spec: ${f?.path}`);
       }
     }
   }
   if (spec.agent_env !== undefined) {
     assertArray<string>(spec.agent_env, "agent_env");
     if (spec.agent_env.length > 32) {
-      throw new CommandRejected("INVALID_COMMAND", "agent_env 最多 32 项");
+      throw new CommandRejected("INVALID_COMMAND", "At most 32 agent_env entries are allowed");
     }
     for (const name of spec.agent_env) {
       if (
@@ -252,12 +255,12 @@ export function validateCommand(
         !/^[A-Z][A-Z0-9_]{0,63}$/.test(name) ||
         Object.prototype.hasOwnProperty.call(spec.env ?? {}, name)
       ) {
-        throw new CommandRejected("INVALID_COMMAND", `agent_env 变量名非法：${name}`);
+        throw new CommandRejected("INVALID_COMMAND", `Invalid agent_env variable name: ${name}`);
       }
     }
   }
   if (!payload.resource_grant?.grant_id?.startsWith("rgr_")) {
-    throw new CommandRejected("INVALID_GRANT", "DEPLOY 缺少资源 grant");
+    throw new CommandRejected("INVALID_GRANT", "DEPLOY is missing a resource grant");
   }
   return payload;
 }

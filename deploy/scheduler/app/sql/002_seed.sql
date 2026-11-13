@@ -41,7 +41,7 @@ ON CONFLICT DO NOTHING;
 INSERT INTO workflow_templates
   (workflow_template_id, name, version, phases, approval_policy_ref)
 VALUES
-  ('wft_build', '构建', '4.0',
+  ('wft_build', 'build', '4.0',
    '[{"phase":"EXECUTE","task_type":"task.build"}]'::jsonb,
    NULL)
 ON CONFLICT DO NOTHING;

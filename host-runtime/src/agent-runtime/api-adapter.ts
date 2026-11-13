@@ -109,7 +109,7 @@ export class ApiAdapter {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const m = /^\/([^/]+)(\/.*)?$/.exec(url.pathname);
     if (!m) {
-      throw new ApiAdapterError("API_HANDLE_INVALID", "路径必须是 /<api_profile>/<path>", 404);
+      throw new ApiAdapterError("API_HANDLE_INVALID", "Path must be /<api_profile>/<path>", 404);
     }
     const profileId = decodeURIComponent(m[1]);
     const rest = m[2] ?? "/";
@@ -148,7 +148,7 @@ export class ApiAdapter {
   ): Promise<{ status: number; contentType: string; body: Buffer; retryAfter?: string }> {
     const primary = this.opts.profiles.get(profileId);
     if (!primary) {
-      throw new ApiAdapterError("API_PROFILE_NOT_ALLOWED", `未绑定的 API Profile：${profileId}`, 403);
+      throw new ApiAdapterError("API_PROFILE_NOT_ALLOWED", `Unbound API Profile: ${profileId}`, 403);
     }
     const chain = [primary, ...(primary.fallback ?? []).map((id) => this.opts.profiles.get(id)).filter((x): x is ApiProfile => Boolean(x))];
     let last: ApiAdapterError | null = null;
@@ -174,7 +174,7 @@ export class ApiAdapter {
         });
       }
     }
-    throw last ?? new ApiAdapterError("API_ADAPTER_INTERNAL", "没有可用的 API Profile");
+    throw last ?? new ApiAdapterError("API_ADAPTER_INTERNAL", "No API Profile available");
   }
 
   private async once(
@@ -241,13 +241,13 @@ export class ApiAdapter {
           error_code: "API_NETWORK_ERROR",
           fallback_from: fallbackFrom,
         });
-        throw new ApiAdapterError("API_NETWORK_ERROR", `外部 API 不可达：${url.hostname}`, 502, true);
+        throw new ApiAdapterError("API_NETWORK_ERROR", `External API is unreachable: ${url.hostname}`, 502, true);
       }
 
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
         if (location && method !== "GET" && method !== "HEAD") {
-          throw new ApiAdapterError("API_REDIRECT_DENIED", "非幂等请求不允许重定向", 502);
+          throw new ApiAdapterError("API_REDIRECT_DENIED", "Redirects are not allowed for non-idempotent requests", 502);
         }
         if (location) {
           // The redirect target must also pass the allowlist; return the 302 directly so the Agent re-issues explicitly, avoiding silent following
@@ -292,7 +292,7 @@ export class ApiAdapter {
         fallback_from: fallbackFrom,
       });
       if (!res.ok && res.status >= 500) {
-        throw new ApiAdapterError(`API_HTTP_${res.status}`, `外部 API 返回 ${res.status}`, 502, true);
+        throw new ApiAdapterError(`API_HTTP_${res.status}`, `External API returned ${res.status}`, 502, true);
       }
       return {
         status: res.status,
@@ -312,10 +312,10 @@ export class ApiAdapter {
     }
     state.window = state.window.filter((t) => now - t < 60_000);
     if (profile.quota.rpm && state.window.length >= profile.quota.rpm) {
-      throw new ApiAdapterError("API_QUOTA_EXCEEDED", "请求超过 rpm 配额", 429, false);
+      throw new ApiAdapterError("API_QUOTA_EXCEEDED", "Request exceeds the rpm quota", 429, false);
     }
     if (profile.quota.daily_calls && state.dayCount >= profile.quota.daily_calls) {
-      throw new ApiAdapterError("API_QUOTA_EXCEEDED", "请求超过日配额", 429, false);
+      throw new ApiAdapterError("API_QUOTA_EXCEEDED", "Request exceeds the daily quota", 429, false);
     }
     state.window.push(now);
     state.dayCount++;
@@ -357,7 +357,7 @@ function applyAuth(headers: Record<string, string>, profile: ApiProfile, credent
   else {
     throw new ApiAdapterError(
       "API_AUTH_TYPE_UNSUPPORTED",
-      `参考实现未实现 ${profile.auth_type}，失败关闭`,
+      `Reference implementation does not support ${profile.auth_type}; failing closed`,
       502,
     );
   }
@@ -370,7 +370,7 @@ function readBody(req: http.IncomingMessage, max: number): Promise<Buffer> {
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > max) {
-        reject(new ApiAdapterError("API_BODY_TOO_LARGE", "请求体超过 1MiB", 413));
+        reject(new ApiAdapterError("API_BODY_TOO_LARGE", "Request body exceeds 1MiB", 413));
         req.destroy();
         return;
       }

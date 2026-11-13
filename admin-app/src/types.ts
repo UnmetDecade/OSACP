@@ -191,6 +191,8 @@ export type Instance = {
   /** Builder work capability W (0–1000); 0 for schedulers. */
   capability_score?: number;
   capability_detail?: CapabilityDetail;
+  /** Scheduling mode: static freezes the deploy-time budget; dynamic uses the host resource pool and live grants. */
+  scheduling_mode?: "static" | "dynamic";
   /** Scheduler identity: each host has at most one root scheduler; node schedulers hang under a parent scheduler. */
   scheduler_role?: "root" | "node";
   /** Parent scheduler of a node scheduler (deployment_id). */

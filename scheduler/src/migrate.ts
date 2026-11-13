@@ -55,4 +55,6 @@ await runFile("005_essentials.sql");
 await runFile("006_capability.sql");
 // 007 cross-scheduler task relay: child addresses/instance roster + relay mapping table.
 await runFile("007_relay.sql");
+// 008 dynamic scheduling: pool/grant ledger, capability split and claim backoff fields.
+await runFile("008_dynamic_scheduling.sql");
 process.exit(0);

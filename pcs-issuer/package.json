@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "PCS 控制面：主机名册、部署计划、签名命令、Agent/API 档案与审计",
+  "description": "PCS control plane: host roster, deployment plans, signed commands, Agent/API profiles, and audit",
   "scripts": {
     "keygen": "node scripts/keygen.mjs",
     "start": "tsx src/main.ts",

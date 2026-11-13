@@ -27,7 +27,7 @@ const ROUTES = [
 
 const token = (process.env.ADMIN_TOKEN ?? "").trim() || execSync("pbpaste", { encoding: "utf8" }).trim();
 if (!token) {
-  console.error("没有管理员令牌：设置 ADMIN_TOKEN 或复制到剪贴板");
+  console.error("No admin token: set ADMIN_TOKEN or copy it to the clipboard");
   process.exit(1);
 }
 
@@ -65,7 +65,7 @@ async function waitFor(fn, timeoutMs, label) {
     }
     await sleep(250);
   }
-  throw new Error(`等待超时：${label}`);
+  throw new Error(`Timed out waiting for: ${label}`);
 }
 
 let ws;

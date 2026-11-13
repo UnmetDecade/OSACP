@@ -2,8 +2,8 @@
 # Builder container entrypoint: generate instance config → start sshd → run role-agent in the foreground.
 set -euo pipefail
 
-: "${SCHEDULER_URL:?缺少 SCHEDULER_URL}"
-: "${INSTANCE_ID:?缺少 INSTANCE_ID}"
+: "${SCHEDULER_URL:?SCHEDULER_URL is required}"
+: "${INSTANCE_ID:?INSTANCE_ID is required}"
 ROLE_ID="${ROLE_ID:-builder}"
 HOST_ID="${HOST_ID:-docker-host-01}"
 AGENT_PROFILE_ID="${AGENT_PROFILE_ID:-agp_builder}"

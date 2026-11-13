@@ -74,6 +74,8 @@ export function DeploySchedulerModal({
   });
   const [cpus, setCpus] = useState("2");
   const [mem, setMem] = useState("2048");
+  // Only the root picks a mode; node schedulers and builders inherit it through the control plane.
+  const [mode, setMode] = useState<"static" | "dynamic">(root?.scheduling_mode ?? "static");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -126,6 +128,7 @@ export function DeploySchedulerModal({
         ssh_port: intValue(sshPort, 2201, 1, 65535),
         cpus: intValue(cpus, 2, 1, 16),
         mem_mb: intValue(mem, 2048, 1024, 16384),
+        ...(role === "root" ? { scheduling_mode: mode } : {}),
       };
       await deployScheduler(input, async () => {
         await onDone();
@@ -206,6 +209,40 @@ export function DeploySchedulerModal({
                   setNameTouched(true);
                 }}
               />
+            </Field>
+
+            <Field
+              label={t("调度模式")}
+              hint={
+                role === "root"
+                  ? t("静态按部署时的 CPU / 内存预算分配；动态使用主机资源池，按运行压力实时下发配额")
+                  : t("结点调度机继承根调度机的模式")
+              }
+            >
+              {role === "root" ? (
+                <div className="role-toggle">
+                  <button
+                    type="button"
+                    className={`role-option${mode === "static" ? " selected" : ""}`}
+                    onClick={() => setMode("static")}
+                  >
+                    <b>{t("静态")}</b>
+                    <small>{t("固定预算，超卖不启用")}</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={`role-option${mode === "dynamic" ? " selected" : ""}`}
+                    onClick={() => setMode("dynamic")}
+                  >
+                    <b>{t("动态")}</b>
+                    <small>{t("资源池 + cgroup 配额，支持超卖")}</small>
+                  </button>
+                </div>
+              ) : (
+                <div className="muted">
+                  {t("继承根调度机：{mode}", { mode: root?.scheduling_mode === "dynamic" ? t("动态") : t("静态") })}
+                </div>
+              )}
             </Field>
 
             <Field label="Agent">
