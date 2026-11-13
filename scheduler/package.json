@@ -10,7 +10,7 @@
     "migrate": "tsx src/migrate.ts",
     "seed": "tsx src/migrate.ts --seed",
     "pretest": "DATABASE_URL=${DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test} tsx src/migrate.ts",
-    "test": "DATABASE_URL=${DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test} tsx --test test/*.test.ts",
+    "test": "DATABASE_URL=${DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test} tsx --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

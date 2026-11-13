@@ -12,7 +12,7 @@
     "issue": "tsx src/issue.ts",
     "pcs": "tsx src/pcs.ts",
     "pretest": "PCS_DATABASE_URL=${PCS_DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/platform_control_test} tsx src/migrate.ts",
-    "test": "PCS_DATABASE_URL=${PCS_DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/platform_control_test} tsx --test test/*.test.ts",
+    "test": "PCS_DATABASE_URL=${PCS_DATABASE_URL_TEST:-postgres://postgres:sched_dev_pw@127.0.0.1:5432/platform_control_test} tsx --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
