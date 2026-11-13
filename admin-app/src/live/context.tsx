@@ -10,6 +10,7 @@ import {
 } from "react";
 import { errorMessage } from "./client";
 import { getLiveConnection, type LiveConnection } from "./config";
+import { followSchedulerEvents } from "./stream";
 import { syncLive, type SyncSummary } from "./sync";
 
 type LiveState = {
@@ -25,9 +26,17 @@ type LiveState = {
 
 const LiveContext = createContext<LiveState | null>(null);
 
-const POLL_MS = 15_000;
+/**
+ * Safety-net poll. The scheduler's event stream drives most refreshes; this interval only covers
+ * changes the stream does not carry (control-plane host data, a dropped stream) and failed connections.
+ */
+const POLL_MS = 30_000;
 /** Retry at a shorter interval after a failed connection, returning online within seconds once the control plane recovers. */
 const RETRY_MS = 3_000;
+/** Bursts of events from one task transition are folded into a single snapshot fetch. */
+const EVENT_SYNC_DEBOUNCE_MS = 250;
+/** A reporting agent can post progress every few seconds; keep stream-driven snapshots from outpacing the poll. */
+const EVENT_SYNC_MIN_MS = 2_000;
 
 export function LiveProvider({ children }: { children: ReactNode }) {
   const connection = useRef<LiveConnection>(getLiveConnection()).current;
@@ -60,7 +69,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     }
   }, [connection]);
 
-  // Sync once when the page opens; normally refresh every 15 seconds, retry after 3 seconds on failure.
+  // Sync once when the page opens; normally refresh every 30 seconds, retry after 3 seconds on failure.
   // Sync once more when the window regains focus, so no manual refresh is needed after a control plane restart.
   useEffect(() => {
     let stopped = false;
@@ -83,6 +92,29 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", onFocus);
     };
   }, [doSync]);
+
+  // The scheduler announces task and instance changes on its SSE outbox stream; resync on each burst
+  // instead of waiting for the poll. A reconnect also resyncs, since notifications may have been missed.
+  useEffect(() => {
+    let timer: number | undefined;
+    let lastRun = 0;
+    const schedule = () => {
+      if (timer !== undefined) return;
+      const wait = Math.max(EVENT_SYNC_DEBOUNCE_MS, lastRun + EVENT_SYNC_MIN_MS - Date.now());
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        lastRun = Date.now();
+        void doSync();
+      }, wait);
+    };
+    const stop = followSchedulerEvents(connection, schedule, (state) => {
+      if (state === "open") void doSync();
+    });
+    return () => {
+      stop();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [connection, doSync]);
 
   return (
     <LiveContext.Provider

@@ -36,11 +36,13 @@ It is built for a small R&D team that wants a real compute floor — not a multi
 | **Builders are machines** | A builder is an official Ubuntu container (or a bare-metal host) with root SSH, your own toolchain and a real shell. No fake sandbox. |
 | **Agent-agnostic** | Claude Code, Codex, DeepSeek or a custom CLI/HTTP agent. Profiles hold only references; secrets are resolved at run time. |
 | **Chat and terminal are tasks** | Conversations and container shells use the same task pipeline, lease and fencing — no side channel, no special-case executor. |
+| **Files in both directions** | Input attachments are written into the workspace before a command runs; collected outputs go through a dedicated artifact channel (64 MiB per file, SHA-256 verified) and download byte-for-byte. No base64 in stdout. |
+| **LAN devices, same pipeline** | A sideload token lets one device drive one host's builders with `curl` — the same task, lease and fencing path as the console, with a closed permission set and no scheduler address exposed. |
 
 ## Architecture
 
 <a href="docs/Open-Source-Agent-Compute-Platform-Architecture.html">
-  <img src="docs/assets/architecture-en.png" alt="Platform architecture — PCS control plane, host-runtime, recursive schedulers and cross-scheduler relay" width="100%">
+  <img src="docs/assets/architecture-en.png" alt="Platform architecture — PCS control plane, host-runtime, recursive schedulers, sideload channel and cross-scheduler relay" width="100%">
 </a>
 
 <p align="center"><sub>Click the diagram to open the full interactive HTML version.</sub></p>
@@ -51,6 +53,8 @@ Four moving parts:
 - **host-runtime** runs on every host. It long-polls PCS, verifies Ed25519 commands, creates containers, reports actual state and resources. Outbound only.
 - **Scheduler** is the state authority. It queues, admits, leases, fences, dispatches and records. Root and node schedulers form a recursive tree; cross-scheduler work is pushed down, never copied.
 - **Builder** is the only worker role. It claims tasks, runs an Agent adapter or a deterministic shell, streams progress and uploads artifacts.
+
+A sideload is not a fifth moving part: it is a scoped token that enters through PCS and lands on the host's root scheduler, so a LAN device uses the same task path as the console. Files travel with the task — attachments in, collected artifacts out.
 
 The full model — including `W` (capability score), `D` (task difficulty), `ΣW` aggregation and relay depth — is in the [architecture diagram](docs/Open-Source-Agent-Compute-Platform-Architecture.html) and [docs/architecture.md](docs/architecture.md).
 
@@ -122,6 +126,20 @@ The dev server proxies `/api/pcs` to `127.0.0.1:7901` and `/api/scheduler` to `1
 npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 ```
 
+### 4. Optional: drive a host from another device
+
+Create a token in the studio (**Attach sideload**), then run a project with files in both directions:
+
+```bash
+SIDELOAD_TOKEN='sdl_…' PCS_URL='http://pcs.example:7901' \
+  node scripts/sideload-project.mjs --out ./out \
+  --upload ./input/data.csv \
+  --command 'g++ -O2 -std=c++17 hello.cpp -o hello && ./hello > result.txt' \
+  --collect .
+```
+
+Inputs are materialized under `attachments/` before the command runs; every file under the collected paths is downloaded into `--out` and checked against the scheduler's SHA-256.
+
 ## Core model
 
 | Concept | How it works |
@@ -134,6 +152,8 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 | **Profiles** | PCS stores Agent/API profiles and bindings. The scheduler only sees `profile_id` references, never keys. |
 | **Secret Store** | Profiles hold `secret://` refs. The store resolves them per instance into short-lived credentials; audit never records values. |
 | **Relay** | A task with `D > W` is pushed to a child scheduler, never copied. Results bubble back up the chain; max depth 8. |
+| **Files** | `requirements.console.attachments` are written under `<workspace>/attachments/` before the command runs. `collect` walks the workspace (32 paths / 128 files, 64 MiB each, 256 MiB total) and every file goes through the artifact channel with a fresh SHA-256. |
+| **Sideload** | A `sdl_` token is bound to one host, stored as a SHA-256 hash plus its last four characters. Scopes are a closed set; `console:run` gates shell tasks. Calls go `device → PCS → root scheduler`. |
 
 ## Scheduling algorithm
 
@@ -209,8 +229,8 @@ Full derivations, worked examples, the grant lifecycle and the configuration tab
 | [`secret-store/`](secret-store/) | Reference Secret Store with per-instance resolution |
 | [`agents/`](agents/) | CLI Agent adapter for Claude Code / Codex / custom CLIs |
 | [`deploy/`](deploy/) | Single-machine Compose, container entrypoints, payload build |
-| [`docs/`](docs/) | Architecture, scheduling algorithm, builders, scheduler, admin app, federation, deployment |
-| [`scripts/`](scripts/) | Acceptance, load, backup, PKI and payload scripts |
+| [`docs/`](docs/) | Architecture, scheduling algorithm, builders, scheduler, admin app, sideload, federation, deployment |
+| [`scripts/`](scripts/) | Acceptance, load, backup, PKI, payload and sideload scripts |
 
 ## Security model
 
@@ -222,6 +242,7 @@ This is a **trusted-network R&D platform**, and the trade-offs are deliberate:
 - Builder SSH is key-only; the host's login public key is injected at deploy time.
 - PCS encrypts host private keys with AES-256-GCM and only returns fingerprints.
 - Model credentials stay in the runtime container, gated by `PLATFORM_AGENT_PASS_ENV` and the profile's `--pass-env`.
+- Sideload tokens are shown once, stored as a SHA-256 hash, and only reach PCS; the device never sees the scheduler address or its instance credentials.
 - Put PCS (7901), scheduler API (8443) and SSH ports behind a firewall or VPN. Never expose them directly.
 
 Report vulnerabilities privately via [SECURITY.md](SECURITY.md).
@@ -248,6 +269,8 @@ Every design doc exists in English and 简体中文; each page links to its coun
 - [Builders](docs/builders.md)
 - [Scheduler](docs/scheduler.md)
 - [Admin app](docs/admin-app.md)
+- [Agent control](docs/agent-control.md) — task parks, autonomy levels, typed outcomes, failure classes
+- [Sideloads](docs/sideload.md) — curl tokens, permissions, files in and out
 - [Deployment](docs/deployment.md)
 - [中文 README](README.zh-CN.md)
 

@@ -57,7 +57,7 @@ export function DeploySchedulerModal({
       : undefined) ??
     root ??
     schedulers[0];
-  const [name, setName] = useState(role === "root" ? "scheduler" : "node");
+  const [name, setName] = useState(role === "root" ? "root-scheduler" : "node-scheduler");
   const [nameTouched, setNameTouched] = useState(false);
   const [agent, setAgent] = useState("");
   const [api, setApi] = useState("");
@@ -86,18 +86,28 @@ export function DeploySchedulerModal({
     apis.find((a) => a.id === agentModel)?.id ?? apis[0]?.id ?? "";
   const selectedApi = api && apis.some((a) => a.id === api) ? api : preferredApi;
 
-  const blockedReason = !online
-    ? t("这台主机还没上线")
-    : role === "root" && root
-      ? t("这台主机已有根调度机 {root}", { root: root.name })
-      : role === "node" && !root
-        ? t("先部署根调度机，再添加结点调度机")
-        : "";
+  // A host has exactly one role: a bare-metal builder/scheduler cannot also run containers. Check this before the
+  // submit button so the operator is not left with a raw HOST_ROLE_CONFLICT from the control plane.
+  const roleConflict =
+    host.role_mode && host.role_mode !== "containers"
+      ? t("这台主机当前是{role}，不能部署容器角色。先到「主机」页把角色切回容器宿主。", {
+          role: host.role_mode === "builder" ? t("裸机构建机") : t("裸机调度机"),
+        })
+      : "";
+  const blockedReason = roleConflict
+    ? roleConflict
+    : !online
+      ? t("这台主机还没上线")
+      : role === "root" && root
+        ? t("这台主机已有根调度机 {root}", { root: root.name })
+        : role === "node" && !root
+          ? t("先部署根调度机，再添加结点调度机")
+          : "";
   const blocked = blockedReason !== "";
 
   function switchRole(next: "root" | "node") {
     setRole(next);
-    if (!nameTouched) setName(next === "root" ? "scheduler" : "node");
+    if (!nameTouched) setName(next === "root" ? "root-scheduler" : "node-scheduler");
     setError("");
   }
 
@@ -160,11 +170,14 @@ export function DeploySchedulerModal({
       }
     >
       <div className="stack">
-        {!online && <Callout tone="warn">{t("这台主机还没上线，不能部署容器。")}</Callout>}
-        {online && blocked && role === "root" && root && (
+        {roleConflict && <Callout tone="warn">{roleConflict}</Callout>}
+        {!roleConflict && !online && (
+          <Callout tone="warn">{t("这台主机还没上线，不能部署容器。")}</Callout>
+        )}
+        {!roleConflict && online && blocked && role === "root" && root && (
           <Callout tone="warn">{t("这台主机已有根调度机，可以在它下面添加结点调度机。")}</Callout>
         )}
-        {online && role === "node" && !root && (
+        {!roleConflict && online && role === "node" && !root && (
           <Callout tone="warn">{t("这台主机还没有根调度机。根是主机入口，必须先部署。")}</Callout>
         )}
         {agents.length === 0 ? (
@@ -203,7 +216,7 @@ export function DeploySchedulerModal({
                 className="input"
                 value={name}
                 maxLength={32}
-                placeholder={role === "root" ? t("调度机 / scheduler") : t("结点 / node")}
+                placeholder={role === "root" ? t("调度机 / root-scheduler") : t("结点 / node-scheduler")}
                 onChange={(e) => {
                   setName(e.target.value);
                   setNameTouched(true);

@@ -4,7 +4,8 @@ import path from "node:path";
 import { LocalAdmission } from "./admission.js";
 import { SchedulerClient, SchedulerError, type Assignment } from "./client.js";
 import type { InstanceConfig } from "./config.js";
-import { TaskAborted, TaskFailed, executorFor } from "./executor.js";
+import { TaskAborted, TaskFailed, type ExecOutcome } from "./exec-types.js";
+import { executorFor } from "./executor.js";
 import { checkHostAdmission, listHostGrants, releaseHostAdmission } from "./host-admission-client.js";
 import { memAvailableBytes, sample } from "./metrics.js";
 import { ApiAdapter } from "./agent-runtime/api-adapter.js";
@@ -380,7 +381,10 @@ export class Agent {
           `${a.task_id} executed by Agent ${profiles!.agent.agent_profile_id}@${profiles!.agent.version} (${profiles!.agent.adapter})`,
         );
       }
-      let outcome: { summary: string; outputs?: Record<string, unknown> };
+      // Every outward action is reported to the scheduler immediately, not with the final result:
+      // if this process dies mid-flight, the scheduler must already know not to retry blindly.
+      const outwardActions = new Set<string>();
+      let outcome: ExecOutcome;
       try {
         const executor = useAgent
           ? (t: Assignment, c: Parameters<typeof runAgentTask>[1]) =>
@@ -400,8 +404,17 @@ export class Agent {
               .progress(a.attempt_id, { ...proof, percent, note })
               .catch(() => {});
           },
+          outward: (action) => {
+            const label = action.trim().slice(0, 200);
+            if (!label || outwardActions.has(label)) return;
+            outwardActions.add(label);
+            this.log(`  ${a.task_id}: outward action announced: ${label}`);
+            void this.client
+              .progress(a.attempt_id, { ...proof, outward: [label] })
+              .catch((err) => this.log(`  ${a.task_id}: outward report failed: ${String(err)}`));
+          },
           downloadArtifact: (artifactId) => this.client.downloadArtifactContent(artifactId),
-          uploadArtifact: async (content, mediaType = "application/octet-stream") => {
+          uploadArtifact: async (content, mediaType = "application/octet-stream", name) => {
             const buf = Buffer.isBuffer(content) ? content : Buffer.from(content);
             const sha256 = `sha256:${createHash("sha256").update(buf).digest("hex")}`;
             const meta = await this.client.createArtifact({
@@ -410,20 +423,46 @@ export class Agent {
               sha256,
               size_bytes: buf.length,
               media_type: mediaType,
+              name,
             });
             if (!meta) throw new Error("Scheduler did not return an artifact record");
             await this.client.uploadArtifactContent(meta.artifact_id, buf);
             await this.client.completeArtifact(meta.artifact_id);
-            this.log(`  ${a.task_id}: artifact ${meta.artifact_id} verified (${sha256.slice(0, 19)}…)`);
-            return { artifact_id: meta.artifact_id, sha256, size_bytes: buf.length };
+            this.log(
+              `  ${a.task_id}: artifact ${meta.artifact_id} verified (${sha256.slice(0, 19)}…)${name ? ` name=${name}` : ""}`,
+            );
+            return { artifact_id: meta.artifact_id, sha256, size_bytes: buf.length, ...(name ? { name } : {}) };
           },
         });
       } catch (e) {
-        await this.handleExecError(a, proof, e);
+        await this.handleExecError(a, proof, e, [...outwardActions]);
         return;
       } finally {
         clearInterval(renewTimer);
         clearInterval(watchTimer);
+      }
+
+      for (const action of outcome.outward ?? []) outwardActions.add(action);
+
+      // A parked task is not a finished one: report the question and let the scheduler pause the
+      // task. The attempt terminates on the scheduler side, so no result is submitted for a split.
+      if (outcome.question) {
+        await this.client.result(a.attempt_id, {
+          ...proof,
+          status: "NEEDS_INPUT",
+          summary: outcome.summary,
+          question: outcome.question,
+          outward_actions: [...outwardActions],
+        });
+        this.log(`${a.task_id} waiting for input: ${outcome.question.slice(0, 160)}`);
+        return;
+      }
+      if (outcome.split?.length) {
+        const out = await this.client.split(a.task_id, { ...proof, children: outcome.split });
+        this.log(
+          `${a.task_id} split into ${out?.children?.length ?? outcome.split.length} child task(s): ${(out?.children ?? []).join(", ")}`,
+        );
+        return;
       }
 
       const r = await this.client.result(a.attempt_id, {
@@ -431,6 +470,7 @@ export class Agent {
         status: "SUCCEEDED",
         summary: outcome.summary,
         outputs: outcome.outputs,
+        outward_actions: [...outwardActions],
       });
       this.log(`Finished ${a.task_id}: ${outcome.summary}${describeResult(r)}`);
     } catch (e) {
@@ -458,11 +498,21 @@ export class Agent {
     }
   }
 
-  private async handleExecError(a: Assignment, proof: { lease_token: string; fencing_token: number }, e: unknown) {
+  private async handleExecError(
+    a: Assignment,
+    proof: { lease_token: string; fencing_token: number },
+    e: unknown,
+    outward: string[] = [],
+  ) {
     if (e instanceof TaskAborted) {
       if (e.reason === "cancelled") {
         await this.client
-          .result(a.attempt_id, { ...proof, status: "CANCELLED", summary: "Stopped on cancellation request" })
+          .result(a.attempt_id, {
+            ...proof,
+            status: "CANCELLED",
+            summary: "Stopped on cancellation request",
+            outward_actions: outward,
+          })
           .catch(() => {});
         this.log(`${a.task_id} stopped on cancellation request`);
       } else if (e.reason === "lease_lost") {
@@ -475,8 +525,15 @@ export class Agent {
 
     const code = e instanceof TaskFailed ? e.code : "EXECUTOR_ERROR";
     const message = e instanceof Error ? e.message : String(e);
+    // Failure detail (e.g. a provider reset time) travels to the scheduler, which classifies it.
+    const detail = e instanceof TaskFailed ? e.detail : undefined;
     await this.client
-      .result(a.attempt_id, { ...proof, status: "FAILED", error: { code, message } })
+      .result(a.attempt_id, {
+        ...proof,
+        status: "FAILED",
+        error: { code, message, ...(detail === undefined ? {} : { detail }) },
+        outward_actions: outward,
+      })
       .catch((err) => this.log(`${a.task_id} failed to report the failure result: ${String(err)}`));
     this.log(`${a.task_id} failed (${code}): ${message}`);
   }

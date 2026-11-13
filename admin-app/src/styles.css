@@ -511,6 +511,12 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .code-block { display: block; font-size: 11.5px; padding: 10px 12px; background: var(--surface-2); border-radius: 7px; overflow-wrap: anywhere; color: var(--text-2); }
 .payload { background: var(--surface-2); border-radius: 8px; padding: 12px; font-size: 11.5px; line-height: 1.6; overflow: auto; margin: 0 0 10px; color: var(--text-2); }
 .code-editor { font-family: var(--mono); font-size: 12px; }
+/* The question an agent stopped on: quoted rather than editable, so it reads differently from the answer box below it. */
+.question-box {
+  border-left: 3px solid var(--warn); background: var(--warn-soft);
+  padding: 10px 12px; border-radius: 0 7px 7px 0;
+  font-size: 12.5px; line-height: 1.6; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .evidence { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-2); line-height: 1.8; }
 .token { font-family: var(--mono); font-size: 11px; word-break: break-all; margin-top: 6px; }
 
@@ -526,6 +532,15 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .timeline b { font-size: 12.5px; font-weight: 550; display: block; }
 .timeline p { margin: 2px 0 3px; font-size: 12px; color: var(--text-2); }
 .timeline small { font-size: 11px; color: var(--text-3); }
+/* Event lists grow for the task lifetime; scrolling inside the card keeps the header and summary in place. */
+.events-scroll { max-height: 420px; overflow-y: auto; padding-right: 6px; }
+/* Event payloads are single-line JSON; wrap them inside the narrower scrolling card instead of clipping. */
+.events-scroll .timeline p { overflow-wrap: anywhere; }
+/* Task detail fits the viewport: the summary stays in place and only the event card scrolls. */
+.main:has(> .content > .page-task) { overflow: hidden; }
+.page-task { flex: 1 1 auto; min-height: 0; }
+.page-task .events-card { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; }
+.page-task .events-card .events-scroll { flex: 1 1 0; min-height: 0; max-height: none; }
 
 /* ---------- character ---------- */
 .character { display: block; flex: none; overflow: visible; }
@@ -750,6 +765,46 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 
 /* ---------- detail pages ---------- */
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+
+/*
+ * Host detail is a full-screen page: identity and capacity share the first row, access and the
+ * component list the second, so the page itself never scrolls. The card interiors scroll only when a
+ * short window cannot fit them; the component list owns the leftover height of its row.
+ */
+.content:has(> .page-host) { height: 100%; min-height: 0; }
+.main:has(> .content > .page-host) { overflow: hidden; }
+.page-host { flex: 1 1 auto; height: 100%; min-height: 0; }
+.page-host .back, .page-host .page-head { flex: none; }
+/* A bootstrap log can run long; cap it so it cannot push the grid past the viewport. */
+.page-host > .callout { flex: none; max-height: 40%; overflow-y: auto; }
+/* The grid is as tall as its content rather than the viewport: the cards stay compact, and only a host
+   with an unusually long component list makes it scroll. */
+.host-detail-grid {
+  flex: 0 1 auto; min-height: 0; overflow-y: auto;
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/* Reachability and SSH details are a one-line strip: their values are short, and the kv rows they used to
+   occupy were duplicated by the command above them. */
+.host-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+.host-strip em { font-style: normal; color: var(--text-3); margin-right: 5px; }
+.host-strip code { font-size: 11.5px; }
+/* Grid children default to min-height:auto; resetting it lets the columns shrink inside the grid. */
+.host-cell { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; }
+/* Cards keep their natural height: on a short window the column scrolls as a unit instead of every card
+   being squeezed into a clipped half-row. */
+.host-cell > .card { margin-top: 0; flex: none; }
+/* Both columns finish on the same line: the last card of each absorbs whatever height is left over,
+   so neither column ends with a ragged edge. It never shrinks below its content. */
+.host-cell > .card:last-child { flex: 1 0 auto; min-height: 0; }
+/* Components are the one list that can outgrow its card: it takes the height left over next to the
+   federation tree and scrolls, and it contributes nothing to the row height so a long list cannot
+   stretch the whole grid. */
+.host-cell-list > .card:last-child {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; contain: size;
+}
+.host-cell-list > .card:last-child .rail-list { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+.host-cell-list > .card:last-child .empty { flex: 1; display: flex; align-items: center; justify-content: center; }
 .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .inline-note { font-size: 11.5px; color: var(--text-3); margin-top: 8px; }
 
@@ -904,11 +959,27 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   /* Side-by-side does not fit on narrow screens: return to normal document flow and allow page scrolling. */
   .content:has(> .page-sched) { height: auto; }
   .main:has(> .content > .page-sched) { overflow-y: auto; }
+  /* Host detail: the two columns become one, so the page scrolls again and the cards size to content. */
+  .content:has(> .page-host) { height: auto; }
+  .main:has(> .content > .page-host) { overflow-y: auto; }
+  .page-host { height: auto; }
+  .host-detail-grid { display: flex; flex-direction: column; flex: none; overflow: visible; }
+  /* Stacked cells size to their content again: no flex basis, no shrink, no inner scroll. */
+  .host-cell { flex: none; overflow: visible; }
+  .host-cell > .card { flex: none; min-height: auto; overflow: visible; }
+  .host-cell > .card:last-child { flex: none; min-height: 0; display: block; }
+  /* Undo the size containment: stacked on a phone, the component card must grow with its rows. */
+  .host-cell-list > .card:last-child { contain: none; display: block; }
+  .host-cell > .card:last-child .rail-list, .host-cell > .card:last-child .empty { overflow: visible; }
   .page-sched { height: auto; }
   .sched-top { grid-template-columns: 1fr; }
   .sched-top > .card { overflow: visible; }
   .page-sched .sched-split { min-height: 240px; }
   .page-sched .sched-split .rail-list { overflow: visible; }
+  /* Narrow screens stack the detail cards above the event trail; let the page scroll again and cap the trail. */
+  .main:has(> .content > .page-task) { overflow-y: auto; }
+  .page-task .events-card { min-height: 0; display: block; }
+  .page-task .events-card .events-scroll { max-height: 420px; }
 }
 @media (max-width: 760px) {
   .sidebar { width: 64px; padding: 14px 8px; }
@@ -1019,6 +1090,12 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px; width: min(640px, 100%);
 }
+/* A bare-metal builder owns the host, so no scheduler slot exists: show only the builder cards, centered. */
+.scene-empty-roles.is-builder-only {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(340px, 100%);
+  margin-inline: auto;
+}
 .scene-empty-roles .scene-scheduler { width: 100%; height: auto; min-height: 200px; margin: 0; }
 .scene-empty-roles .scene-node-body { gap: 10px; }
 .scene-node-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; font-weight: 600; }
@@ -1041,6 +1118,59 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .scene-action:hover { border-color: var(--border-strong); color: var(--text); }
 .scene-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .scene-action:disabled:hover { border-color: var(--border); color: var(--text-2); }
+
+/*
+ * Sideload cards sit in a row above the root scheduler, centered on it. The strip is part of the tree's
+ * normal flow so the scene keeps it in view, and the gap below leaves room for the fan of edge lines.
+ */
+.scene-root-row { position: relative; display: flex; align-items: flex-start; justify-content: center; }
+.scene-root-row > .scene-scheduler { flex: none; }
+.scene-sideloads {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 10px;
+  max-width: 100%; margin-bottom: 36px;
+}
+.scene-sideload {
+  width: 180px; height: 184px; padding: 9px 9px 10px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  text-align: center; color: inherit; font: inherit;
+  background: var(--surface); border: 1px dashed var(--border-strong); border-radius: 13px;
+  cursor: pointer; transition: border-color 0.15s ease;
+}
+.scene-sideload:hover { border-color: var(--accent); }
+.scene-sideload.is-online { border-style: solid; }
+.scene-sideload.is-expired { opacity: 0.72; }
+.scene-sideload b { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-sideload small { font-size: 10.5px; color: var(--text-3); }
+.scene-sideload .chips { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; width: 100%; }
+.scene-sideload.is-add { background: transparent; }
+.scene-sideload.is-add b { margin-top: 6px; font-size: 12px; }
+.host-led { animation: host-led 2.4s ease-in-out infinite; }
+@keyframes host-led {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.host-wifi { animation: host-wifi 2.6s ease-in-out infinite; }
+@keyframes host-wifi {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.9; }
+}
+
+.sideload-token-row { display: flex; align-items: center; gap: 10px; }
+.sideload-token-row .code-block { flex: 1; min-width: 0; }
+.sideload-code {
+  margin: 0; padding: 10px 12px; border-radius: 7px; background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.6;
+  color: var(--text-2); overflow-x: auto; white-space: pre;
+}
+.sideload-copy-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 11.5px; color: var(--text-3);
+}
+.sideload-detail-head { display: flex; align-items: center; gap: 14px; }
+.sideload-detail-head b { font-size: 14px; }
+.sideload-detail-head p { margin: 3px 0 6px; font-size: 12px; color: var(--text-3); }
+.sideload-detail-head .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.sideload-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 11.5px; color: var(--text-3); }
 
 /*
  * Edge layer: starts at the bottom center of the parent card and turns with rounded corners to the top center of the child card.
@@ -1128,4 +1258,9 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   .scene-builder.is-empty { width: 100%; min-height: 110px; }
   /* Narrow screens may wrap; edges are measured, so they still connect the right cards after wrapping. */
   .scene-branch { flex-wrap: wrap; gap: 0 8px; padding-top: 36px; }
+  .scene-root-row { flex-direction: column; align-items: center; gap: 10px; }
+  .scene-root-row > .scene-scheduler { width: 180px; }
+  /* The strip stays above the root card and wraps when the viewport is narrow. */
+  .scene-sideloads { margin-bottom: 28px; }
+  .scene-sideload { width: 150px; }
 }

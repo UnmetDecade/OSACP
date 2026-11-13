@@ -6,15 +6,17 @@ import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
 import { tasksForHost } from "../host-tasks";
 import { Character } from "../components/Character";
-import { Button, Callout, Card, CardTitle, Empty, Field, Modal, PageHead, Stat, Tag } from "../components/ui";
+import { Badge, Button, Callout, Card, CardTitle, Empty, Field, Modal, PageHead, Stat, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
 import { CreateBuilderModal } from "../components/CreateBuilder";
 import { DeployBuilderModal } from "../components/DeployBuilder";
 import { DeploySchedulerModal } from "../components/DeployScheduler";
 import { StudioScene } from "../components/StudioScene";
 import { CreateTaskModal } from "../components/CreateTask";
+import { CreateSideloadModal, SideloadDetailModal } from "../components/Sideload";
 import { mergeHost } from "../api";
 import { errorMessage } from "../live/client";
+import type { Sideload } from "../types";
 
 /**
  * Overview: one host's "AI Agent studio".
@@ -32,6 +34,9 @@ export function Dashboard() {
   const [attachError, setAttachError] = useState("");
   // Create tasks in a dialog in place, without navigating to the tasks page, so current-host work is not interrupted.
   const [createOpen, setCreateOpen] = useState(false);
+  // Sideload dialog and detail; both are scoped to the current host.
+  const [sideloadOpen, setSideloadOpen] = useState(false);
+  const [sideloadDetail, setSideloadDetail] = useState<Sideload | null>(null);
   // Deploying a builder first shows a trade-off comparison: container builder or bare-metal builder.
   const [builderChoiceOpen, setBuilderChoiceOpen] = useState(false);
   // Adding a builder / scheduler is entered only from the AI Agent studio; ?add= lets other pages jump back to it.
@@ -119,6 +124,8 @@ export function Dashboard() {
   );
   const scheduler =
     hostSchedulers.find((i) => (i.scheduler_role ?? "root") === "root") ?? hostSchedulers[0];
+  // A host sees only its own sideloads; another host's devices never appear in this studio.
+  const hostSideloads = host ? db.sideloads.filter((s) => s.host_id === host.id) : [];
   const hostTasks = tasksForHost(host);
   const s = {
     onlineBuilders: builders.filter((b) => b.state === "ONLINE").length,
@@ -128,13 +135,9 @@ export function Dashboard() {
     failed: hostTasks.filter((t) => t.state === "FAILED").length,
   };
   const schedulerReady = Boolean(scheduler);
-  // The onboarding checklist describes this host only. A builder folded in from a merged host (or a stale
-  // registration on another host) must not tick "deploy builder" while this host's studio still shows it missing.
-  const hostBuilders = db.instances.filter(
-    (i) => i.role === "builder" && (!host || i.host_id === host.id),
-  );
-  // A bare-metal builder can register with another scheduler directly; the host no longer needs a scheduler first.
-  const buildersReady = hostBuilders.length > 0;
+  // Count builders in the same scope as the studio and the header: hosts merged into this one are part of it.
+  // Checking only this host's own rows made the checklist say "deploy a builder" while the canvas showed two online.
+  const buildersReady = builders.length > 0;
   const steps: {
     title: string;
     desc: string;
@@ -213,10 +216,13 @@ export function Dashboard() {
           </div>
           <StudioScene
             host={host}
+            sideloads={hostSideloads}
             onAdd={(parent) => {
               setAddUnder(parent ? parent.deployment_id ?? parent.id : null);
               setAddOpen(true);
             }}
+            onAddSideload={() => setSideloadOpen(true)}
+            onOpenSideload={(sideload) => setSideloadDetail(sideload)}
             onDeployScheduler={() => setAddRole("scheduler")}
             onDeployBuilder={() => setBuilderChoiceOpen(true)}
           />
@@ -255,25 +261,50 @@ export function Dashboard() {
             </div>
           </Card>
 
+          {/* An operator on the overview cares what work is running, not which control-plane audit entries were written;
+              every row links straight to the task detail. */}
           <Card className="activity">
-            <CardTitle extra={<Link className="link" to="/tasks">{t("全部")}</Link>}>{t("最近活动")}</CardTitle>
+            <CardTitle extra={<Link className="link" to="/tasks">{t("全部")}</Link>}>{t("最近任务")}</CardTitle>
             <div className="rail-list">
-              {db.logs.slice(0, 5).map((l) => (
-                <div className="rail-row" key={l.id}>
+              {hostTasks.slice(0, 5).map((task) => (
+                <Link className="rail-row" key={task.id} to={`/tasks/${task.id}`}>
                   <div>
-                    <b>{l.action}</b>
-                    <small>{l.object} · {new Date(l.at).toLocaleTimeString("zh-CN")}</small>
+                    <b>{task.title}</b>
+                    <small>{new Date(task.created_at).toLocaleTimeString("zh-CN")} · P{task.priority}</small>
                   </div>
-                  <span className={`dot ${l.result === "OK" ? "dot-ok" : "dot-bad"}`} />
-                </div>
+                  <Badge value={task.state} />
+                </Link>
               ))}
-              {db.logs.length === 0 && <Empty text={t("还没有活动。")} />}
+              {hostTasks.length === 0 && <Empty text={t("还没有任务。")} />}
             </div>
           </Card>
         </aside>
       </div>
 
       <CreateTaskModal open={createOpen} onClose={() => setCreateOpen(false)} />
+
+      {sideloadOpen && host && (
+        <CreateSideloadModal
+          host={host}
+          onClose={() => setSideloadOpen(false)}
+          onCreated={async () => {
+            if (live.connected) await live.refresh();
+          }}
+        />
+      )}
+
+      {sideloadDetail && host && (
+        <SideloadDetailModal
+          sideload={
+            db.sideloads.find((s) => s.sideload_id === sideloadDetail.sideload_id) ?? sideloadDetail
+          }
+          hostName={host.name}
+          onClose={() => setSideloadDetail(null)}
+          onDeleted={async () => {
+            if (live.connected) await live.refresh();
+          }}
+        />
+      )}
 
       <Modal
         open={attachOpen}

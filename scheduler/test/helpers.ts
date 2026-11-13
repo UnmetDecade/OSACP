@@ -32,6 +32,25 @@ const TABLES = [
   "resource_profiles",
 ];
 
+/**
+ * The suite truncates every scheduler table before each test, so it must never touch a live
+ * database. `npm test` points DATABASE_URL at scheduler_test; invoking the tests with a bare
+ * runner would otherwise use whatever DATABASE_URL the shell carries — including production.
+ * The name check mirrors the control-plane suite and fails closed.
+ */
+export async function assertTestDatabase(): Promise<void> {
+  const row = (
+    await pool.query<{ name: string }>(`SELECT current_database() AS name`)
+  ).rows[0];
+  const name = String(row?.name ?? "");
+  if (!/_test$/.test(name)) {
+    throw new Error(
+      `Refusing to run scheduler tests against "${name}": the suite truncates its database. ` +
+        `Set DATABASE_URL to a database whose name ends in _test (npm test does this).`,
+    );
+  }
+}
+
 export async function reset(): Promise<void> {
   await pool.query(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);
   await pool.query(`UPDATE _clock SET offset_ms = 0`);

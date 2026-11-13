@@ -102,21 +102,27 @@ export function InstanceProfilesModal({
         </Field>
 
         <Field label="API">
-          <div className="chips">
+          <div className="role-grid">
             {apis.map((a) => {
               const checked = apiIds.includes(a.id);
               return (
                 <button
                   key={a.id}
-                  className={`chip${checked ? " tag-accent" : ""}`}
-                  style={{ cursor: "pointer", height: 24 }}
+                  className={`select-card${checked ? " selected" : ""}`}
                   onClick={() => toggleApi(a.id)}
                 >
-                  {a.name}
+                  <span className="select-head"><b>{a.name}</b><Tag>{a.kind}</Tag></span>
+                  <code>{a.base_url}</code>
+                  <small className="footnote">
+                    {a.scopes.length > 0 ? a.scopes.join(" · ") : a.auth_type}
+                  </small>
                 </button>
               );
             })}
           </div>
+          {apis.length === 0 && (
+            <p className="footnote">{t("还没有可用的 API，先到「配置」页新建。")}</p>
+          )}
         </Field>
 
         {error && <Callout tone="bad">{error}</Callout>}

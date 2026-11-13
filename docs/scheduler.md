@@ -5,6 +5,7 @@
 > Version: v4.3 · 2026-11-12
 > The scheduler is the single source of truth for state. It does only four things: accept tasks, queue them, dispatch them, and keep accounts.
 > Allocation and scheduling math (`W`, water filling, concurrency, pressure) is specified in [scheduling-algorithm.md](scheduling-algorithm.md).
+> Agent-driven pauses, task fan-out, and host-side safety rails are specified in [agent-control.md](agent-control.md).
 
 ---
 
@@ -99,9 +100,15 @@ Takes the minimum of:
 QUEUED ──claim──▶ ASSIGNED ──start-ack──▶ RUNNING ──result──▶ SUCCEEDED
    │                  │                      │
    │                  │                      ├──▶ FAILED ──retry──▶ QUEUED
+   │                  │                      ├──▶ NEEDS_INPUT ──answer──▶ QUEUED
+   │                  │                      ├──▶ WAITING_CHILDREN ──children settled──▶ QUEUED
    │                  │                      └──▶ BLOCKED
    └──cancel────────────────────────────────▶ CANCELLED
 ```
+
+`NEEDS_INPUT` and `WAITING_CHILDREN` are parks, not failures: they release the lease and give the
+attempt's retry slot back. Only `resume_rounds` is consumed; the limits and semantics are in
+[agent-control.md](agent-control.md).
 
 ### 4.2 Instances
 
@@ -123,9 +130,11 @@ STARTING → ONLINE ⇄ SUSPECT → OFFLINE
 | Configuration | Default | Description |
 |---|---|---|
 | `max_attempts` | 3 | Maximum number of attempts for a retryable failure |
-| `retry_backoff` | Exponential backoff 5s / 15s / 45s | No more than 5 minutes |
+| `retry_backoff` | Exponential backoff 5m / 15m / 45m | Per-attempt count; also used as the `retry` backoff |
+| `failure_class` | Derived per attempt | `permanent` / `outward` dead-letter, `transient` retries, `rate_limit` and `busy` wait without consuming an attempt (bounded by `retry_waivers`, 6) |
 | `deadline_at` | None | Timed-out tasks are set to FAILED |
 | `BLOCKED` | When the limit is reached | Wait for manual resubmission or reset |
+| outward actions | — | A failure after the attempt acted outside the workspace is never retried; the task is dead-lettered with `outcome: interrupted_after_outward` |
 
 ---
 
@@ -158,11 +167,21 @@ wft_build = [ EXECUTE(task.build) ]
 | `POST` | `/v1/claim` | Claim a task |
 | `POST` | `/v1/tasks/:id/start-ack` | Acknowledge start |
 | `POST` | `/v1/tasks/:id/progress` | Progress |
-| `POST` | `/v1/tasks/:id/result` | Result |
+| `POST` | `/v1/tasks/:id/result` | Result (`SUCCEEDED` / `FAILED` / `CANCELLED` / `NEEDS_INPUT`) |
+| `POST` | `/v1/tasks/:id/split` | Split a RUNNING task into child tasks |
+| `POST` | `/v1/tasks/:id/answer` | Answer a parked question and resume the task |
+| `GET` | `/v1/failure-signatures` | Most recent normalized failure signatures |
 | `GET` | `/v1/instances` | Instance list |
+| `GET` | `/v1/tasks/:id/artifacts` | List a task's files (name, media type, size, digest, status) |
+| `GET` | `/v1/artifacts/:id/download` | Download a verified file as raw bytes |
 | `POST` | `/v1/builders` | Create a builder (container) |
 | `POST` | `/v1/builders/:id/:action` | start/stop/restart/remove |
 | `GET` | `/v1/events/stream` | SSE event stream |
+
+File channel: builders write outputs through the artifact channel (`POST /v1/artifacts` declares the digest,
+`PUT /v1/artifacts/:id/content` uploads raw bytes of any format, `POST /v1/artifacts/:id/complete` makes the
+server recompute SHA-256). The two operator routes above list and download those files without an instance
+credential — the same trust boundary as the other operator routes, with PCS authenticating the caller.
 
 Authentication: instances use a Bearer token; the admin app uses an optional admin token. v4 no longer distinguishes viewer/operator/approver.
 
@@ -175,6 +194,7 @@ Authentication: instances use a Bearer token; the admin app uses an optional adm
 | `tasks` | Task main table |
 | `task_attempts` | Each claim |
 | `task_events` | State events |
+| `failure_signatures` | Normalized failure clusters (`kind:sha256[...]`, occurrences, first/last seen) |
 | `role_instances` | Builder/scheduler instances |
 | `leases` | Leases and fencing |
 | `resource_reservations` | Resource reservations |

@@ -47,6 +47,8 @@ export interface Assignment {
   difficulty: number;
   /** Task requirements and workflow handoff info (e.g. upstream_artifacts) */
   requirements: Record<string, unknown>;
+  /** Autonomy level the adapter maps onto the driver's permission flags; null means the driver default. */
+  approval_mode: string | null;
   /** P4: send only Profile references, never implementations or secrets */
   agent: { profile_id: string | null; version: string | null };
   api_profiles: string[];
@@ -110,6 +112,63 @@ const dynamicScoreOf = (inst: any): number => {
   if (live > 0) return live;
   return Number(inst.capability_score ?? 0);
 };
+
+/**
+ * How long a weaker builder yields a task to a stronger idle builder before taking it itself.
+ *
+ * Local execution is pull-based: every idle instance polls for work and the first poller wins the
+ * race. That alone would let a 148-score builder take a task while a 286-score builder sits idle,
+ * simply because the weaker host happened to poll first. Preference is expressed here as a bounded
+ * deferral: while the task is young, a weaker instance refuses it when a strictly higher-capability
+ * peer is ONLINE and completely idle, so the stronger peer can claim it on its next poll. The
+ * window bounds the damage if the stronger peer is online but not actually polling (a hung agent
+ * or a stopped runtime): after it elapses the task goes to whoever can run it.
+ */
+const CAPABILITY_PREFER_WINDOW_SECONDS = 30;
+
+interface IdlePeer {
+  row: any;
+  score: number;
+}
+
+/** ONLINE, bound to an Agent Profile, on a dispatchable host, and currently running nothing. */
+async function loadIdlePeers(c: Client, inst: any): Promise<IdlePeer[]> {
+  const rows = (
+    await c.query(
+      `SELECT p.*
+         FROM role_instances p
+         JOIN hosts h ON h.host_id = p.host_id
+        WHERE p.role_id = $1
+          AND p.instance_id <> $2
+          AND p.state = 'ONLINE'
+          AND p.agent_profile_id IS NOT NULL
+          AND h.host_state IN ('NORMAL','WARNING')
+          AND NOT EXISTS (
+            SELECT 1 FROM leases l
+             WHERE l.instance_id = p.instance_id
+               AND l.released_at IS NULL AND l.expires_at > app_now()
+          )`,
+      [inst.role_id, inst.instance_id],
+    )
+  ).rows;
+  return rows.map((row: any) => ({ row, score: dynamicScoreOf(row) }));
+}
+
+/** Whether an idle peer would be allowed to take this task at all. */
+function peerCanTakeTask(p: any, task: any): boolean {
+  if (!(p.allowed_task_types ?? []).includes(task.task_type)) return false;
+  if (!(p.payload_schemas ?? []).includes(task.payload_schema)) return false;
+  const target = task.requirements?.target_instance_id;
+  if (target && target !== p.instance_id) return false;
+  const needed = (task.requirements?.capabilities ?? []) as string[];
+  const healthy = (p.capabilities?.healthy ?? []) as string[];
+  const unhealthy = (p.capabilities?.unhealthy ?? []) as string[];
+  if (needed.some((x) => !healthy.includes(x) || unhealthy.includes(x))) return false;
+  const score = dynamicScoreOf(p);
+  // W=0 means the peer never reported a score (pre-upgrade); it cannot prove it fits the task.
+  if (score > 0 && Number(task.difficulty ?? 0) > score) return false;
+  return true;
+}
 
 export async function claim(input: ClaimInput): Promise<Assignment | null> {
   if (!input.instance_id) throw new ApiError(400, "BAD_REQUEST", "instance_id is required");
@@ -243,6 +302,14 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
     ]);
 
     const ctx: AdmissionContext = { cfg, inst, host, mode, res, policy };
+    // Idle peers are only needed once a candidate passes admission; load them lazily so a claim
+    // that finds nothing to run does not pay for the extra queries.
+    let idlePeers: IdlePeer[] | null = null;
+    const strongerIdlePeer = async (task: any): Promise<boolean> => {
+      if (Number(task.waited_seconds ?? 0) >= CAPABILITY_PREFER_WINDOW_SECONDS) return false;
+      idlePeers ??= await loadIdlePeers(c, inst);
+      return idlePeers.some((p) => p.score > capabilityScore && peerCanTakeTask(p.row, task));
+    };
     for (const task of cand.rows) {
       const blocked = await admit(c, ctx, task);
       if (blocked) {
@@ -251,6 +318,10 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
         await recordBlock(c, task, blocked, cfg, input.trace_id);
         continue;
       }
+      // Capability preference: leave the task for a better-equipped idle builder. No task state is
+      // touched — it stays QUEUED and the peer claims it on its next poll, or this instance takes it
+      // once the deferral window expires.
+      if (await strongerIdlePeer(task)) continue;
       const assignment = await assign(c, cfg, inst, host, task, input.trace_id, mode, res?.grant ?? null);
       // The new reservation changes demand; refresh this host's ledger now so the next claim and
       // the daemon see a grant that covers it instead of waiting for the periodic allocator.
@@ -700,6 +771,7 @@ async function assign(
     deadline_at: t.deadline_at,
     difficulty: Number(t.difficulty ?? 0),
     requirements: t.requirements ?? {},
+    approval_mode: t.approval_mode ?? null,
     // P4: send only references, never implementations, API addresses or secrets; the instance validates against its locally loaded Profile
     agent: {
       profile_id: inst.agent_profile_id,

@@ -10,6 +10,7 @@ import { sweepLeases } from "../src/loops/reaper.js";
 import {
   deregister,
   drain,
+  forget,
   heartbeat,
   register,
   resume,
@@ -24,6 +25,8 @@ import {
   createArtifact,
   completeArtifact,
   digestOf,
+  downloadFilename,
+  listTaskArtifacts,
   putArtifactContent,
   readArtifactContent,
 } from "../src/core/artifacts.js";
@@ -36,10 +39,24 @@ import {
 } from "../src/core/workflow.js";
 import { latestEventId, listOutbox } from "../src/repo/outbox.js";
 import { capabilitySnapshot, listNodes, upsertNodeReport } from "../src/repo/federation.js";
-import { cancelTask, createTask, getTask, listEvents } from "../src/repo/tasks.js";
+import { cancelTask, createTask, getTask, listEvents, retryTask } from "../src/repo/tasks.js";
 import { syncRelays } from "../src/core/relay.js";
 import { getGrants, markGrantApplied } from "../src/repo/resources.js";
-import { advance, claimOrFail, newTask, reset, runToSuccess, uploadArtifactFor } from "./helpers.js";
+import {
+  advance,
+  assertTestDatabase,
+  claimOrFail,
+  newTask,
+  reset,
+  runToSuccess,
+  uploadArtifactFor,
+} from "./helpers.js";
+
+// Every test starts with a truncate, so refuse to run before touching a database that is not clearly
+// a test one.
+before(async () => {
+  await assertTestDatabase();
+});
 
 beforeEach(async () => {
   await reset();
@@ -347,6 +364,36 @@ describe("M4 retries and dead letters", () => {
     assert.ok(types.includes("TASK_DEAD_LETTERED"));
   });
 
+  it("operator retry requeues a dead-lettered task with a fresh attempt budget", async () => {
+    const t = await newTask({ max_attempts: 1 });
+    const a = await claimOrFail("worker-a");
+    const proof = {
+      lease_token: a.lease_token,
+      fencing_token: a.fencing_token,
+      instance_id: "worker-a",
+    };
+    await startAck(a.attempt_id, proof);
+    await submitResult(a.attempt_id, { ...proof, status: "FAILED", error: { code: "TEST_FAILED" } });
+    assert.equal((await getTask(t.task_id)).status, "FAILED");
+
+    const out = await retryTask(t.task_id, "tester");
+    assert.equal(out.status, "QUEUED");
+    assert.equal(out.attempt_count, 0);
+    assert.equal(out.dead_letter, false);
+    const events = await listEvents(t.task_id);
+    assert.equal(events[events.length - 1].event_type, "TASK_REQUEUED");
+
+    // No backoff: the retried task is claimable at once, and the attempt number keeps growing.
+    const next = await claimOrFail("worker-a");
+    assert.equal(next.task_id, t.task_id);
+    assert.equal(next.attempt_number, 2);
+  });
+
+  it("retry is rejected while the task is still active", async () => {
+    const t = await newTask();
+    await expectApiError(() => retryTask(t.task_id), "STATE_CONFLICT");
+  });
+
   it("non-retryable errors fail immediately without consuming further retries", async () => {
     const t = await newTask();
     const a = await claimOrFail("worker-a");
@@ -538,6 +585,26 @@ describe("cancellation", () => {
 });
 
 describe("M5 instance lifecycle", () => {
+  it("registration stores capability totals above 2 GiB (memory is bigint, not int4)", async () => {
+    // 8 GiB = 8589934592 does not fit in an int4; the register INSERT must bind the parameter as bigint.
+    const out = await register({
+      instance_id: "worker-a",
+      role_id: "worker",
+      host_id: "host-a",
+      agent_profile_id: "agent-w1",
+      allowed_task_types: ["task.build"],
+      capabilities: { healthy: ["code.edit", "shell"] },
+      capability_detail: { cores: 4, mem_gb: 8 },
+      config_version: 1,
+    });
+    assert.ok(Number((out as any).capability_score) > 0);
+    const row = await q1<any>(
+      `SELECT cap_cpu_millicores, cap_mem_bytes FROM role_instances WHERE instance_id = 'worker-a'`,
+    );
+    assert.equal(Number(row.cap_cpu_millicores), 4000);
+    assert.equal(Number(row.cap_mem_bytes), 8 * 1024 ** 3);
+  });
+
   it("capabilities can only narrow: shrinking succeeds and expanding returns 403", async () => {
     await register({
       instance_id: "worker-a",
@@ -629,6 +696,25 @@ describe("M5 instance lifecycle", () => {
     assert.equal((out as any).state, "OFFLINE");
     assert.equal((out as any).active_attempts, 1);
     await expectApiError(() => claim({ instance_id: "worker-a" }), "INSTANCE_NOT_ELIGIBLE");
+  });
+
+  it("a live registration cannot be forgotten; a deregistered one can", async () => {
+    await register({
+      instance_id: "ghost-worker",
+      role_id: "worker",
+      host_id: "host-a",
+      agent_profile_id: "agent-w1",
+      allowed_task_types: ["task.build"],
+      capabilities: { healthy: [] },
+      config_version: 1,
+    });
+    await expectApiError(() => forget("ghost-worker"), "INSTANCE_ALIVE");
+
+    await deregister("ghost-worker", { force: true });
+    const out = await forget("ghost-worker");
+    assert.equal((out as any).forgotten, true);
+    assert.ok(!(await q1(`SELECT instance_id FROM role_instances WHERE instance_id = 'ghost-worker'`)));
+    await expectApiError(() => forget("ghost-worker"), "INSTANCE_UNKNOWN");
   });
 
   it("config-sync: an unchanged version returns null (HTTP 304), a changed one returns the new config", async () => {
@@ -1215,6 +1301,49 @@ describe("M7 workflows and approvals (signed tokens + artifact digests)", () => 
     );
   });
 
+  it("file channel: artifacts keep their names, are listed by task, and download under the original filename", async () => {
+    const t = await newTask();
+    const buf = Buffer.from([0x00, 0xff, 0x10, 0x42]);
+    const sha = digestOf(buf);
+    const meta = await createArtifact(
+      {
+        task_id: t.task_id,
+        sha256: sha,
+        size_bytes: buf.length,
+        media_type: "application/octet-stream",
+        name: "out/结果.bin",
+      },
+      "worker-a",
+    );
+    await putArtifactContent(meta.artifact_id as string, buf, "worker-a");
+    await completeArtifact(meta.artifact_id as string, "worker-a");
+
+    const items = (await listTaskArtifacts(t.task_id)) as any[];
+    assert.equal(items.length, 1);
+    assert.equal(items[0].name, "out/结果.bin");
+    assert.equal(items[0].status, "COMPLETE");
+    assert.equal(items[0].media_type, "application/octet-stream");
+    assert.equal(items[0].actual_sha256, sha);
+    // The download header uses only the basename; bytes are returned unchanged.
+    assert.equal(downloadFilename(items[0]), "结果.bin");
+    const own = await readArtifactContent(meta.artifact_id as string, "worker-a");
+    assert.deepEqual(own.data, buf);
+    assert.equal(own.name, "out/结果.bin");
+  });
+
+  it("artifacts without a name still download under a name derived from the media type", async () => {
+    const t = await newTask();
+    const meta = await createArtifact(
+      { task_id: t.task_id, sha256: digestOf(Buffer.from("{}")), media_type: "application/json" },
+      "worker-a",
+    );
+    await putArtifactContent(meta.artifact_id as string, Buffer.from("{}"), "worker-a");
+    await completeArtifact(meta.artifact_id as string, "worker-a");
+    const [row] = (await listTaskArtifacts(t.task_id)) as any[];
+    assert.equal(row.name, null);
+    assert.equal(downloadFilename(row), `${meta.artifact_id}.json`);
+  });
+
   it("artifacts that have not finished verification cannot be read", async () => {
     const t = await newTask();
     const meta = await createArtifact(
@@ -1287,6 +1416,56 @@ describe("work capability W and task difficulty D", () => {
     const easy = await newTask({ difficulty: 100 });
     const b = await claimOrFail("worker-a");
     assert.equal(b.task_id, easy.task_id);
+  });
+
+  it("an idle stronger builder gets the task even when the weaker builder polls first", async () => {
+    await q(`UPDATE role_instances SET capability_score = 120 WHERE instance_id = 'worker-a'`);
+    await q(`UPDATE role_instances SET capability_score = 600 WHERE instance_id = 'worker-b'`);
+
+    const t = await newTask({ difficulty: 100 });
+    // worker-a asks first but yields: worker-b is idle and strictly stronger.
+    assert.equal(await claim({ instance_id: "worker-a" }), null);
+    assert.equal((await getTask(t.task_id)).status, "QUEUED");
+    // Yielding is not a block: no backoff, no reason, no event.
+    const row = await q1<any>(
+      `SELECT blocked_attempts, resource_block_reason FROM tasks WHERE task_id = $1`,
+      [t.task_id],
+    );
+    assert.equal(Number(row.blocked_attempts), 0);
+    assert.equal(row.resource_block_reason, null);
+    assert.equal(
+      (await listEvents(t.task_id)).filter((e) => e.event_type !== "TASK_CREATED").length,
+      0,
+    );
+
+    const a = await claimOrFail("worker-b");
+    assert.equal(a.task_id, t.task_id);
+  });
+
+  it("the preference is bounded: a stronger builder that never takes it does not starve the queue", async () => {
+    await q(`UPDATE role_instances SET capability_score = 120 WHERE instance_id = 'worker-a'`);
+    await q(`UPDATE role_instances SET capability_score = 600 WHERE instance_id = 'worker-b'`);
+
+    const t = await newTask({ difficulty: 100 });
+    // waiter longer than CAPABILITY_PREFER_WINDOW_SECONDS: the weaker builder stops yielding.
+    await advance(31);
+    const a = await claimOrFail("worker-a");
+    assert.equal(a.task_id, t.task_id);
+  });
+
+  it("a stronger builder that cannot run the task does not hold it back", async () => {
+    await q(
+      `UPDATE role_instances SET capability_score = 120, capabilities = '{"healthy":["code.edit","shell"]}'
+        WHERE instance_id = 'worker-a'`,
+    );
+    await q(
+      `UPDATE role_instances SET capability_score = 600, capabilities = '{"healthy":["code.edit"]}'
+        WHERE instance_id = 'worker-b'`,
+    );
+
+    const t = await newTask({ requirements: { capabilities: ["code.edit", "shell"] } });
+    const a = await claimOrFail("worker-a");
+    assert.equal(a.task_id, t.task_id);
   });
 
   it("instances that do not report W keep the old behavior (no difficulty filtering)", async () => {

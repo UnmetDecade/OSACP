@@ -6,10 +6,22 @@ import { AdmissionBroker } from "./admission-broker.js";
 import type { CommandPayload, InstanceSpec } from "./command-verify.js";
 import { buildContainerConfig, containerName, volumeName } from "./container-spec.js";
 import { DockerError, type EngineAdapter } from "./docker-engine.js";
+import type { Operation, OperationJournal, OperationKind } from "./journal.js";
+import type { HostPolicyGate, PolicyAction } from "./policy.js";
 import type { RuntimeHostConfig } from "./runtime-config.js";
 import type { LocalDeployment, RuntimeState } from "./runtime-state.js";
 import { buildTar } from "./tar.js";
 import { containerAdmission, type WatchdogStateFile } from "./watchdog-state.js";
+
+/**
+ * Workspace root for bare-metal role processes.
+ *
+ * A native builder runs as the host's login user, which cannot create directories under `/opt`
+ * (owned by root), so the workspace lives in that user's home instead: a plain, stable directory
+ * the administrator sees in `ls` and lands in when opening the terminal. Keep in sync with
+ * `NATIVE_WORKSPACE_DIR` in pcs-issuer and the admin app's display.
+ */
+const NATIVE_WORKSPACE_DIR = path.join(os.homedir(), "platform", "workspace");
 
 export interface CommandOutcome {
   ok: boolean;
@@ -27,7 +39,21 @@ export interface ReconcilerDeps {
   poolScope?: (instanceId: string) => string | null;
   /** Drops a scope after the container is removed. */
   releasePoolScope?: (instanceId: string) => void;
+  /** Host mutations, so a crash mid-deploy can be undone on the next start. */
+  journal?: OperationJournal;
+  /** Root-owned local veto; absent means no local policy is configured. */
+  policy?: HostPolicyGate;
+  /** Tamper-evident audit sink for command decisions and rollbacks. */
+  audit?: (event: string, data?: Record<string, unknown>) => void;
+  /** True when the audit chain failed verification or a write; new effects are refused. */
+  auditBroken?: () => boolean;
   now?: () => number;
+}
+
+/** Journal handle for one command: every mutation of that command is committed or rolled back together. */
+interface JournalTracker {
+  begin(kind: OperationKind, target: string, detail?: Record<string, unknown>): Operation | null;
+  applied(op: Operation | null): void;
 }
 
 /**
@@ -51,6 +77,24 @@ export class Reconciler {
 
   execute(command: CommandPayload, pcsReachable: boolean): Promise<CommandOutcome> {
     return this.serialize(async () => {
+      const { ops, tracker } = this.journalTxn(command.command_id);
+      const outcome = await this.runCommand(command, pcsReachable, tracker);
+
+      if (outcome.ok) {
+        for (const op of ops) this.deps.journal?.commit(op);
+      } else {
+        await this.rollbackOps(ops, `${command.command_type} ${command.command_id}`);
+      }
+      return outcome;
+    });
+  }
+
+  private runCommand(
+    command: CommandPayload,
+    pcsReachable: boolean,
+    txn: JournalTracker,
+  ): Promise<CommandOutcome> {
+    return (async () => {
       const label = `${command.command_type} ${command.deployment_id ?? command.instance_id}`;
       this.deps.log(`Executing ${label} gen=${command.generation}`);
       try {
@@ -81,7 +125,7 @@ export class Reconciler {
           });
           state.save();
           const dep = state.deployment(deploymentId)!;
-          const out = await this.startDeployment(dep, "DEPLOY", pcsReachable);
+          const out = await this.startDeployment(dep, "DEPLOY", pcsReachable, txn);
           if (!out.ok) return out;
           this.commit(dep, command.generation);
           return out;
@@ -97,6 +141,7 @@ export class Reconciler {
             dep,
             command.command_type === "RESTART" ? "RESTART" : "START",
             pcsReachable,
+            txn,
           );
           if (!out.ok) return out;
           this.commit(dep, command.generation);
@@ -123,6 +168,13 @@ export class Reconciler {
         }
 
         if (command.command_type === "REMOVE") {
+          // Removal destroys data. Journal it first so a crash mid-removal is visible as an
+          // interrupted removal instead of a half-removed instance nobody notices.
+          const atRisk = (dep?.spec.volumes ?? []).filter((v) => !v.name.startsWith("shared-")).map((v) => v.name);
+          const removeOp = txn.begin("DEPLOYMENT_REMOVE", instanceId, {
+            deployment_id: deploymentId,
+            data_at_risk: atRisk,
+          });
           if (dep) {
             state.setDesired(deploymentId, "REMOVED", command.generation);
             state.save();
@@ -132,6 +184,7 @@ export class Reconciler {
             fs.rmSync(this.nativeRoot(dep.instance_id), { recursive: true, force: true });
             state.removeDeployment(deploymentId);
             state.save();
+            txn.applied(removeOp);
             this.commit(instanceId, command.generation);
             return ok({ native_pid: pid, state: "REMOVED" });
           }
@@ -154,6 +207,7 @@ export class Reconciler {
           }
           if (dep) state.removeDeployment(deploymentId);
           state.save();
+          txn.applied(removeOp);
           this.commit(instanceId, command.generation);
           return ok({ container_id: existing?.id ?? null, state: "REMOVED" });
         }
@@ -168,7 +222,104 @@ export class Reconciler {
       } finally {
         await this.refreshDeploymentGrants().catch((e) => this.deps.log(`Failed to refresh deployment reservations: ${describe(e)}`));
       }
-    });
+    })();
+  }
+
+  private journalTxn(txnId: string): { ops: Operation[]; tracker: JournalTracker } {
+    const ops: Operation[] = [];
+    return {
+      ops,
+      tracker: {
+        begin: (kind, target, detail = {}) => {
+          const op = this.deps.journal?.begin(txnId, kind, target, detail) ?? null;
+          if (op) ops.push(op);
+          return op;
+        },
+        applied: (op) => {
+          if (op) this.deps.journal?.applied(op);
+        },
+      },
+    };
+  }
+
+  /**
+   * Undo applied mutations in reverse order.
+   *
+   * Every step is idempotent and ownership-checked: by the time a rollback runs, the container may
+   * already be gone, or may have been replaced by a newer deployment that must not be touched.
+   */
+  private async rollbackOps(ops: Operation[], label: string): Promise<void> {
+    for (const op of [...ops].reverse()) {
+      const result = await this.rollbackOperation(op).catch((e) => `rollback_failed: ${describe(e)}`);
+      this.deps.journal?.rolledBack(op, result);
+      this.deps.audit?.("command.rolled_back", {
+        label,
+        op_id: op.op_id,
+        kind: op.kind,
+        target: op.target,
+        result,
+        data_at_risk: op.detail.data_at_risk,
+      });
+      this.deps.log(`${label} rollback ${op.kind} ${op.target}: ${result}`);
+    }
+  }
+
+  private async rollbackOperation(op: Operation): Promise<string> {
+    const { engine, cfg } = this.deps;
+    if (op.kind === "CONTAINER_CREATE") {
+      const existing = await engine.inspect(op.target).catch(() => null);
+      if (!existing) return "nothing_to_roll_back";
+      const owner = existing.labels["platform.deployment_id"];
+      if (op.detail.deployment_id && owner !== op.detail.deployment_id) return "ownership_changed";
+      if (existing.state === "running") {
+        await engine.stop(op.target, cfg.container_stop_timeout_seconds).catch(() => {});
+      }
+      // Anonymous volumes go with the container; named data volumes are left for an operator.
+      await engine.remove(op.target, false);
+      return "container_removed";
+    }
+    if (op.kind === "CONTAINER_START") {
+      if (op.detail.was_running === true) return "was_already_running";
+      const existing = await engine.inspect(op.target).catch(() => null);
+      if (!existing || existing.state !== "running") return "not_running";
+      if (op.detail.deployment_id && existing.labels["platform.deployment_id"] !== op.detail.deployment_id) {
+        return "ownership_changed";
+      }
+      await engine.stop(op.target, cfg.container_stop_timeout_seconds);
+      return "container_stopped";
+    }
+    if (op.kind === "NATIVE_START") {
+      if (op.detail.was_running === true) return "was_already_running";
+      const root = String(op.detail.root ?? "");
+      if (!root) return "missing_root";
+      const pid = await this.killNative(root);
+      return pid ? "native_stopped" : "nothing_to_roll_back";
+    }
+    // DEPLOYMENT_REMOVE destroys data; there is nothing to put back, and pretending otherwise would be worse.
+    return "not_reversible";
+  }
+
+  /**
+   * Startup recovery: anything begun and never committed was interrupted mid-flight.
+   * Undo it before reconciliation rebuilds from the desired state, otherwise a half-created
+   * container fights the rebuild over the same name.
+   */
+  async recoverJournal(): Promise<void> {
+    const journal = this.deps.journal;
+    if (!journal) return;
+    for (const op of journal.pending()) {
+      const result = await this.rollbackOperation(op).catch((e) => `rollback_failed: ${describe(e)}`);
+      journal.rolledBack(op, result);
+      this.deps.audit?.("journal.recovered", {
+        op_id: op.op_id,
+        kind: op.kind,
+        target: op.target,
+        phase: op.phase,
+        result,
+        data_at_risk: op.detail.data_at_risk,
+      });
+      this.deps.log(`Recovered interrupted ${op.kind} ${op.target} (was ${op.phase}): ${result}`);
+    }
   }
 
   private commit(instanceIdOrDep: string | LocalDeployment, generation: number): void {
@@ -183,10 +334,11 @@ export class Reconciler {
     dep: LocalDeployment,
     action: "DEPLOY" | "START" | "RESTART",
     pcsReachable: boolean,
+    txn?: JournalTracker,
   ): Promise<CommandOutcome> {
     return dep.spec.execution === "native"
-      ? this.ensureNativeRunning(dep, action, pcsReachable)
-      : this.ensureRunning(dep, action, pcsReachable);
+      ? this.ensureNativeRunning(dep, action, pcsReachable, txn)
+      : this.ensureRunning(dep, action, pcsReachable, txn);
   }
 
   /** Data directory for a bare-metal instance: alongside the runtime state directory, isolated per instance. */
@@ -259,8 +411,12 @@ export class Reconciler {
       request_timeout_ms: 5000,
       token_dir: path.join(root, "tokens"),
       host_admission_socket: this.deps.cfg.admission_socket,
-      workspace_dir: path.join(root, "workspace"),
-      keep_workspace: false,
+      // Bare-metal builders have no container filesystem. Use the same visible path a builder
+      // container mounts, so build output is where administrators look for it instead of a hidden
+      // runtime directory. Attempts stay in their own subdirectory, and are kept after the task so
+      // the output can be inspected (and re-run) without digging through the runtime root.
+      workspace_dir: NATIVE_WORKSPACE_DIR,
+      keep_workspace: true,
       audit_dir: path.join(root, "audit"),
       ...(fs.existsSync(profiles) ? { profiles_file: profiles } : {}),
       instances: [
@@ -291,8 +447,9 @@ export class Reconciler {
     dep: LocalDeployment,
     action: "DEPLOY" | "START" | "RESTART",
     pcsReachable: boolean,
+    txn?: JournalTracker,
   ): Promise<CommandOutcome> {
-    const gate = this.gate(action, pcsReachable);
+    const gate = this.gate(action, pcsReachable, dep);
     if (!gate.allowed) return fail(gate.reason!, `This host does not currently allow starting role processes: ${gate.reason}`);
 
     const root = this.nativeRoot(dep.instance_id);
@@ -339,7 +496,34 @@ export class Reconciler {
     }
 
     const cache = this.deps.cfg.cache_dir;
+    // Native builders resolve the Agent interpreter through the cache PATH; a host enrolled without that cache
+    // (container hosts never need one) otherwise fails later with the opaque "spawn node ENOENT" from the adapter.
+    const nodeReady = ensureNativeNode(cache);
+    if (!nodeReady) {
+      return fail(
+        "NATIVE_RUNTIME_MISSING",
+        "This host has no Node.js for native builders; install Node.js or provision ~/.platform/cache/node, then deploy again",
+        { cache_dir: cache, exec_path: process.execPath },
+      );
+    }
     const profiles = path.join(root, "profiles.json");
+    const spawnPath = [
+      path.join(cache, "node", "bin"),
+      path.join(cache, "agents"),
+      process.env.PATH ?? "",
+    ]
+      .filter(Boolean)
+      .join(":");
+    // A builder without its agent CLI still starts and registers, then fails every dispatched task with
+    // "spawn claude ENOENT". Refuse the start so the deploy command reports the missing command instead.
+    const missingCli = missingAgentCli(profiles, dep.instance_id, spawnPath.split(":"));
+    if (missingCli) {
+      return fail(
+        "AGENT_CLI_MISSING",
+        `Builder Agent CLI is not installed on this host: ${missingCli}; install it on the host (or in ~/.platform/cache/agents) and deploy again`,
+        { command: missingCli, cache_dir: cache },
+      );
+    }
     const agentEnv = this.readAgentEnv(dep.spec);
     const spawnEnv: NodeJS.ProcessEnv = {
       ...process.env,
@@ -352,13 +536,7 @@ export class Reconciler {
       CODEX_HOME: path.join(root, "codex"),
       INSTANCE_TOKEN_DIR: path.join(root, "tokens"),
       CLAIM_INTERVAL_SECONDS: "0.5",
-      PATH: [
-        path.join(cache, "node", "bin"),
-        path.join(cache, "agents"),
-        process.env.PATH ?? "",
-      ]
-        .filter(Boolean)
-        .join(":"),
+      PATH: spawnPath,
       ...(fs.existsSync(profiles) ? { PROFILES_FILE: profiles } : {}),
     };
     const logPath = path.join(root, "logs", "agent.log");
@@ -367,6 +545,11 @@ export class Reconciler {
       out,
       `\n=== ${new Date().toISOString()} start ${dep.deployment_id} gen=${dep.generation} ===\n`,
     );
+    const spawnOp = txn?.begin("NATIVE_START", dep.instance_id, {
+      deployment_id: dep.deployment_id,
+      root,
+      was_running: false,
+    }) ?? null;
     let child;
     try {
       child = spawn(process.execPath, [agentEntry, "--instance", dep.instance_id], {
@@ -383,6 +566,7 @@ export class Reconciler {
     }
     child.unref();
     fs.writeFileSync(this.nativePidFile(root), String(child.pid), { mode: 0o600 });
+    txn?.applied(spawnOp);
 
     // A process that exits shortly after starting (missing Node dependencies, bad config) must be reported on the spot, not left for the scheduler to time out.
     await new Promise((r) => setTimeout(r, 800));
@@ -397,7 +581,10 @@ export class Reconciler {
 
   /** Kill only a process confirmed to belong to this instance; do not kill the wrong one when a pid file has been reused. */
   private async stopNative(dep: LocalDeployment): Promise<number | null> {
-    const root = this.nativeRoot(dep.instance_id);
+    return this.killNative(this.nativeRoot(dep.instance_id));
+  }
+
+  private async killNative(root: string): Promise<number | null> {
     const info = this.nativeProcess(root);
     const pid = info?.pid ?? null;
     if (!info || !info.alive) {
@@ -453,8 +640,9 @@ export class Reconciler {
     dep: LocalDeployment,
     action: "DEPLOY" | "START" | "RESTART",
     pcsReachable: boolean,
+    txn?: JournalTracker,
   ): Promise<CommandOutcome> {
-    const gate = this.gate(action, pcsReachable);
+    const gate = this.gate(action, pcsReachable, dep);
     if (!gate.allowed) return fail(gate.reason!, `This host does not currently allow starting containers: ${gate.reason}`);
 
     // The network a container references may not exist on this host (new host, network deleted).
@@ -489,8 +677,14 @@ export class Reconciler {
         return ok({ container_id: existing.id, action: "restarted" });
       }
       if (existing.state !== "running") {
+        const startOp = txn?.begin("CONTAINER_START", name, {
+          deployment_id: dep.deployment_id,
+          instance_id: dep.instance_id,
+          was_running: false,
+        }) ?? null;
         await this.writeFiles(dep.spec, name);
         await this.deps.engine.start(name);
+        txn?.applied(startOp);
         return ok({ container_id: existing.id, action: "started" });
       }
       // Reconciliation reaches here on every round: the container is already running and the files are in place, so do not rewrite them.
@@ -527,14 +721,22 @@ export class Reconciler {
       this.deps.cfg,
       this.readAgentEnv(dep.spec),
     );
+    const createOp = txn?.begin("CONTAINER_CREATE", name, {
+      deployment_id: dep.deployment_id,
+      instance_id: dep.instance_id,
+      data_at_risk: (dep.spec.volumes ?? []).filter((v) => !v.name.startsWith("shared-")).map((v) => v.name),
+    }) ?? null;
     try {
       await this.deps.engine.create(name, config);
+      txn?.applied(createOp);
     } catch (e) {
       if (e instanceof DockerError && e.status === 409) {
         existing = await this.deps.engine.inspect(name);
         if (existing?.labels["platform.deployment_id"] !== dep.deployment_id) {
           return fail("CONTAINER_NAME_CONFLICT", `${name} is already in use by another container`);
         }
+        // The container exists and is ours, so a rollback of this command still has to take it away.
+        txn?.applied(createOp);
       } else {
         throw e;
       }
@@ -609,8 +811,32 @@ export class Reconciler {
   private gate(
     action: "DEPLOY" | "START" | "RESTART",
     pcsReachable: boolean,
+    dep?: LocalDeployment,
   ): { allowed: boolean; reason?: string } {
     if (!pcsReachable) return { allowed: false, reason: "PCS_OFFLINE" };
+
+    // Local policy is checked before anything else: an operator's veto outranks the control plane.
+    const policy = this.deps.policy?.check({
+      action: action as PolicyAction,
+      role_id: dep?.spec.role_id,
+      image: dep?.spec.image,
+      active_deployments: this.deps.state
+        .listDeployments()
+        .filter((d) => d.desired_state === "RUNNING" && d.deployment_id !== dep?.deployment_id).length,
+    });
+    if (policy && !policy.allowed) {
+      this.deps.audit?.("policy.denied", {
+        action,
+        deployment_id: dep?.deployment_id,
+        instance_id: dep?.instance_id,
+        reason: policy.reason,
+      });
+      return { allowed: false, reason: policy.reason ?? "POLICY_DENIED" };
+    }
+
+    // An audit chain that failed to write is not evidence of anything; do not add new effects on top.
+    if (this.deps.auditBroken?.()) return { allowed: false, reason: "AUDIT_CHAIN_BROKEN" };
+
     return containerAdmission(
       this.deps.readWatchdog(),
       this.now(),
@@ -635,6 +861,11 @@ export class Reconciler {
         });
 
         if (dep.desired_state === "REMOVED") {
+          const removeTxn = this.journalTxn(`reconcile:${dep.deployment_id}`);
+          const removeOp = removeTxn.tracker.begin("DEPLOYMENT_REMOVE", dep.instance_id, {
+            deployment_id: dep.deployment_id,
+            data_at_risk: (dep.spec.volumes ?? []).filter((v) => !v.name.startsWith("shared-")).map((v) => v.name),
+          });
           if (existing) {
             if (existing.state === "running") {
               await engine.stop(name, this.deps.cfg.container_stop_timeout_seconds).catch(() => {});
@@ -648,6 +879,8 @@ export class Reconciler {
           }
           state.removeDeployment(dep.deployment_id);
           state.save();
+          removeTxn.tracker.applied(removeOp);
+          for (const op of removeTxn.ops) this.deps.journal?.commit(op);
           if (dep.spec.role_id === "builder") this.deps.releasePoolScope?.(dep.instance_id);
           continue;
         }
@@ -664,19 +897,23 @@ export class Reconciler {
         // desired RUNNING
         if (!pcsReachable) continue;
         const action = existing ? "START" : "DEPLOY";
-        const gate = this.gate(action, pcsReachable);
+        const gate = this.gate(action, pcsReachable, dep);
         if (!gate.allowed) continue;
 
         if (!existing && (this.retryAfter.get(dep.deployment_id) ?? 0) > this.now()) continue;
+        const { ops, tracker } = this.journalTxn(`reconcile:${dep.deployment_id}`);
         try {
-          const out = await this.ensureRunning(dep, action, pcsReachable);
+          const out = await this.ensureRunning(dep, action, pcsReachable, tracker);
           if (!out.ok) {
+            await this.rollbackOps(ops, `reconcile ${name}`);
             if (!existing) this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
             log(`Reconcile ${name} incomplete: ${String(out.result.code)}`);
           } else {
+            for (const op of ops) this.deps.journal?.commit(op);
             this.retryAfter.delete(dep.deployment_id);
           }
         } catch (e) {
+          await this.rollbackOps(ops, `reconcile ${name}`);
           if (!existing) this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
           log(`Reconcile ${name} failed: ${describe(e)}`);
         }
@@ -730,18 +967,22 @@ export class Reconciler {
     }
     if (running?.alive) return;
     if (!pcsReachable) return;
-    const gate = this.gate("DEPLOY", pcsReachable);
+    const gate = this.gate("DEPLOY", pcsReachable, dep);
     if (!gate.allowed) return;
     if ((this.retryAfter.get(dep.deployment_id) ?? 0) > this.now()) return;
+    const { ops, tracker } = this.journalTxn(`reconcile:${dep.deployment_id}`);
     try {
-      const out = await this.ensureNativeRunning(dep, "DEPLOY", pcsReachable);
+      const out = await this.ensureNativeRunning(dep, "DEPLOY", pcsReachable, tracker);
       if (!out.ok) {
+        await this.rollbackOps(ops, `reconcile ${dep.instance_id}`);
         this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
         log(`Reconcile ${dep.instance_id} incomplete: ${String(out.result.code)}`);
       } else {
+        for (const op of ops) this.deps.journal?.commit(op);
         this.retryAfter.delete(dep.deployment_id);
       }
     } catch (e) {
+      await this.rollbackOps(ops, `reconcile ${dep.instance_id}`);
       this.retryAfter.set(dep.deployment_id, this.now() + 60_000);
       log(`Reconcile ${dep.instance_id} failed: ${describe(e)}`);
     }
@@ -779,6 +1020,85 @@ export class Reconciler {
 
 function ok(result: Record<string, unknown>): CommandOutcome {
   return { ok: true, result };
+}
+
+/**
+ * Make sure a node binary is reachable for native builders: the spawn PATH is <cache>/node/bin first, then the
+ * host PATH. When the cache is empty, link the runtime's own node into it — the runtime is itself running under node,
+ * so this cannot point at a version the platform has not tested. Returns false when the host has no node at all.
+ */
+function ensureNativeNode(cacheDir: string): boolean {
+  const binDir = path.join(cacheDir, "node", "bin");
+  const nodePath = path.join(binDir, "node");
+  try {
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(path.join(cacheDir, "agents"), { recursive: true });
+    try {
+      fs.lstatSync(nodePath);
+    } catch {
+      fs.symlinkSync(process.execPath, nodePath);
+    }
+  } catch {
+    // A read-only cache or foreign layout: fall through to the PATH check below.
+  }
+  if (fs.existsSync(nodePath)) return true;
+  return (process.env.PATH ?? "")
+    .split(":")
+    .filter(Boolean)
+    .some((dir) => fs.existsSync(path.join(dir, "node")));
+}
+
+/** CLI commands that Agent Profiles select through --provider; --command overrides these. */
+const PROVIDER_CLI: Record<string, string> = { claude: "claude", codex: "codex" };
+
+function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+}
+
+function resolveOnPath(command: string, dirs: string[]): boolean {
+  if (command.includes("/")) return fs.existsSync(command);
+  return dirs.some((dir) => {
+    try {
+      fs.accessSync(path.join(dir, command), fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Find the agent CLI a bound Profile will spawn, and report it when the host does not have it.
+ *
+ * The adapter's entrypoint (`node cli-agent.mjs`) resolves through the cache, but the CLI it drives
+ * (`claude`, `codex`, ...) is looked up on the spawn PATH; missing it only shows up at task time.
+ */
+function missingAgentCli(
+  profilesFile: string,
+  instanceId: string,
+  pathDirs: string[],
+): string | null {
+  if (!fs.existsSync(profilesFile)) return null;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(fs.readFileSync(profilesFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const all = Array.isArray(parsed?.agent_profiles) ? parsed.agent_profiles : [];
+  const boundId = parsed?.bindings?.[instanceId]?.agent_profile_id;
+  const profiles = boundId ? all.filter((p: any) => p?.agent_profile_id === boundId) : all;
+  for (const profile of profiles) {
+    if (profile?.enabled === false) continue;
+    if (profile?.adapter && profile.adapter !== "stdio-jsonrpc") continue;
+    const args: string[] = Array.isArray(profile?.args) ? profile.args.map(String) : [];
+    const provider = flagValue(args, "--provider") ?? "claude";
+    const command = flagValue(args, "--command") ?? PROVIDER_CLI[provider];
+    if (!command) continue;
+    if (!resolveOnPath(command, pathDirs)) return command;
+  }
+  return null;
 }
 
 function fail(code: string, message: string, detail?: Record<string, unknown>): CommandOutcome {

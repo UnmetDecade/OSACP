@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AdmissionBroker, startAdmissionServer } from "./admission-broker.js";
+import { AuditChain } from "./audit-chain.js";
 import {
   CommandRejected,
   generationDecision,
@@ -21,8 +22,10 @@ import { CgroupManager, type AppliedGrant } from "./cgroup.js";
 import { DockerEngine } from "./docker-engine.js";
 import { buildReport } from "./host-report.js";
 import { hostInfo, loadIdentity, saveIdentity, tokenUsable, type HostIdentity } from "./identity.js";
+import { OperationJournal } from "./journal.js";
 import { memAvailableBytes, sampleHost, type CpuTimes } from "./metrics.js";
 import { PcsClient, PcsClientError } from "./pcs-client.js";
+import { HostPolicyGate } from "./policy.js";
 import { Reconciler } from "./reconciler.js";
 import { loadRuntimeHostConfig, readPem } from "./runtime-config.js";
 import { RuntimeState } from "./runtime-state.js";
@@ -63,6 +66,13 @@ const cgroup = new CgroupManager(cfg.resource_pool, log);
 const state = new RuntimeState(cfg.state_dir);
 const contactFile = path.join(cfg.state_dir, "pcs-last-seen.json");
 const watchdogFile = path.join(cfg.state_dir, "host-state.json");
+
+// Tripwires that live on the host itself: an operator veto, a tamper-evident record of what this
+// machine did, and a journal of mutations so a crash mid-deploy can be undone on the next start.
+const policy = new HostPolicyGate(undefined, log);
+const audit = new AuditChain(path.join(cfg.state_dir, "audit-chain.jsonl"), log);
+const journal = new OperationJournal(path.join(cfg.state_dir, "journal.jsonl"), log);
+let auditIntegrityOk = true;
 
 let running = true;
 let revoked = false;
@@ -251,7 +261,12 @@ async function heartbeatLoop(): Promise<void> {
             version: RUNTIME_VERSION,
             container_runtime: containerRuntime,
             healthy: engineHealthy,
-            capabilities: {},
+            capabilities: {
+              // The control plane does not need to understand these, but an operator reading the
+              // host record should see whether this machine is vetoed or has lost its audit trail.
+              local_policy: policy.status(),
+              audit_integrity: auditIntegrityOk && !audit.broken,
+            },
           },
           host_state: hostState(),
           resources: {
@@ -376,6 +391,10 @@ const reconciler = () =>
     log,
     poolScope: (instanceId) => (cgroup.ready ? cgroup.ensureScope(instanceId) : null),
     releasePoolScope: (instanceId) => cgroup.removeScope(instanceId),
+    journal,
+    policy,
+    audit: (event, data) => audit.append(event, data),
+    auditBroken: () => !auditIntegrityOk || audit.broken,
   });
 
 let reconcilerInstance: Reconciler | null = null;
@@ -395,6 +414,12 @@ async function handleCommand(command: CommandPayload): Promise<void> {
     } catch (e) {
       const code = e instanceof CommandRejected ? e.code : "COMMAND_REJECTED";
       log(`Rejected command ${command?.command_id ?? "?"}: ${code}`);
+      audit.append("command.rejected", {
+        command_id: command?.command_id ?? null,
+        command_type: command?.command_type ?? null,
+        code,
+        message: e instanceof Error ? e.message : String(e),
+      });
       if (command?.command_id) {
         await ack(command.command_id, false, {
           code,
@@ -427,9 +452,25 @@ async function handleCommand(command: CommandPayload): Promise<void> {
       return;
     }
 
+    audit.append("command.received", {
+      command_id: checked.command_id,
+      command_type: checked.command_type,
+      deployment_id: checked.deployment_id ?? null,
+      instance_id: checked.instance_id ?? null,
+      generation: checked.generation,
+    });
     const outcome = await reconcilerInstance!.execute(checked, pcsReachable());
     state.recordProcessed(checked.command_id, outcome.ok, outcome.result);
     state.save();
+    audit.append("command.result", {
+      command_id: checked.command_id,
+      command_type: checked.command_type,
+      deployment_id: checked.deployment_id ?? null,
+      instance_id: checked.instance_id ?? null,
+      ok: outcome.ok,
+      code: outcome.result.code ?? null,
+      message: outcome.result.message ?? null,
+    });
     log(
       `${checked.command_type} ${checked.command_id} -> ${outcome.ok ? "OK" : "FAILED"} ` +
         `${JSON.stringify(outcome.result).slice(0, 200)}`,
@@ -486,6 +527,24 @@ async function main(): Promise<void> {
     log(`Watchdog state unavailable (${wdDecision.reason}): not creating new containers until the watchdog runs`);
   }
 
+  // Verify the audit chain before doing anything that could be audited. A broken chain does not
+  // stop the machine -- running workloads stay up -- but it blocks new deployments until fixed.
+  const verified = audit.verify();
+  if (!verified.ok) {
+    auditIntegrityOk = false;
+    log(
+      `AUDIT CHAIN BROKEN at record ${verified.broken_at ?? "?"}: ${verified.reason ?? "unknown"}; ` +
+        "new deployments are refused until the audit log is repaired",
+    );
+  } else {
+    log(`Audit chain verified: ${verified.records} record(s)`);
+  }
+  audit.append("runtime.started", {
+    version: RUNTIME_VERSION,
+    audit_ok: verified.ok,
+    policy: policy.status(),
+  });
+
   admissionServer = await startAdmissionServer(broker, cfg.admission_socket);
   log(`Local admission socket listening at ${cfg.admission_socket} (0600)`);
 
@@ -501,6 +560,8 @@ async function main(): Promise<void> {
   if (!running) return;
 
   reconcilerInstance = reconciler();
+  // Undo anything a previous process began but never committed, before reconciliation touches the same names.
+  await reconcilerInstance.recoverJournal();
   await refreshEngineHealth();
   // Pool capacity is the host total; the scheduler treats this same number as C_mem/C_cpu.
   cgroup.init(os.totalmem(), os.cpus().length * 1000);

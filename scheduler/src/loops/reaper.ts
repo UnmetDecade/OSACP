@@ -1,6 +1,7 @@
 import { tx } from "../db.js";
 import { appendEvent } from "../events.js";
 import { backoffSeconds } from "../core/attempts.js";
+import { settleFanout } from "../core/fanout.js";
 
 /**
  * Lease reaping (§5).
@@ -21,8 +22,8 @@ export async function sweepLeases(limit = 50): Promise<{
       await c.query(
         `SELECT l.lease_token, l.task_id, l.attempt_id, l.instance_id, l.issued_at, l.expires_at,
                 (l.expires_at <= app_now()) AS expired,
-                t.status AS task_status, t.attempt_count, t.max_attempts,
-                a.status AS attempt_status
+                t.status AS task_status, t.attempt_count, t.max_attempts, t.fanout_id,
+                a.status AS attempt_status, a.outward_actions
            FROM leases l
            JOIN tasks t ON t.task_id = l.task_id
            JOIN task_attempts a ON a.attempt_id = l.attempt_id
@@ -57,7 +58,7 @@ export async function sweepLeases(limit = 50): Promise<{
           WHERE attempt_id = $1 AND state IN ('HELD','ACTIVE')`,
         [row.attempt_id, cause],
       );
-      if (!["SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT"].includes(row.attempt_status)) {
+      if (!["SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT", "PARKED"].includes(row.attempt_status)) {
         await c.query(
           `UPDATE task_attempts SET status = 'TIMEOUT', finished_at = app_now(),
                                     error = $2
@@ -66,9 +67,13 @@ export async function sweepLeases(limit = 50): Promise<{
         );
       }
 
-      if (row.attempt_count >= row.max_attempts) {
+      // The attempt already pushed / uploaded / deployed. It may have been interrupted halfway,
+      // so rerunning it elsewhere could repeat a real side effect. Stop here and let a person decide.
+      const outward = Array.isArray(row.outward_actions) ? row.outward_actions : [];
+      if (outward.length > 0) {
         await c.query(
-          `UPDATE tasks SET status = 'FAILED', current_attempt_id = NULL, dead_letter = TRUE,
+          `UPDATE tasks SET status = 'FAILED', outcome = 'interrupted_after_outward',
+                            current_attempt_id = NULL, dead_letter = TRUE,
                             version = version + 1, updated_at = app_now()
             WHERE task_id = $1`,
           [row.task_id],
@@ -79,8 +84,37 @@ export async function sweepLeases(limit = 50): Promise<{
           from_status: row.task_status,
           to_status: "FAILED",
           actor: "scheduler",
-          payload: { attempt_id: row.attempt_id, cause, alert: "P1" },
+          payload: {
+            attempt_id: row.attempt_id,
+            cause,
+            error_code: "INTERRUPTED_AFTER_OUTWARD_ACTION",
+            outcome: "interrupted_after_outward",
+            outward_actions: outward,
+            non_retryable: true,
+            alert: "P1",
+          },
         });
+        await settleFanout(c, { task_id: row.task_id, fanout_id: row.fanout_id });
+        out.push({ task_id: row.task_id, cause, to: "FAILED" });
+        continue;
+      }
+
+      if (row.attempt_count >= row.max_attempts) {
+        await c.query(
+          `UPDATE tasks SET status = 'FAILED', outcome = 'error', current_attempt_id = NULL,
+                            dead_letter = TRUE, version = version + 1, updated_at = app_now()
+            WHERE task_id = $1`,
+          [row.task_id],
+        );
+        await appendEvent(c, {
+          task_id: row.task_id,
+          event_type: "TASK_DEAD_LETTERED",
+          from_status: row.task_status,
+          to_status: "FAILED",
+          actor: "scheduler",
+          payload: { attempt_id: row.attempt_id, cause, outcome: "error", alert: "P1" },
+        });
+        await settleFanout(c, { task_id: row.task_id, fanout_id: row.fanout_id });
         out.push({ task_id: row.task_id, cause, to: "FAILED" });
       } else {
         await c.query(
@@ -110,5 +144,53 @@ export async function sweepLeases(limit = 50): Promise<{
     }
 
     return { reclaimed: out };
+  });
+}
+
+/**
+ * Expire parked questions.
+ *
+ * A NEEDS_INPUT task holds no lease, so nothing else would ever move it. Once the TTL passes
+ * it becomes a non-retryable failure: rerunning it later would not answer the question either.
+ */
+export async function sweepNeedsInput(limit = 50): Promise<{ expired: string[] }> {
+  return tx(async (c) => {
+    const rows = (
+      await c.query(
+        `SELECT task_id, fanout_id, pending_question, needs_input_at
+           FROM tasks
+          WHERE status = 'NEEDS_INPUT'
+            AND needs_input_expires_at IS NOT NULL
+            AND needs_input_expires_at <= app_now()
+          ORDER BY needs_input_expires_at
+          FOR UPDATE SKIP LOCKED
+          LIMIT $1`,
+        [limit],
+      )
+    ).rows;
+    const expired: string[] = [];
+    for (const row of rows) {
+      await c.query(
+        `UPDATE tasks SET status = 'FAILED', outcome = 'input_expired', dead_letter = TRUE,
+                          current_attempt_id = NULL, version = version + 1, updated_at = app_now()
+          WHERE task_id = $1`,
+        [row.task_id],
+      );
+      await appendEvent(c, {
+        task_id: row.task_id,
+        event_type: "TASK_INPUT_EXPIRED",
+        from_status: "NEEDS_INPUT",
+        to_status: "FAILED",
+        actor: "scheduler",
+        payload: {
+          outcome: "input_expired",
+          question_chars: row.pending_question?.question ? String(row.pending_question.question).length : 0,
+          asked_at: row.needs_input_at,
+        },
+      });
+      await settleFanout(c, { task_id: row.task_id, fanout_id: row.fanout_id });
+      expired.push(row.task_id);
+    }
+    return { expired };
   });
 }

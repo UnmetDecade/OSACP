@@ -53,4 +53,6 @@ await runFile("010_host_federation.sql");
 await runFile("011_scheduler_nodes.sql");
 await runFile("012_task_attachments.sql");
 await runFile("013_native_roles.sql");
+// 014 sideloads: per-host curl tokens with a closed permission vocabulary.
+await runFile("014_sideloads.sql");
 process.exit(0);

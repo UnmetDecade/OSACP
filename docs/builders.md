@@ -35,6 +35,8 @@ Rules:
 │   ├── agent-runtime.mjs
 │   └── sshd_config
 ├── agents/                    # CLI Agent adapters (written at deployment)
+│   ├── cli-agent.mjs          # Agent Profile entrypoint
+│   └── task-envelope.mjs      # imported by the adapter, so it ships in the same directory
 ├── cache/                     # host cache (read-only mount)
 │   ├── node/                  # Node 22+
 │   ├── agents/                # claude / codex
@@ -185,6 +187,10 @@ Limits are written by host-runtime when creating the container and cannot be rel
 - Builder tokens and SSH private keys are separate: the token is used for scheduling, and the private key is only for users.
 - Do not put business secrets in the image; inject them through environment variables or the Secret Store when needed.
 - If you need to tighten this in the future: change `root` to a `builder` user + sudo, or enable `AllowUsers`/`ForceCommand`.
+- host-runtime keeps three rails on the host itself: an operation journal that rolls back interrupted
+  deployment commands, a root-owned host policy file that can veto deployments (kill switch), and a
+  hash-chained audit log that blocks new deployments when it has been tampered with. See
+  [agent-control.md](agent-control.md#5-host-side-rails-host-runtime).
 
 ---
 

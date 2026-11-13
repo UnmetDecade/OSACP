@@ -12,7 +12,9 @@ import { progress, renew, startAck, submitResult } from "../core/attempts.js";
 import {
   completeArtifact,
   createArtifact,
+  downloadFilename,
   getArtifact,
+  listTaskArtifacts,
   putArtifactContent,
   readArtifactContent,
 } from "../core/artifacts.js";
@@ -23,7 +25,9 @@ import {
   listApprovalRequests,
   listWorkflowRuns,
 } from "../core/workflow.js";
-import { cancelTask, createTask, getTask, listEvents, listTasks } from "../repo/tasks.js";
+import { answerTask, cancelTask, createTask, getTask, listEvents, listTasks, retryTask } from "../repo/tasks.js";
+import { splitTask } from "../core/fanout.js";
+import { listFailureSignatures } from "../repo/failures.js";
 import { latestEventId, listOutbox } from "../repo/outbox.js";
 import { upsertHost } from "../repo/hosts.js";
 import { capabilitySnapshot, listNodes, upsertNodeReport } from "../repo/federation.js";
@@ -32,6 +36,7 @@ import { selfNodeId } from "../node.js";
 import {
   deregister,
   drain,
+  forget,
   heartbeat,
   listInstances,
   register,
@@ -148,6 +153,9 @@ route(
   },
   { auth: true, scopes: ["instance:register"] },
 );
+// Admin cleanup for a registration left behind after its deployment was deleted. Only dead rows are removable;
+// a live instance must be removed through its deployment so the host stops the process first.
+route("DELETE", "/v1/instances/:id", (c) => forget(c.params.id));
 route(
   "GET",
   "/v1/instances/:id/config",
@@ -247,6 +255,16 @@ route("POST", "/v1/attempts/:id/result", (c) => submitResult(c.params.id, proof(
   scopes: ["task:report"],
 });
 
+// The lease holder declares children; the scheduler parks the parent and releases the lease.
+// Operators answer a parked question through the unauthenticated admin path, like retry/cancel.
+route("POST", "/v1/tasks/:id/split", (c) => splitTask(c.params.id, proof(c), c.body?.children), {
+  auth: true,
+  scopes: ["task:report"],
+});
+route("POST", "/v1/tasks/:id/answer", (c) =>
+  answerTask(c.params.id, c.body?.answer, c.body?.actor ?? "operator"),
+);
+
 // ---------------- Tasks
 // After creation, try pushing down: hand tasks this machine cannot handle to a suitable node scheduler in the subtree.
 // Relayed-in tasks go through this step too: the parent picked this machine from the subtree instance roster, but the actual holder
@@ -264,6 +282,10 @@ route("GET", "/v1/tasks", async (c) => ({
     role: c.query.get("role") ?? undefined,
     limit: c.query.get("limit") ? Number(c.query.get("limit")) : undefined,
   }),
+}));
+// Fleet-wide failure triage: one row per normalized failure, not one per occurrence.
+route("GET", "/v1/failure-signatures", async (c) => ({
+  items: await listFailureSignatures(c.query.get("limit") ? Number(c.query.get("limit")) : undefined),
 }));
 route("GET", "/v1/tasks/:id", (c) => getTask(c.params.id));
 route("GET", "/v1/tasks/:id/events", async (c) => ({ items: await listEvents(c.params.id) }));
@@ -284,6 +306,9 @@ route("POST", "/v1/tasks/:id/cancel", async (c) => {
   await requestRelayCancel(c.params.id);
   return out;
 });
+route("POST", "/v1/tasks/:id/retry", (c) =>
+  retryTask(c.params.id, c.body?.actor ?? "operator"),
+);
 
 // ---------------- Artifacts (§7.8)
 route(
@@ -308,6 +333,9 @@ route(
   },
   { auth: true, scopes: ["artifact:read"] },
 );
+// Operator-facing file listing. Like the other operator routes it carries no instance credential:
+// PCS reaches the scheduler inside the trusted network and gates the caller itself.
+route("GET", "/v1/tasks/:id/artifacts", (c) => listTaskArtifacts(c.params.id));
 
 // ---------------- Workflows (§7)
 route("POST", "/v1/workflows", (c) => createWorkflowRun(c.body));
@@ -563,6 +591,25 @@ export function createServer(): http.Server | https.Server {
           "content-type": out.media_type,
           "content-length": String(out.data.length),
           "x-artifact-sha256": out.sha256 ?? "",
+          "cache-control": "no-store",
+        });
+        res.end(out.data);
+        return;
+      }
+
+      // Operator download: the file channel for task outputs. Same trust boundary as the other
+      // operator routes (no instance credential); the caller is authenticated by PCS.
+      const downloadMatch = /^\/v1\/artifacts\/([^/]+)\/download$/.exec(url.pathname);
+      if (downloadMatch && req.method === "GET") {
+        const out = await readArtifactContent(decodeURIComponent(downloadMatch[1]), undefined);
+        const filename = downloadFilename(out);
+        const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+        res.writeHead(200, {
+          "content-type": out.media_type,
+          "content-length": String(out.data.length),
+          "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "x-artifact-sha256": out.sha256 ?? "",
+          "x-artifact-name": encodeURIComponent(filename),
           "cache-control": "no-store",
         });
         res.end(out.data);

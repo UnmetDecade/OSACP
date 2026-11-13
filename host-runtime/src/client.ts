@@ -40,6 +40,8 @@ export interface Assignment {
   deadline_at: string | null;
   /** Task requirements and workflow handoff (upstream_artifacts, etc.), issued by the scheduler */
   requirements: Record<string, unknown>;
+  /** How much the agent may do without asking: ask | edits | auto | full */
+  approval_mode?: string;
   /** P4: Agent/API Profile references; implementations and secrets are not in the envelope */
   agent: { profile_id: string | null; version: string | null };
   api_profiles: string[];
@@ -245,20 +247,53 @@ export class SchedulerClient {
     return this.request<{ lease_expires_at: string }>("POST", `/v1/attempts/${attemptId}/renew`, input);
   }
 
-  progress(attemptId: string, input: Proof & { percent?: number; note?: string }) {
+  progress(
+    attemptId: string,
+    input: Proof & { percent?: number; note?: string; outward?: string[] },
+  ) {
     return this.request<{ ok: boolean }>("POST", `/v1/attempts/${attemptId}/progress`, input);
   }
 
   result(
     attemptId: string,
     input: Proof & {
-      status: "SUCCEEDED" | "FAILED" | "CANCELLED";
+      status: "SUCCEEDED" | "FAILED" | "CANCELLED" | "NEEDS_INPUT";
       summary?: string;
       outputs?: unknown;
+      outcome?: string;
+      /** NEEDS_INPUT only: the question a person has to answer. */
+      question?: string;
+      /** Every outward action attempted during this attempt, so a failure is not retried blindly. */
+      outward_actions?: string[];
       error?: { code: string; message?: string; detail?: unknown };
     },
   ) {
     return this.request<unknown>("POST", `/v1/attempts/${attemptId}/result`, input);
+  }
+
+  /**
+   * Ask the scheduler to fan this task out to child tasks.
+   *
+   * This replaces a result report: the scheduler parks this attempt and releases its lease in the
+   * same transaction that enqueues the children, so the host must not submit SUCCEEDED afterwards.
+   */
+  split(
+    taskId: string,
+    input: Proof & {
+      children: Array<{
+        task_type?: string;
+        title?: string;
+        instruction?: string;
+        requirements?: Record<string, unknown>;
+        artifact_ids?: string[];
+      }>;
+    },
+  ) {
+    return this.request<{ task: { task_id: string }; children: string[] }>(
+      "POST",
+      `/v1/tasks/${taskId}/split`,
+      input,
+    );
   }
 
   task(taskId: string) {
@@ -299,6 +334,8 @@ export class SchedulerClient {
     sha256: string;
     size_bytes: number;
     media_type?: string;
+    /** Original file name, so the operator-facing download can present it instead of an artifact id. */
+    name?: string;
   }) {
     return this.request<{
       artifact_id: string;

@@ -46,8 +46,19 @@ before(async () => {
     schedulerUrl: "http://127.0.0.1:8443",
     schedulerDatabaseUrl: "postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test",
   });
+  // This suite truncates every control-plane table, so it must never touch a live database.
+  // `npm test` points PCS_DATABASE_URL at platform_control_test; anyone invoking the tests with a
+  // bare runner would otherwise get the production default from src/db.ts.
+  const current = await query<{ name: string }>(`SELECT current_database() AS name`);
+  const database = String(current.rows[0]?.name ?? "");
+  if (!/_test$/.test(database)) {
+    throw new Error(
+      `Refusing to run PCS tests against "${database}": the suite truncates its database. ` +
+        `Set PCS_DATABASE_URL to a database whose name ends in _test (npm test does this).`,
+    );
+  }
   await query(
-    `TRUNCATE pcs_commands, pcs_deployments, pcs_host_reports,
+    `TRUNCATE pcs_sideloads, pcs_commands, pcs_deployments, pcs_host_reports,
               pcs_host_runtimes, pcs_enrollment_tokens, pcs_hosts,
               role_api_bindings, role_agent_bindings, api_profiles, agent_profiles,
               deployment_plans
@@ -140,6 +151,91 @@ test("host tokens authenticate while admin tokens are rejected per scope", async
   await assert.rejects(
     () => svc.authenticateHost(svc.issueAdminToken("tester")),
     (e: any) => e.code === "AUDIENCE_MISMATCH" || e.code === "TOKEN_INVALID",
+  );
+});
+
+test("sideload tokens are host-scoped, permission-checked, and deletable", async () => {
+  const a = await enrolledHost("sideload-a");
+  const b = await enrolledHost("sideload-b");
+
+  const created = await svc.createSideload({
+    host_id: a.host_id,
+    name: "laptop",
+    scopes: ["tasks:read", "builders:read"],
+    expires_in_days: 30,
+    created_by: "tester",
+  });
+  assert.match(created.token, /^sdl_[A-Za-z0-9_-]{20,}$/);
+  assert.equal(created.sideload.host_id, a.host_id);
+  assert.deepEqual(created.sideload.scopes, ["tasks:read", "builders:read"]);
+  // The hash never leaves the control plane, and the stored value is not the plaintext token.
+  assert.equal((created.sideload as any).token_hash, undefined);
+  const stored = await query<{ token_hash: string }>(
+    `SELECT token_hash FROM pcs_sideloads WHERE sideload_id=$1`,
+    [created.sideload.sideload_id],
+  );
+  assert.notEqual(stored.rows[0].token_hash, created.token);
+
+  const authenticated = await svc.authenticateSideload(created.token);
+  assert.equal(authenticated.sideload_id, created.sideload.sideload_id);
+
+  // Another host's sideloads never appear in this host's list.
+  await svc.createSideload({ host_id: b.host_id, name: "other", scopes: ["tasks:read"] });
+  assert.deepEqual(
+    (await svc.listSideloads(a.host_id)).map((s) => s.name),
+    ["laptop"],
+  );
+  assert.equal((await svc.listSideloads()).length, 2);
+
+  // Unknown permissions are rejected, and a console scope alone is unusable.
+  await assert.rejects(
+    () => svc.createSideload({ host_id: a.host_id, name: "bad", scopes: ["admin"] }),
+    (e: any) => e.code === "SIDELOAD_SCOPE_UNKNOWN",
+  );
+  await assert.rejects(
+    () => svc.createSideload({ host_id: a.host_id, name: "bad", scopes: ["console:run"] }),
+    (e: any) => e.code === "SIDELOAD_SCOPE_CONFLICT",
+  );
+
+  // Deleting removes the token outright: the next call is an unknown token, and the row is gone.
+  await svc.deleteSideload(created.sideload.sideload_id, "tester");
+  await assert.rejects(
+    () => svc.authenticateSideload(created.token),
+    (e: any) => e.code === "SIDELOAD_TOKEN_INVALID",
+  );
+  const gone = await query(`SELECT 1 FROM pcs_sideloads WHERE sideload_id=$1`, [
+    created.sideload.sideload_id,
+  ]);
+  assert.equal(gone.rowCount, 0);
+  await assert.rejects(
+    () => svc.deleteSideload(created.sideload.sideload_id, "tester"),
+    (e: any) => e.code === "SIDELOAD_NOT_FOUND",
+  );
+  await assert.rejects(
+    () => svc.authenticateSideload("sdl_wrong"),
+    (e: any) => e.code === "SIDELOAD_TOKEN_INVALID",
+  );
+
+  // Expired tokens are rejected as well.
+  const expiring = await svc.createSideload({
+    host_id: a.host_id,
+    name: "short-lived",
+    scopes: ["tasks:read"],
+    expires_in_days: 1,
+  });
+  await query(
+    `UPDATE pcs_sideloads SET expires_at = now() - interval '1 second' WHERE sideload_id=$1`,
+    [expiring.sideload.sideload_id],
+  );
+  await assert.rejects(
+    () => svc.authenticateSideload(expiring.token),
+    (e: any) => e.code === "SIDELOAD_EXPIRED",
+  );
+
+  // Without a scheduler on the host there is nothing for a sideload to proxy to.
+  await assert.rejects(
+    () => svc.rootSchedulerForHost(a.host_id),
+    (e: any) => e.code === "SCHEDULER_NOT_DEPLOYED",
   );
 });
 
@@ -991,6 +1087,76 @@ test("a host role is one of three; a bare-metal role cannot additionally deploy 
     () => svc.updateHost(hostId, { role_mode: "both" as any }),
     (e: any) => e.code === "INVALID_HOST_ROLE",
   );
+});
+
+test("a bare-metal builder honours the chosen name, Agent and API, and is restored when its deployment is gone", async () => {
+  const hostId = (await svc.createLocalHost({ name: "native-form-host" })).host_id;
+  // createLocalHost reuses the single local host, which an earlier test may already have turned into a bare-metal
+  // builder; reset it so this test starts from a container host with no deployments.
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id=$1`,
+    [hostId],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+  const agent = await svc.createAgentProfile(
+    {
+      agent_profile_id: "agp_native_form",
+      role_id: "builder",
+      name: "native-form-agent",
+      version: "1.0.0",
+      adapter: "stdio-jsonrpc",
+      artifact_image: AGENT_IMAGE,
+      allowed_tools: ["demo.echo"],
+      task_types: ["task.agent.probe"],
+    },
+    "alice",
+  );
+  const api = await svc.createApiProfile(
+    {
+      api_profile_id: "api_native_form",
+      name: "native-form-api",
+      kind: "tool",
+      base_url: "https://api.example",
+      auth_type: "bearer",
+      secret_ref: "secret://apis/native-form",
+    },
+    "alice",
+  );
+
+  const first = await svc.updateHost(hostId, {
+    role_mode: "builder",
+    native_builder: {
+      display_name: "Native One",
+      agent_profile_id: agent.agent_profile_id,
+      api_profile_ids: [api.api_profile_id],
+    },
+  });
+  assert.equal(first.native_builder?.created, true);
+  const deployment = await svc.getDeployment(first.native_builder!.deployment_id);
+  // The display name is kept as typed; the instance id is the ASCII form used by scheduler node ids and volumes.
+  assert.equal(deployment?.display_name, "Native One");
+  assert.equal(deployment?.instance_id, "native-one");
+
+  const resolved = await svc.resolveInstance(hostId, "native-one");
+  assert.equal(resolved?.agent.agent_profile_id, agent.agent_profile_id);
+  assert.deepEqual(
+    resolved?.api_profiles.map((p) => p.api_profile_id),
+    [api.api_profile_id],
+  );
+
+  // While the deployment is alive the call is idempotent and must not create a second builder.
+  const again = await svc.updateHost(hostId, { role_mode: "builder" });
+  assert.equal(again.native_builder?.created, false);
+  assert.equal(again.native_builder?.deployment_id, first.native_builder!.deployment_id);
+
+  // A removed deployment must be recreated instead of being reported as "already a bare-metal builder".
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE deployment_id=$1`,
+    [first.native_builder!.deployment_id],
+  );
+  const restored = await svc.updateHost(hostId, { role_mode: "builder" });
+  assert.equal(restored.native_builder?.created, true);
+  assert.notEqual(restored.native_builder?.deployment_id, first.native_builder!.deployment_id);
 });
 
 test("one host can run multiple scheduler containers: a single root, nodes attached to a parent scheduler, and builders bound to a chosen scheduler", async () => {

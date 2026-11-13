@@ -91,7 +91,7 @@ async function waitFor(fn, timeout, label) {
 /** Text replacement: internal IPs and personal hostnames stay out of public screenshots. */
 const SCRUB = `(() => {
   const ips = /\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g;
-  const names = [["thinkpad", "workstation-a"], ["thinkcentre", "workstation-b"], ["chromebox", "workstation-c"], ["docker-host", "workstation-a"]];
+  const names = [["thinkpad", "workstation-a"], ["thinkcenre", "workstation-b"], ["thinkcentre", "workstation-b"], ["chromebox", "workstation-c"], ["docker-host", "workstation-a"]];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -99,6 +99,10 @@ const SCRUB = `(() => {
     let v = n.nodeValue;
     if (!v) continue;
     v = v.replace(ips, "192.0.2.10");
+    // Home directories of the operator account and raw host ids appear in task commands; keep them generic.
+    v = v.replace(/\\/home\\/[^/\\s]+/g, "/home/user");
+    v = v.replace(/\\bhst_[0-9a-f]{8,}\\b/g, "hst_…");
+    v = v.replace(/\\bblt@/g, "user@");
     for (const [a, b] of names) v = v.split(a).join(b);
     if (v !== n.nodeValue) n.nodeValue = v;
   }
@@ -189,7 +193,8 @@ async function captureArchitecture() {
   const data = await send("Page.captureScreenshot", {
     format: "png",
     captureBeyondViewport: true,
-    clip: { x: 0, y: 0, width: 1600, height, scale: 1.5 },
+    // The device scale factor already scales the output; a clip scale would multiply it again.
+    clip: { x: 0, y: 0, width: 1600, height, scale: 1 },
   });
   const name = `architecture-${LANG}.png`;
   fs.writeFileSync(path.join(OUT, name), Buffer.from(data.data, "base64"));

@@ -1,13 +1,13 @@
 import { createRequire as __platformCreateRequire } from "node:module"; const require = __platformCreateRequire(import.meta.url);
 
 // host-runtime/src/main.ts
-import fs9 from "node:fs";
-import path9 from "node:path";
+import fs11 from "node:fs";
+import path12 from "node:path";
 
 // host-runtime/src/agent.ts
 import { createHash as createHash3 } from "node:crypto";
-import fs7 from "node:fs";
-import path7 from "node:path";
+import fs9 from "node:fs";
+import path10 from "node:path";
 
 // host-runtime/src/admission.ts
 var LocalAdmission = class {
@@ -96,13 +96,13 @@ var SchedulerClient = class {
     if (token) h.Authorization = `Bearer ${token}`;
     return h;
   }
-  async request(method, path10, body, opts = {}) {
+  async request(method, path13, body, opts = {}) {
     const retries = opts.retries ?? 2;
     const timeout = opts.timeoutMs ?? this.defaultTimeoutMs;
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const url = new URL(`${this.baseUrl}${path10}`);
+        const url = new URL(`${this.baseUrl}${path13}`);
         const payload = body === void 0 ? void 0 : Buffer.from(JSON.stringify(body));
         const headers = this.headers(body);
         if (payload) headers["content-length"] = payload.length;
@@ -153,8 +153,8 @@ var SchedulerClient = class {
     throw new SchedulerError(0, "SCHEDULER_UNREACHABLE", String(lastErr?.message ?? lastErr));
   }
   /** Raw byte request (artifact upload/download): also over HTTPS / mTLS, without JSON parsing. */
-  async rawRequest(method, path10, body, timeoutMs = this.defaultTimeoutMs) {
-    const url = new URL(`${this.baseUrl}${path10}`);
+  async rawRequest(method, path13, body, timeoutMs = this.defaultTimeoutMs) {
+    const url = new URL(`${this.baseUrl}${path13}`);
     const isHttps = url.protocol === "https:";
     const headers = { "X-Protocol-Version": "1.0" };
     const token = this.currentToken();
@@ -214,6 +214,19 @@ var SchedulerClient = class {
   }
   result(attemptId, input) {
     return this.request("POST", `/v1/attempts/${attemptId}/result`, input);
+  }
+  /**
+   * Ask the scheduler to fan this task out to child tasks.
+   *
+   * This replaces a result report: the scheduler parks this attempt and releases its lease in the
+   * same transaction that enqueues the children, so the host must not submit SUCCEEDED afterwards.
+   */
+  split(taskId, input) {
+    return this.request(
+      "POST",
+      `/v1/tasks/${taskId}/split`,
+      input
+    );
   }
   task(taskId) {
     return this.request(
@@ -288,14 +301,6 @@ var SchedulerClient = class {
   }
 };
 
-// host-runtime/src/roles/builder.ts
-import path2 from "node:path";
-
-// host-runtime/src/roles/common.ts
-import { createHash } from "node:crypto";
-import fs2 from "node:fs";
-import path from "node:path";
-
 // host-runtime/src/exec-types.ts
 var TaskAborted = class extends Error {
   constructor(reason) {
@@ -316,7 +321,13 @@ var TaskFailed = class extends Error {
   detail;
 };
 
+// host-runtime/src/roles/builder.ts
+import path3 from "node:path";
+
 // host-runtime/src/roles/common.ts
+import { createHash } from "node:crypto";
+import fs2 from "node:fs";
+import path from "node:path";
 var MEDIA = {
   build: "application/vnd.platform.build-manifest+json",
   log: "text/plain; charset=utf-8",
@@ -352,6 +363,25 @@ function sha256Of(data) {
   const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
   return `sha256:${createHash("sha256").update(buf).digest("hex")}`;
 }
+async function fetchVerified(ctx, ref) {
+  const got = await ctx.downloadArtifact(ref.artifact_id);
+  const actual = sha256Of(got.data);
+  if (ref.sha256 && actual !== ref.sha256) {
+    throw new TaskFailed(
+      "UPSTREAM_ARTIFACT_DIGEST_MISMATCH",
+      `Upstream artifact ${ref.artifact_id} digest mismatch: handoff ${ref.sha256}, actual ${actual}`,
+      { artifact_id: ref.artifact_id, expected: ref.sha256, actual }
+    );
+  }
+  if (got.sha256 && got.sha256 !== actual) {
+    throw new TaskFailed(
+      "UPSTREAM_ARTIFACT_DIGEST_MISMATCH",
+      `Upstream artifact ${ref.artifact_id} does not match the digest confirmed by the scheduler`,
+      { artifact_id: ref.artifact_id, scheduler: got.sha256, actual }
+    );
+  }
+  return got.data;
+}
 function safeJoin(root, rel) {
   const abs = path.resolve(root, rel);
   if (abs !== root && !abs.startsWith(root + path.sep)) {
@@ -369,10 +399,12 @@ function writeWorkspaceFile(root, rel, content) {
 
 // host-runtime/src/roles/shell.ts
 import { spawn } from "node:child_process";
+import path2 from "node:path";
 var MAX_CAPTURE = 256 * 1024;
+var NODE_BIN_DIR = path2.dirname(process.execPath);
 function baseEnv(extra = {}) {
   const env = {
-    PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    PATH: [NODE_BIN_DIR, process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"].join(":"),
     HOME: process.env.HOME ?? "/root",
     LANG: process.env.LANG ?? "C.UTF-8",
     TERM: "dumb"
@@ -536,11 +568,11 @@ function taskAbortReason(signal) {
 }
 function resolveWorkdir(root, rel) {
   if (!rel || rel === ".") return root;
-  const base = path2.resolve(root);
-  const workspaceRoot = path2.dirname(base);
-  const requested = path2.isAbsolute(rel) ? path2.resolve(rel) : path2.resolve(base, rel);
-  const abs = requested === workspaceRoot ? base : requested.startsWith(workspaceRoot + path2.sep) ? path2.resolve(base, path2.relative(workspaceRoot, requested)) : requested;
-  if (abs !== base && !abs.startsWith(base + path2.sep)) {
+  const base = path3.resolve(root);
+  const workspaceRoot = path3.dirname(base);
+  const requested = path3.isAbsolute(rel) ? path3.resolve(rel) : path3.resolve(base, rel);
+  const abs = requested === workspaceRoot ? base : requested.startsWith(workspaceRoot + path3.sep) ? path3.resolve(base, path3.relative(workspaceRoot, requested)) : requested;
+  if (abs !== base && !abs.startsWith(base + path3.sep)) {
     throw new TaskFailed("BUILD_WORKDIR_INVALID", `Workdir escapes the boundary: ${rel}`);
   }
   return abs;
@@ -593,6 +625,195 @@ payload: ${workload}
       files: files.map((f) => f.path)
     }
   };
+}
+
+// host-runtime/src/roles/chat-console.ts
+import fs4 from "node:fs";
+import path5 from "node:path";
+
+// host-runtime/src/agent-runtime/files.ts
+import fs3 from "node:fs";
+import path4 from "node:path";
+var MAX_ATTACHMENT_FILES = 16;
+var MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+var MAX_ATTACHMENT_TOTAL_BYTES = 128 * 1024 * 1024;
+var MEDIA_BY_EXT = {
+  ".txt": "text/plain",
+  ".log": "text/plain",
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".rst": "text/plain",
+  ".json": "application/json",
+  ".jsonl": "application/x-ndjson",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
+  ".toml": "application/toml",
+  ".xml": "application/xml",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".css": "text/css",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".cjs": "text/javascript",
+  ".ts": "text/x-typescript",
+  ".tsx": "text/x-typescript",
+  ".jsx": "text/javascript",
+  ".py": "text/x-python",
+  ".sh": "application/x-sh",
+  ".bash": "application/x-sh",
+  ".zsh": "application/x-sh",
+  ".c": "text/x-c",
+  ".h": "text/x-c",
+  ".cc": "text/x-c++src",
+  ".cpp": "text/x-c++src",
+  ".cxx": "text/x-c++src",
+  ".hpp": "text/x-c++hdr",
+  ".hh": "text/x-c++hdr",
+  ".java": "text/x-java-source",
+  ".go": "text/x-go",
+  ".rs": "text/x-rust",
+  ".rb": "text/x-ruby",
+  ".php": "text/x-php",
+  ".sql": "application/sql",
+  ".patch": "text/x-patch",
+  ".diff": "text/x-patch",
+  ".pdf": "application/pdf",
+  ".zip": "application/zip",
+  ".gz": "application/gzip",
+  ".tgz": "application/gzip",
+  ".bz2": "application/x-bzip2",
+  ".xz": "application/x-xz",
+  ".tar": "application/x-tar",
+  ".7z": "application/x-7z-compressed",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".svg": "image/svg+xml",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".wasm": "application/wasm"
+};
+function mediaFor(file) {
+  const lower = file.toLowerCase();
+  if (lower.endsWith(".tar.gz")) return "application/gzip";
+  if (lower.endsWith(".tar.bz2")) return "application/x-bzip2";
+  if (lower.endsWith(".tar.xz")) return "application/x-xz";
+  return MEDIA_BY_EXT[path4.extname(lower)] ?? "application/octet-stream";
+}
+function safeRelativePath(raw) {
+  const rel = raw.replace(/^\.\/+/, "");
+  if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.split("/").includes("..")) {
+    throw new TaskFailed("FILE_PATH_DENIED", `path must be relative and inside the workspace: ${raw}`);
+  }
+  return rel;
+}
+function resolveInsideWorkspace(rel, workspaceDir) {
+  const root = path4.resolve(workspaceDir);
+  const target = path4.resolve(root, safeRelativePath(rel));
+  if (target !== root && !target.startsWith(`${root}${path4.sep}`)) {
+    throw new TaskFailed("FILE_PATH_DENIED", `path escapes the workspace: ${rel}`);
+  }
+  return target;
+}
+function attachmentName(raw, index) {
+  const source = typeof raw === "string" ? raw.replace(/\\/g, "/") : "";
+  const base = path4.basename(source).replace(/[^\p{L}\p{N}._()\- ]/gu, "_").trim().slice(0, 120);
+  const name = base && base !== "." && base !== ".." ? base : `attachment-${index + 1}`;
+  return name.startsWith(".") ? `_${name}` : name;
+}
+async function loadAttachment(rec) {
+  let data = String(rec.data_base64 ?? "");
+  const comma = data.indexOf(",");
+  if (data.startsWith("data:") && comma >= 0) data = data.slice(comma + 1);
+  if (data) {
+    const buf2 = Buffer.from(data, "base64");
+    return buf2.length ? buf2 : null;
+  }
+  const rawUrl = typeof rec.url === "string" ? rec.url.trim() : "";
+  if (!rawUrl) return null;
+  let target;
+  try {
+    target = new URL(rawUrl);
+  } catch {
+    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Invalid attachment URL");
+  }
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Attachment URL must use http or https");
+  }
+  let res;
+  try {
+    res = await fetch(target, {
+      signal: AbortSignal.timeout(12e4),
+      redirect: "error"
+    });
+  } catch (err) {
+    throw new TaskFailed(
+      "ATTACHMENT_FETCH_FAILED",
+      `Failed to fetch attachment: ${String(err?.message ?? err)}`
+    );
+  }
+  if (!res.ok) {
+    throw new TaskFailed("ATTACHMENT_FETCH_FAILED", `Failed to fetch attachment: HTTP ${res.status}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  return buf.length ? buf : null;
+}
+async function materializeAttachmentList(list, workspaceDir) {
+  if (list.length === 0) return [];
+  const dir = path4.join(workspaceDir, "attachments");
+  fs3.mkdirSync(dir, { recursive: true });
+  const materialized = [];
+  const used = /* @__PURE__ */ new Set();
+  let total = 0;
+  for (let i = 0; i < list.length && materialized.length < MAX_ATTACHMENT_FILES; i++) {
+    const item = list[i];
+    if (!item || typeof item !== "object") continue;
+    const rec = item;
+    const buf = await loadAttachment(rec);
+    if (!buf) continue;
+    if (buf.length > MAX_ATTACHMENT_BYTES) {
+      throw new TaskFailed("ATTACHMENT_TOO_LARGE", "Attachment exceeds 32MiB");
+    }
+    total += buf.length;
+    if (total > MAX_ATTACHMENT_TOTAL_BYTES) break;
+    let name = attachmentName(rec.name, i);
+    if (used.has(name)) {
+      const ext = path4.extname(name);
+      const stem = name.slice(0, name.length - ext.length);
+      let n = 2;
+      while (used.has(`${stem}-${n}${ext}`)) n++;
+      name = `${stem}-${n}${ext}`;
+    }
+    const file = path4.join(dir, name);
+    if (!file.startsWith(dir + path4.sep)) continue;
+    used.add(name);
+    fs3.writeFileSync(file, buf, { mode: 384 });
+    materialized.push({
+      name,
+      path: `attachments/${name}`,
+      media_type: typeof rec.media_type === "string" ? rec.media_type : "application/octet-stream",
+      size_bytes: buf.length
+    });
+  }
+  return materialized;
+}
+async function materializeAttachments(task, workspaceDir) {
+  const requirements = task.requirements ?? {};
+  const build = requirements.build;
+  if (!build || typeof build !== "object") return task;
+  const list = build.attachments;
+  if (!Array.isArray(list) || list.length === 0) return task;
+  const materialized = await materializeAttachmentList(list, workspaceDir);
+  const nextBuild = { ...build, attachments: materialized };
+  return { ...task, requirements: { ...requirements, build: nextBuild } };
 }
 
 // host-runtime/src/roles/chat-console.ts
@@ -657,6 +878,101 @@ function chatExecutorFor(role) {
     };
   };
 }
+var MAX_COLLECT_PATHS = 32;
+var MAX_COLLECT_FILES = 128;
+var MAX_COLLECT_FILE_BYTES = 64 * 1024 * 1024;
+var MAX_COLLECT_TOTAL_BYTES = 256 * 1024 * 1024;
+function collectPaths(raw) {
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  const out = [];
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    const value = item.trim();
+    if (!value) continue;
+    out.push(value);
+    if (out.length >= MAX_COLLECT_PATHS) break;
+  }
+  return out;
+}
+function expandCollectPaths(workspaceDir, paths) {
+  const files = [];
+  const skipped = [];
+  const visit = (rel, abs, depth) => {
+    let stat;
+    try {
+      stat = fs4.lstatSync(abs);
+    } catch {
+      skipped.push({ path: rel, reason: "missing" });
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      skipped.push({ path: rel, reason: "symlink" });
+      return;
+    }
+    if (stat.isDirectory()) {
+      if (depth >= 12) {
+        skipped.push({ path: rel, reason: "directory too deep" });
+        return;
+      }
+      for (const entry of fs4.readdirSync(abs)) {
+        visit(rel ? `${rel}/${entry}` : entry, path5.join(abs, entry), depth + 1);
+      }
+      return;
+    }
+    if (!stat.isFile()) {
+      skipped.push({ path: rel, reason: "not a regular file" });
+      return;
+    }
+    files.push({ rel, abs, size: stat.size });
+  };
+  for (const raw of paths) {
+    let rel;
+    try {
+      rel = raw.replace(/^\.\/+/, "").replace(/\/+$/, "");
+      if (rel === ".") rel = "";
+      if (!rel) {
+        for (const entry of fs4.readdirSync(workspaceDir)) {
+          visit(entry, path5.join(workspaceDir, entry), 1);
+        }
+        continue;
+      }
+      visit(rel, resolveInsideWorkspace(rel, workspaceDir), 0);
+    } catch (e) {
+      skipped.push({ path: raw, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { files, skipped };
+}
+async function collectArtifacts(ctx, paths) {
+  const artifacts = [];
+  if (!paths.length) return { artifacts, skipped: [] };
+  const { files, skipped } = expandCollectPaths(ctx.workspaceDir, paths);
+  let total = 0;
+  for (const file of files) {
+    if (artifacts.length >= MAX_COLLECT_FILES) {
+      skipped.push({ path: file.rel, reason: `more than ${MAX_COLLECT_FILES} files` });
+      break;
+    }
+    if (file.size > MAX_COLLECT_FILE_BYTES) {
+      skipped.push({ path: file.rel, reason: "larger than 64MiB" });
+      continue;
+    }
+    total += file.size;
+    if (total > MAX_COLLECT_TOTAL_BYTES) {
+      skipped.push({ path: file.rel, reason: "collection exceeds 256MiB in total" });
+      break;
+    }
+    try {
+      const mediaType = mediaFor(file.rel);
+      const uploaded = await ctx.uploadArtifact(fs4.readFileSync(file.abs), mediaType, file.rel);
+      artifacts.push({ name: file.rel, ...uploaded, media_type: mediaType });
+      ctx.log(`collected ${file.rel} (${file.size} B) as ${uploaded.artifact_id}`);
+    } catch (e) {
+      skipped.push({ path: file.rel, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { artifacts, skipped };
+}
 function consoleExecutorFor(role) {
   return async (task, ctx) => {
     const raw = task.requirements?.console ?? {};
@@ -665,6 +981,16 @@ function consoleExecutorFor(role) {
     if (!command.trim()) throw new TaskFailed("CONSOLE_COMMAND_EMPTY", "Command is empty");
     const requestedSeconds = Number(raw.timeout_seconds);
     const timeoutMs = Number.isFinite(requestedSeconds) && requestedSeconds > 0 ? Math.min(Math.max(requestedSeconds * 1e3, 5e3), 15 * 6e4) : 6e4;
+    const build = task.requirements?.build;
+    const attachmentRefs = [
+      ...Array.isArray(raw.attachments) ? raw.attachments : [],
+      ...Array.isArray(build?.attachments) ? build.attachments : []
+    ];
+    let attachments = [];
+    if (attachmentRefs.length) {
+      attachments = await materializeAttachmentList(attachmentRefs, ctx.workspaceDir);
+      ctx.log(`Wrote ${attachments.length} attachments to workspace attachments/`);
+    }
     ctx.progress(20, "Executing command in the builder");
     const result = await runShell({
       command,
@@ -673,7 +999,8 @@ function consoleExecutorFor(role) {
         PLATFORM_INSTANCE_ID: ctx.instanceId,
         PLATFORM_TASK_ID: task.task_id,
         PLATFORM_TASK_TYPE: task.task_type,
-        PLATFORM_WORKSPACE: ctx.workspaceDir
+        PLATFORM_WORKSPACE: ctx.workspaceDir,
+        ...attachments.length ? { PLATFORM_ATTACHMENTS: JSON.stringify(attachments) } : {}
       }),
       signal: ctx.signal,
       timeoutMs
@@ -685,9 +1012,15 @@ function consoleExecutorFor(role) {
     ctx.log(
       `console ${task.task_id}: role=${role} operator=${operator} command=${command.slice(0, 120)} exit=${result.exitCode} duration_ms=${result.durationMs}`
     );
+    const collect = collectPaths(raw.collect);
+    if (collect.length) ctx.progress(90, "Collecting output files");
+    const collected = await collectArtifacts(ctx, collect);
+    if (collected.skipped.length) {
+      ctx.log(`collect skipped ${collected.skipped.length} path(s): ${collected.skipped.slice(0, 5).map((s) => s.path).join(", ")}`);
+    }
     ctx.progress(100, "Command execution completed");
     return {
-      summary: `${command.slice(0, 60)} completed (exit ${result.exitCode})`,
+      summary: `${command.slice(0, 60)} completed (exit ${result.exitCode}${collected.artifacts.length ? `, ${collected.artifacts.length} file(s) collected` : ""})`,
       outputs: {
         stdout: tail(result.stdout, 64 * 1024),
         stderr: tail(result.stderr, 64 * 1024),
@@ -695,7 +1028,10 @@ function consoleExecutorFor(role) {
         duration_ms: result.durationMs,
         command,
         operator,
-        role
+        role,
+        attachments,
+        artifacts: collected.artifacts,
+        ...collected.skipped.length ? { collect_skipped: collected.skipped } : {}
       }
     };
   };
@@ -723,14 +1059,14 @@ function executorFor(taskType) {
 
 // host-runtime/src/host-admission-client.ts
 import http2 from "node:http";
-function call(socketPath, method, path10, body) {
+function call(socketPath, method, path13, body) {
   return new Promise((resolve, reject) => {
     const payload = body === void 0 ? void 0 : Buffer.from(JSON.stringify(body));
     const req = http2.request(
       {
         socketPath,
         method,
-        path: path10,
+        path: path13,
         headers: {
           host: "runtime",
           ...payload ? { "content-type": "application/json", "content-length": String(payload.length) } : {}
@@ -773,11 +1109,11 @@ function releaseHostAdmission(socketPath, grantId) {
 }
 
 // host-runtime/src/metrics.ts
-import fs3 from "node:fs";
+import fs5 from "node:fs";
 import os from "node:os";
 function memAvailableBytes() {
   try {
-    const text = fs3.readFileSync("/proc/meminfo", "utf8");
+    const text = fs5.readFileSync("/proc/meminfo", "utf8");
     const line = text.split("\n").find((l) => l.startsWith("MemAvailable:"));
     if (line) return Number(line.replace(/\D+/g, "")) * 1024;
   } catch {
@@ -1045,7 +1381,7 @@ var ApiAdapter = class {
    * Unified egress entry point. The Agent can only reach external APIs through here; auth headers are injected here,
    * and any authorization / cookie / host supplied by the Agent are discarded.
    */
-  async call(profileId, method, path10, init = {}) {
+  async call(profileId, method, path13, init = {}) {
     const primary = this.opts.profiles.get(profileId);
     if (!primary) {
       throw new ApiAdapterError("API_PROFILE_NOT_ALLOWED", `Unbound API Profile: ${profileId}`, 403);
@@ -1055,7 +1391,7 @@ var ApiAdapter = class {
     for (let i = 0; i < chain.length; i++) {
       const profile = chain[i];
       try {
-        const out = await this.once(profile, method, path10, init, i > 0 ? primary.api_profile_id : void 0);
+        const out = await this.once(profile, method, path13, init, i > 0 ? primary.api_profile_id : void 0);
         return out;
       } catch (e) {
         const err = e instanceof ApiAdapterError ? e : new ApiAdapterError("API_ADAPTER_INTERNAL", String(e));
@@ -1065,7 +1401,7 @@ var ApiAdapter = class {
           api_profile_id: profile.api_profile_id,
           method,
           host: safeHost(profile.base_url),
-          path: path10,
+          path: path13,
           status: err.status,
           duration_ms: 0,
           error_code: `FALLBACK:${err.code}`,
@@ -1075,9 +1411,9 @@ var ApiAdapter = class {
     }
     throw last ?? new ApiAdapterError("API_ADAPTER_INTERNAL", "No API Profile available");
   }
-  async once(profile, method, path10, init, fallbackFrom) {
+  async once(profile, method, path13, init, fallbackFrom) {
     const started = Date.now();
-    const target = joinUrl(profile.base_url, path10) + (init.query ?? "");
+    const target = joinUrl(profile.base_url, path13) + (init.query ?? "");
     const url = new URL(target);
     try {
       await assertEgressAllowed(url, profile.egress, this.opts.egress);
@@ -1218,8 +1554,8 @@ var ApiAdapter = class {
     }
   }
 };
-function joinUrl(base, path10) {
-  return `${base.replace(/\/+$/, "")}/${path10.replace(/^\/+/, "")}`;
+function joinUrl(base, path13) {
+  return `${base.replace(/\/+$/, "")}/${path13.replace(/^\/+/, "")}`;
 }
 function sanitizeHeaders(input) {
   const out = {};
@@ -1272,13 +1608,20 @@ function safeHost(u) {
 
 // host-runtime/src/agent-runtime/agent-executor.ts
 import { randomBytes } from "node:crypto";
-import fs5 from "node:fs";
-import path5 from "node:path";
+import fs7 from "node:fs";
+import path8 from "node:path";
 
 // host-runtime/src/agent-runtime/stdio-adapter.ts
 import { spawn as spawn2 } from "node:child_process";
-import path3 from "node:path";
+import path6 from "node:path";
 import readline from "node:readline";
+
+// host-runtime/src/redact.ts
+function redact(line) {
+  return String(line).replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>").replace(/((?:secret|token|password|passwd|api[_-]?key)\s*[=:]\s*)[^\s,"'}]+/gi, "$1<redacted>").replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<redacted-private-key>");
+}
+
+// host-runtime/src/agent-runtime/stdio-adapter.ts
 var AdapterCrash = class extends Error {
   constructor(code, message) {
     super(message);
@@ -1313,7 +1656,7 @@ var StdioAdapter = class {
   nativePath(value) {
     const root = process.env.PLATFORM_NATIVE_ROOT;
     if (!root || !value.startsWith("/opt/platform/")) return value;
-    return path3.join(root, value.slice("/opt/platform/".length));
+    return path6.join(root, value.slice("/opt/platform/".length));
   }
   async start() {
     const [rawCmd, ...baseArgs] = this.profile.entrypoint;
@@ -1398,6 +1741,10 @@ var StdioAdapter = class {
       this.hooks.onEvent({ type, name: params.name, path: params.path });
       return;
     }
+    if (type === "outward") {
+      this.hooks.onEvent({ type, action: String(params.action ?? "external side effect") });
+      return;
+    }
     this.hooks.onLog(`Unknown agent.event type: ${type}`);
   }
   async handleToolRequest(msg) {
@@ -1478,9 +1825,6 @@ var StdioAdapter = class {
 `);
   }
 };
-function redact(line) {
-  return line.replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>").replace(/((?:secret|token|password|passwd|api[_-]?key)\s*[=:]\s*)[^\s,"'}]+/gi, "$1<redacted>").replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<redacted-private-key>");
-}
 
 // host-runtime/src/agent-runtime/http-local-adapter.ts
 var HttpLocalAdapter = class {
@@ -1546,8 +1890,8 @@ var HttpLocalAdapter = class {
 
 // host-runtime/src/agent-runtime/tool-policy.ts
 import { createHash as createHash2, timingSafeEqual } from "node:crypto";
-import fs4 from "node:fs";
-import path4 from "node:path";
+import fs6 from "node:fs";
+import path7 from "node:path";
 
 // host-runtime/src/agent-runtime/types.ts
 var TOOL_CATALOG = {
@@ -1681,16 +2025,16 @@ var ToolGuard = class {
     }
     if (input.tool_id === "workspace.write") {
       const rel = normalizeRel(String(args.path ?? ""));
-      const file = path4.join(this.opts.workspace, rel);
-      fs4.mkdirSync(path4.dirname(file), { recursive: true });
-      fs4.writeFileSync(file, String(args.content ?? ""), "utf8");
+      const file = path7.join(this.opts.workspace, rel);
+      fs6.mkdirSync(path7.dirname(file), { recursive: true });
+      fs6.writeFileSync(file, String(args.content ?? ""), "utf8");
       return { path: rel, bytes: Buffer.byteLength(String(args.content ?? "")) };
     }
     if (input.tool_id === "workspace.read") {
       const rel = normalizeRel(String(args.path ?? ""));
-      const file = path4.join(this.opts.workspace, rel);
-      if (!fs4.existsSync(file)) throw new Error(`File does not exist: ${rel}`);
-      return { path: rel, content: fs4.readFileSync(file, "utf8") };
+      const file = path7.join(this.opts.workspace, rel);
+      if (!fs6.existsSync(file)) throw new Error(`File does not exist: ${rel}`);
+      return { path: rel, content: fs6.readFileSync(file, "utf8") };
     }
     if (input.tool_id === "api.call") {
       if (!this.opts.apiCall) throw new Error("API Adapter is not started");
@@ -1774,9 +2118,9 @@ function assertInsideWorkspace(rel, workspace) {
   if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.split("/").includes("..")) {
     throw new ToolDenied("WORKSPACE_PATH_DENIED", `Path must be inside the workspace: ${rel}`, 4);
   }
-  const root = path4.resolve(workspace);
-  const target = path4.resolve(root, rel);
-  if (target !== root && !target.startsWith(`${root}${path4.sep}`)) {
+  const root = path7.resolve(workspace);
+  const target = path7.resolve(root, rel);
+  if (target !== root && !target.startsWith(`${root}${path7.sep}`)) {
     throw new ToolDenied("WORKSPACE_PATH_DENIED", `Path escapes the workspace: ${rel}`, 4);
   }
 }
@@ -1807,13 +2151,6 @@ function phaseFor(taskType) {
   if (taskType.startsWith("task.ticket.")) return taskType.split(".")[2].toUpperCase();
   return "EXECUTE";
 }
-function mediaFor(file) {
-  if (file.endsWith(".json")) return "application/json";
-  if (file.endsWith(".patch") || file.endsWith(".diff")) return "text/x-patch";
-  if (file.endsWith(".md")) return "text/markdown";
-  if (file.endsWith(".txt")) return "text/plain";
-  return "application/octet-stream";
-}
 function sanitizedTask(task) {
   return {
     task_id: task.task_id,
@@ -1822,98 +2159,96 @@ function sanitizedTask(task) {
     payload_ref: task.payload_ref,
     payload_schema: task.payload_schema,
     requirements: task.requirements,
+    // Continuity: a retried or resumed task starts with an empty workspace, so the Agent must know
+    // it is joining mid-task instead of assuming a fresh request.
+    attempt_number: task.attempt_number,
+    // Autonomy is execution policy, not scheduling: the adapter maps it onto provider flags.
+    approval_mode: task.approval_mode,
     deadline_at: task.deadline_at
   };
 }
-var MAX_ATTACHMENT_FILES = 16;
-var MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-var MAX_ATTACHMENT_TOTAL_BYTES = 128 * 1024 * 1024;
-function attachmentName(raw, index) {
-  const source = typeof raw === "string" ? raw.replace(/\\/g, "/") : "";
-  const base = path5.basename(source).replace(/[^\p{L}\p{N}._()\- ]/gu, "_").trim().slice(0, 120);
-  const name = base && base !== "." && base !== ".." ? base : `attachment-${index + 1}`;
-  return name.startsWith(".") ? `_${name}` : name;
+var MAX_UPSTREAM_FILES = 32;
+var MAX_UPSTREAM_BYTES = 64 * 1024 * 1024;
+var MAX_UPSTREAM_TOTAL_BYTES = 256 * 1024 * 1024;
+function extForMedia(media) {
+  const type = String(media ?? "").toLowerCase();
+  if (type.includes("json")) return ".json";
+  if (type.includes("markdown")) return ".md";
+  if (type.includes("x-patch") || type.includes("x-diff")) return ".patch";
+  if (type.includes("text/plain")) return ".txt";
+  if (type.includes("zip")) return ".zip";
+  if (type.includes("tar")) return ".tar";
+  if (type.startsWith("image/")) {
+    const sub = type.slice(6).split(";")[0].replace(/[^a-z0-9]/g, "");
+    return sub ? `.${sub}` : ".bin";
+  }
+  return ".bin";
 }
-async function loadAttachment(rec) {
-  let data = String(rec.data_base64 ?? "");
-  const comma = data.indexOf(",");
-  if (data.startsWith("data:") && comma >= 0) data = data.slice(comma + 1);
-  if (data) {
-    const buf2 = Buffer.from(data, "base64");
-    return buf2.length ? buf2 : null;
-  }
-  const rawUrl = typeof rec.url === "string" ? rec.url.trim() : "";
-  if (!rawUrl) return null;
-  let target;
-  try {
-    target = new URL(rawUrl);
-  } catch {
-    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Invalid attachment URL");
-  }
-  if (target.protocol !== "http:" && target.protocol !== "https:") {
-    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Attachment URL must use http or https");
-  }
-  let res;
-  try {
-    res = await fetch(target, {
-      signal: AbortSignal.timeout(12e4),
-      redirect: "error"
-    });
-  } catch (err) {
-    throw new TaskFailed(
-      "ATTACHMENT_FETCH_FAILED",
-      `Failed to fetch attachment: ${String(err?.message ?? err)}`
-    );
-  }
-  if (!res.ok) {
-    throw new TaskFailed("ATTACHMENT_FETCH_FAILED", `Failed to fetch attachment: HTTP ${res.status}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  return buf.length ? buf : null;
+function sanitizePart(value, fallback2, max) {
+  const cleaned = String(value ?? "").replace(/[^\p{L}\p{N}._-]+/gu, "_").replace(/^\.+/, "").slice(0, max);
+  return cleaned || fallback2;
 }
-async function materializeAttachments(task, workspaceDir) {
+async function materializeUpstreamArtifacts(task, ctx) {
   const requirements = task.requirements ?? {};
-  const build = requirements.build;
-  if (!build || typeof build !== "object") return task;
-  const list = build.attachments;
-  if (!Array.isArray(list) || list.length === 0) return task;
-  const dir = path5.join(workspaceDir, "attachments");
-  fs5.mkdirSync(dir, { recursive: true });
+  const raw = requirements.upstream_artifacts;
+  if (!Array.isArray(raw) || raw.length === 0) return task;
+  const dir = path8.join(ctx.workspaceDir, "upstream");
+  fs7.mkdirSync(dir, { recursive: true });
   const materialized = [];
+  const seen = /* @__PURE__ */ new Set();
   const used = /* @__PURE__ */ new Set();
   let total = 0;
-  for (let i = 0; i < list.length && materialized.length < MAX_ATTACHMENT_FILES; i++) {
-    const item = list[i];
+  for (let index = 0; index < raw.length; index++) {
+    const item = raw[index];
     if (!item || typeof item !== "object") continue;
-    const rec = item;
-    const buf = await loadAttachment(rec);
-    if (!buf) continue;
-    if (buf.length > MAX_ATTACHMENT_BYTES) {
-      throw new TaskFailed("ATTACHMENT_TOO_LARGE", "Attachment exceeds 32MiB");
+    const ref = item;
+    const id = typeof ref.artifact_id === "string" ? ref.artifact_id : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    if (materialized.length >= MAX_UPSTREAM_FILES) {
+      materialized.push({ ...ref, skipped: "too_many" });
+      continue;
+    }
+    let buf;
+    try {
+      buf = await fetchVerified(ctx, ref);
+    } catch (e) {
+      if (e instanceof TaskFailed) throw e;
+      throw new TaskFailed(
+        "UPSTREAM_ARTIFACT_FETCH_FAILED",
+        `Failed to download upstream artifact ${id}: ${String(e?.message ?? e)}`,
+        { artifact_id: id }
+      );
+    }
+    if (buf.length > MAX_UPSTREAM_BYTES) {
+      materialized.push({ ...ref, skipped: "too_large", size_bytes: buf.length });
+      continue;
+    }
+    if (total + buf.length > MAX_UPSTREAM_TOTAL_BYTES) {
+      materialized.push({ ...ref, skipped: "workspace_budget", size_bytes: buf.length });
+      continue;
     }
     total += buf.length;
-    if (total > MAX_ATTACHMENT_TOTAL_BYTES) break;
-    let name = attachmentName(rec.name, i);
+    const type = sanitizePart(ref.task_type, "artifact", 40);
+    const short = sanitizePart(id, `a${index}`, 24);
+    let name = `${index + 1}-${type}-${short}${extForMedia(ref.media_type)}`;
     if (used.has(name)) {
-      const ext = path5.extname(name);
-      const stem = name.slice(0, name.length - ext.length);
-      let n = 2;
-      while (used.has(`${stem}-${n}${ext}`)) n++;
-      name = `${stem}-${n}${ext}`;
+      const ext = path8.extname(name);
+      name = `${name.slice(0, name.length - ext.length)}-${index}${ext}`;
     }
-    const file = path5.join(dir, name);
-    if (!file.startsWith(dir + path5.sep)) continue;
+    const file = path8.join(dir, name);
+    if (!file.startsWith(dir + path8.sep)) continue;
     used.add(name);
-    fs5.writeFileSync(file, buf, { mode: 384 });
+    fs7.writeFileSync(file, buf, { mode: 384 });
     materialized.push({
-      name,
-      path: `attachments/${name}`,
-      media_type: typeof rec.media_type === "string" ? rec.media_type : "application/octet-stream",
-      size_bytes: buf.length
+      ...ref,
+      path: `upstream/${name}`,
+      size_bytes: buf.length,
+      verified: true
     });
   }
-  const nextBuild = { ...build, attachments: materialized };
-  return { ...task, requirements: { ...requirements, build: nextBuild } };
+  ctx.log(`Wrote ${materialized.filter((r) => typeof r.path === "string").length} upstream artifact(s) to workspace upstream/`);
+  return { ...task, requirements: { ...requirements, upstream_artifacts: materialized } };
 }
 function agentPassEnv() {
   return (process.env.PLATFORM_AGENT_PASS_ENV ?? "").split(",").map((s) => s.trim()).filter((s) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(s));
@@ -1964,10 +2299,19 @@ async function runAgentTask(task, ctx, opts) {
   const events = [];
   const artifactPaths = [];
   let artifactError = null;
+  const outward = /* @__PURE__ */ new Set();
+  const recordOutward = (action) => {
+    const label = action.trim().slice(0, 200);
+    if (!label || outward.has(label)) return;
+    outward.add(label);
+    ctx.outward?.(label);
+  };
   const hooks = {
     onEvent: (e) => {
       events.push(e);
-      if (e.type === "progress" && typeof e.percent === "number") {
+      if (e.type === "outward") {
+        recordOutward(String(e.action ?? "external side effect"));
+      } else if (e.type === "progress" && typeof e.percent === "number") {
         ctx.progress(e.percent, e.phase);
       } else if (e.type === "log") {
         ctx.log(`agent: ${redact(String(e.message ?? "")).slice(0, 2e3)}`);
@@ -2024,11 +2368,12 @@ async function runAgentTask(task, ctx, opts) {
     void adapter.cancel(String(ctx.signal.reason ?? "cancelled"));
   };
   ctx.signal.addEventListener("abort", onAbort, { once: true });
-  const agentTask = await materializeAttachments(task, ctx.workspaceDir);
+  let agentTask = await materializeAttachments(task, ctx.workspaceDir);
   if (agentTask !== task) {
     const count = agentTask.requirements.build.attachments;
     ctx.log(`Wrote ${count.length} attachments to workspace attachments/`);
   }
+  agentTask = await materializeUpstreamArtifacts(agentTask, ctx);
   try {
     await adapter.start();
     const prepared = await adapter.prepare(
@@ -2050,21 +2395,45 @@ async function runAgentTask(task, ctx, opts) {
     );
     if (aborted) throw new TaskAborted(ctx.signal.reason === "lease_lost" ? "lease_lost" : "cancelled");
     if (artifactError) throw artifactError;
+    for (const action of result?.outward_actions ?? []) recordOutward(String(action));
+    if (result?.status === "NEEDS_INPUT") {
+      const question = String(result.question ?? result.summary ?? "").trim();
+      if (!question) {
+        throw new TaskFailed("QUESTION_MISSING", "The agent asked for input without stating a question");
+      }
+      return {
+        summary: question.slice(0, 2e3),
+        question: question.slice(0, 8e3),
+        outward: [...outward]
+      };
+    }
+    if (result?.status === "SPLIT") {
+      const split = (result.split ?? []).filter((ch) => ch && typeof ch === "object");
+      if (!split.length) {
+        throw new TaskFailed("SPLIT_EMPTY", "The agent requested a split without any child task");
+      }
+      return {
+        summary: String(result.summary ?? `Split into ${split.length} child task(s)`),
+        split,
+        outward: [...outward]
+      };
+    }
     if (!result || result.status === "FAILED") {
       throw new TaskFailed(
         String(result?.error?.code ?? "AGENT_FAILED"),
-        String(result?.error?.message ?? result?.summary ?? "Agent returned a failure")
+        String(result?.error?.message ?? result?.summary ?? "Agent returned a failure"),
+        result?.error?.detail
       );
     }
     const outputs = [];
     for (const out of result.outputs ?? []) {
       const rel = out.path.replace(/^\.\/+/, "");
       assertInsideWorkspace(rel, ctx.workspaceDir);
-      const file = path5.join(ctx.workspaceDir, rel);
-      if (!fs5.existsSync(file)) {
+      const file = path8.join(ctx.workspaceDir, rel);
+      if (!fs7.existsSync(file)) {
         throw new TaskFailed("AGENT_OUTPUT_MISSING", `Artifact declared by the Agent does not exist: ${rel}`);
       }
-      const uploaded = await ctx.uploadArtifact(fs5.readFileSync(file), mediaFor(rel));
+      const uploaded = await ctx.uploadArtifact(fs7.readFileSync(file), mediaFor(rel));
       outputs.push({ name: out.name, ...uploaded });
     }
     for (const e of artifactPaths) {
@@ -2090,7 +2459,8 @@ async function runAgentTask(task, ctx, opts) {
     }
     return {
       summary: String(result.summary ?? `Agent ${profile.agent_profile_id} execution completed`),
-      outputs: outputsPayload
+      outputs: outputsPayload,
+      outward: [...outward]
     };
   } catch (e) {
     if (e instanceof TaskAborted || e instanceof TaskFailed) throw e;
@@ -2109,8 +2479,8 @@ async function runAgentTask(task, ctx, opts) {
 }
 
 // host-runtime/src/agent-runtime/profiles.ts
-import fs6 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path9 from "node:path";
 var ADAPTERS = {
   builder: ["stdio-jsonrpc", "http-local"],
   scheduler: ["stdio-jsonrpc", "http-local"]
@@ -2124,11 +2494,11 @@ var ProfileRejected = class extends Error {
   code;
 };
 function loadProfilesFile(file) {
-  const abs = path6.resolve(file);
-  if (!fs6.existsSync(abs)) {
+  const abs = path9.resolve(file);
+  if (!fs8.existsSync(abs)) {
     throw new Error(`Profile file not found: ${abs}`);
   }
-  const raw = JSON.parse(fs6.readFileSync(abs, "utf8"));
+  const raw = JSON.parse(fs8.readFileSync(abs, "utf8"));
   return raw;
 }
 function resolveInstanceProfiles(file, instance) {
@@ -2277,9 +2647,9 @@ var Agent = class {
   /** Tool/API audit: records only a digest, with no secrets, request bodies or full responses. */
   audit(file, record) {
     try {
-      const dir = path7.resolve(this.tuning.auditDir ?? "data/audit");
-      fs7.mkdirSync(dir, { recursive: true, mode: 448 });
-      fs7.appendFileSync(path7.join(dir, file), `${JSON.stringify(record)}
+      const dir = path10.resolve(this.tuning.auditDir ?? "data/audit");
+      fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs9.appendFileSync(path10.join(dir, file), `${JSON.stringify(record)}
 `, { mode: 384 });
     } catch (e) {
       this.log(`Audit write failed (${file}): ${e instanceof Error ? e.message : String(e)}`);
@@ -2502,8 +2872,8 @@ var Agent = class {
       this.log(`Starting ${a.task_id} (attempt ${a.attempt_number}, fencing ${a.fencing_token})`);
       const renewTimer = setInterval(() => void this.renew(a, proof, controller), this.tuning.leaseRenewSeconds * 1e3);
       const watchTimer = setInterval(() => void this.watch(a, proof, controller), this.tuning.progressSeconds * 1e3);
-      workspaceDir = path7.join(this.tuning.workspaceDir, a.attempt_id);
-      fs7.mkdirSync(workspaceDir, { recursive: true });
+      workspaceDir = path10.join(this.tuning.workspaceDir, a.attempt_id);
+      fs9.mkdirSync(workspaceDir, { recursive: true });
       const profiles = this.tuning.profiles;
       const useAgent = profiles ? supportsTask(profiles.agent, a.task_type) && !a.task_type.startsWith("task.console.") : false;
       if (useAgent) {
@@ -2511,6 +2881,7 @@ var Agent = class {
           `${a.task_id} executed by Agent ${profiles.agent.agent_profile_id}@${profiles.agent.version} (${profiles.agent.adapter})`
         );
       }
+      const outwardActions = /* @__PURE__ */ new Set();
       let outcome;
       try {
         const executor = useAgent ? (t, c) => runAgentTask(t, c, {
@@ -2527,8 +2898,15 @@ var Agent = class {
             void this.client.progress(a.attempt_id, { ...proof, percent, note }).catch(() => {
             });
           },
+          outward: (action) => {
+            const label = action.trim().slice(0, 200);
+            if (!label || outwardActions.has(label)) return;
+            outwardActions.add(label);
+            this.log(`  ${a.task_id}: outward action announced: ${label}`);
+            void this.client.progress(a.attempt_id, { ...proof, outward: [label] }).catch((err) => this.log(`  ${a.task_id}: outward report failed: ${String(err)}`));
+          },
           downloadArtifact: (artifactId) => this.client.downloadArtifactContent(artifactId),
-          uploadArtifact: async (content, mediaType = "application/octet-stream") => {
+          uploadArtifact: async (content, mediaType = "application/octet-stream", name) => {
             const buf = Buffer.isBuffer(content) ? content : Buffer.from(content);
             const sha2562 = `sha256:${createHash3("sha256").update(buf).digest("hex")}`;
             const meta = await this.client.createArtifact({
@@ -2536,27 +2914,50 @@ var Agent = class {
               attempt_id: a.attempt_id,
               sha256: sha2562,
               size_bytes: buf.length,
-              media_type: mediaType
+              media_type: mediaType,
+              name
             });
             if (!meta) throw new Error("Scheduler did not return an artifact record");
             await this.client.uploadArtifactContent(meta.artifact_id, buf);
             await this.client.completeArtifact(meta.artifact_id);
-            this.log(`  ${a.task_id}: artifact ${meta.artifact_id} verified (${sha2562.slice(0, 19)}\u2026)`);
-            return { artifact_id: meta.artifact_id, sha256: sha2562, size_bytes: buf.length };
+            this.log(
+              `  ${a.task_id}: artifact ${meta.artifact_id} verified (${sha2562.slice(0, 19)}\u2026)${name ? ` name=${name}` : ""}`
+            );
+            return { artifact_id: meta.artifact_id, sha256: sha2562, size_bytes: buf.length, ...name ? { name } : {} };
           }
         });
       } catch (e) {
-        await this.handleExecError(a, proof, e);
+        await this.handleExecError(a, proof, e, [...outwardActions]);
         return;
       } finally {
         clearInterval(renewTimer);
         clearInterval(watchTimer);
       }
+      for (const action of outcome.outward ?? []) outwardActions.add(action);
+      if (outcome.question) {
+        await this.client.result(a.attempt_id, {
+          ...proof,
+          status: "NEEDS_INPUT",
+          summary: outcome.summary,
+          question: outcome.question,
+          outward_actions: [...outwardActions]
+        });
+        this.log(`${a.task_id} waiting for input: ${outcome.question.slice(0, 160)}`);
+        return;
+      }
+      if (outcome.split?.length) {
+        const out = await this.client.split(a.task_id, { ...proof, children: outcome.split });
+        this.log(
+          `${a.task_id} split into ${out?.children?.length ?? outcome.split.length} child task(s): ${(out?.children ?? []).join(", ")}`
+        );
+        return;
+      }
       const r = await this.client.result(a.attempt_id, {
         ...proof,
         status: "SUCCEEDED",
         summary: outcome.summary,
-        outputs: outcome.outputs
+        outputs: outcome.outputs,
+        outward_actions: [...outwardActions]
       });
       this.log(`Finished ${a.task_id}: ${outcome.summary}${describeResult(r)}`);
     } catch (e) {
@@ -2568,7 +2969,7 @@ var Agent = class {
     } finally {
       if (workspaceDir && !this.tuning.keepWorkspace) {
         try {
-          fs7.rmSync(workspaceDir, { recursive: true, force: true });
+          fs9.rmSync(workspaceDir, { recursive: true, force: true });
         } catch (e) {
           this.log(`${a.task_id} workspace cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -2581,10 +2982,15 @@ var Agent = class {
       this.running.delete(a.attempt_id);
     }
   }
-  async handleExecError(a, proof, e) {
+  async handleExecError(a, proof, e, outward = []) {
     if (e instanceof TaskAborted) {
       if (e.reason === "cancelled") {
-        await this.client.result(a.attempt_id, { ...proof, status: "CANCELLED", summary: "Stopped on cancellation request" }).catch(() => {
+        await this.client.result(a.attempt_id, {
+          ...proof,
+          status: "CANCELLED",
+          summary: "Stopped on cancellation request",
+          outward_actions: outward
+        }).catch(() => {
         });
         this.log(`${a.task_id} stopped on cancellation request`);
       } else if (e.reason === "lease_lost") {
@@ -2596,7 +3002,13 @@ var Agent = class {
     }
     const code = e instanceof TaskFailed ? e.code : "EXECUTOR_ERROR";
     const message = e instanceof Error ? e.message : String(e);
-    await this.client.result(a.attempt_id, { ...proof, status: "FAILED", error: { code, message } }).catch((err) => this.log(`${a.task_id} failed to report the failure result: ${String(err)}`));
+    const detail = e instanceof TaskFailed ? e.detail : void 0;
+    await this.client.result(a.attempt_id, {
+      ...proof,
+      status: "FAILED",
+      error: { code, message, ...detail === void 0 ? {} : { detail } },
+      outward_actions: outward
+    }).catch((err) => this.log(`${a.task_id} failed to report the failure result: ${String(err)}`));
     this.log(`${a.task_id} failed (${code}): ${message}`);
   }
   async renew(a, proof, controller) {
@@ -2658,8 +3070,8 @@ function describeResult(r) {
 }
 
 // host-runtime/src/config.ts
-import fs8 from "node:fs";
-import path8 from "node:path";
+import fs10 from "node:fs";
+import path11 from "node:path";
 var DEFAULTS = {
   scheduler_url: "http://127.0.0.1:7801",
   heartbeat_seconds: 10,
@@ -2699,11 +3111,11 @@ function secondsEnv(name) {
 }
 function loadConfig(configPath) {
   const file = configPath ?? process.env.RUNTIME_CONFIG ?? "runtime.config.json";
-  const abs = path8.resolve(file);
-  if (!fs8.existsSync(abs)) {
+  const abs = path11.resolve(file);
+  if (!fs10.existsSync(abs)) {
     throw new Error(`Config file not found: ${abs} (copy one from runtime.config.example.json)`);
   }
-  const raw = JSON.parse(fs8.readFileSync(abs, "utf8"));
+  const raw = JSON.parse(fs10.readFileSync(abs, "utf8"));
   const cfg2 = {
     ...DEFAULTS,
     ...raw,
@@ -2722,7 +3134,7 @@ function loadConfig(configPath) {
     throw new Error("scheduler_client_cert_file and scheduler_client_key_file must be configured together");
   }
   for (const f of [cfg2.scheduler_ca_file, cfg2.scheduler_client_cert_file, cfg2.scheduler_client_key_file]) {
-    if (f && !fs8.existsSync(f)) throw new Error(`TLS file not found: ${f}`);
+    if (f && !fs10.existsSync(f)) throw new Error(`TLS file not found: ${f}`);
   }
   return cfg2;
 }
@@ -2750,10 +3162,10 @@ if (instances.length === 0) {
 var tokenDir = process.env.INSTANCE_TOKEN_DIR ?? cfg.token_dir;
 function tokenFor(instanceId) {
   if (tokenDir) {
-    const file = path9.join(path9.resolve(tokenDir), `${instanceId}.jwt`);
+    const file = path12.join(path12.resolve(tokenDir), `${instanceId}.jwt`);
     return () => {
       try {
-        const jwt = fs9.readFileSync(file, "utf8").trim();
+        const jwt = fs11.readFileSync(file, "utf8").trim();
         if (jwt) return jwt;
       } catch {
       }
@@ -2765,7 +3177,7 @@ function tokenFor(instanceId) {
 var profilesFile = null;
 if (cfg.profiles_file) {
   profilesFile = loadProfilesFile(cfg.profiles_file);
-  console.log(`Profile file: ${path9.resolve(cfg.profiles_file)}`);
+  console.log(`Profile file: ${path12.resolve(cfg.profiles_file)}`);
 }
 function profilesFor(i) {
   if (!profilesFile) return void 0;
@@ -2800,14 +3212,14 @@ var agents = instances.map((i) => {
     progressSeconds: cfg.progress_seconds,
     configSyncSeconds: cfg.config_sync_seconds,
     hostAdmissionSocket: cfg.host_admission_socket,
-    workspaceDir: path9.resolve(cfg.workspace_dir ?? "data/workspace"),
+    workspaceDir: path12.resolve(cfg.workspace_dir ?? "data/workspace"),
     keepWorkspace: cfg.keep_workspace ?? false,
     profiles,
     secretStoreUrl: process.env.SECRET_STORE_URL ?? cfg.secret_store_url,
     instanceToken: tokenFor(i.instance_id),
     egressPolicies: cfg.egress_policies ?? {},
     allowLoopbackEgress: cfg.allow_loopback_egress ?? false,
-    auditDir: path9.resolve(cfg.audit_dir ?? "data/audit")
+    auditDir: path12.resolve(cfg.audit_dir ?? "data/audit")
   });
 });
 console.log(`Scheduler ${cfg.scheduler_url}; starting ${agents.length} instances: ${instances.map((i) => i.instance_id).join(", ")}`);

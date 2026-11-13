@@ -8,7 +8,9 @@ import type { RuntimeProfiles } from "./profiles.js";
 import { AdapterCrash, StdioAdapter, redact, type AdapterEvent } from "./stdio-adapter.js";
 import { HttpLocalAdapter } from "./http-local-adapter.js";
 import { ToolDenied, ToolGuard, assertInsideWorkspace, type ToolAuditRecord } from "./tool-policy.js";
+import { fetchVerified, type UpstreamRef } from "../roles/common.js";
 import type { ApiProfile } from "./types.js";
+import { materializeAttachments, mediaFor } from "./files.js";
 
 export interface AgentExecutionOptions {
   profiles: RuntimeProfiles;
@@ -26,14 +28,6 @@ function phaseFor(taskType: string): string {
   return "EXECUTE";
 }
 
-function mediaFor(file: string): string {
-  if (file.endsWith(".json")) return "application/json";
-  if (file.endsWith(".patch") || file.endsWith(".diff")) return "text/x-patch";
-  if (file.endsWith(".md")) return "text/markdown";
-  if (file.endsWith(".txt")) return "text/plain";
-  return "application/octet-stream";
-}
-
 function sanitizedTask(task: Assignment) {
   // Only business fields are given to the Adapter; scheduling semantics such as lease, fencing and host do not enter the Agent context
   return {
@@ -43,122 +37,130 @@ function sanitizedTask(task: Assignment) {
     payload_ref: task.payload_ref,
     payload_schema: task.payload_schema,
     requirements: task.requirements,
+    // Continuity: a retried or resumed task starts with an empty workspace, so the Agent must know
+    // it is joining mid-task instead of assuming a fresh request.
+    attempt_number: task.attempt_number,
+    // Autonomy is execution policy, not scheduling: the adapter maps it onto provider flags.
+    approval_mode: task.approval_mode,
     deadline_at: task.deadline_at,
   };
 }
 
-/** Attachment limits: the task request body already has a limit; this adds another layer so an abnormal payload cannot fill the workspace. */
-const MAX_ATTACHMENT_FILES = 16;
-const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-const MAX_ATTACHMENT_TOTAL_BYTES = 128 * 1024 * 1024;
+/**
+ * Upstream artifact limits. A resumed fan-out parent may receive the artifacts of many children;
+ * the caps keep one bad tree from filling the disk. Entries over a cap are still listed for the
+ * Agent with a `skipped` marker instead of silently disappearing.
+ */
+const MAX_UPSTREAM_FILES = 32;
+const MAX_UPSTREAM_BYTES = 64 * 1024 * 1024;
+const MAX_UPSTREAM_TOTAL_BYTES = 256 * 1024 * 1024;
 
-function attachmentName(raw: unknown, index: number): string {
-  const source = typeof raw === "string" ? raw.replace(/\\/g, "/") : "";
-  const base = path
-    .basename(source)
-    .replace(/[^\p{L}\p{N}._()\- ]/gu, "_")
-    .trim()
-    .slice(0, 120);
-  const name = base && base !== "." && base !== ".." ? base : `attachment-${index + 1}`;
-  return name.startsWith(".") ? `_${name}` : name;
+/** Best-effort extension from the media type; the Agent may still open the file by path alone. */
+function extForMedia(media: unknown): string {
+  const type = String(media ?? "").toLowerCase();
+  if (type.includes("json")) return ".json";
+  if (type.includes("markdown")) return ".md";
+  if (type.includes("x-patch") || type.includes("x-diff")) return ".patch";
+  if (type.includes("text/plain")) return ".txt";
+  if (type.includes("zip")) return ".zip";
+  if (type.includes("tar")) return ".tar";
+  if (type.startsWith("image/")) {
+    const sub = type.slice(6).split(";")[0].replace(/[^a-z0-9]/g, "");
+    return sub ? `.${sub}` : ".bin";
+  }
+  return ".bin";
 }
 
-/** Fetch attachment content: prefer the control plane's one-time URL, with compatibility for base64 in older tasks. */
-async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | null> {
-  let data = String(rec.data_base64 ?? "");
-  const comma = data.indexOf(",");
-  if (data.startsWith("data:") && comma >= 0) data = data.slice(comma + 1);
-  if (data) {
-    const buf = Buffer.from(data, "base64");
-    return buf.length ? buf : null;
-  }
-  const rawUrl = typeof rec.url === "string" ? rec.url.trim() : "";
-  if (!rawUrl) return null;
-  let target: URL;
-  try {
-    target = new URL(rawUrl);
-  } catch {
-    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Invalid attachment URL");
-  }
-  // Only http(s) is allowed; a task URL should not lead the builder to schemes such as file:/gopher:.
-  if (target.protocol !== "http:" && target.protocol !== "https:") {
-    throw new TaskFailed("ATTACHMENT_URL_INVALID", "Attachment URL must use http or https");
-  }
-  let res: Response;
-  try {
-    res = await fetch(target, {
-      signal: AbortSignal.timeout(120_000),
-      redirect: "error",
-    });
-  } catch (err: any) {
-    throw new TaskFailed(
-      "ATTACHMENT_FETCH_FAILED",
-      `Failed to fetch attachment: ${String(err?.message ?? err)}`,
-    );
-  }
-  if (!res.ok) {
-    throw new TaskFailed("ATTACHMENT_FETCH_FAILED", `Failed to fetch attachment: HTTP ${res.status}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  return buf.length ? buf : null;
+/** Artifact ids and task types come from the scheduler, but a filename must never be able to escape the directory. */
+function sanitizePart(value: unknown, fallback: string, max: number): string {
+  const cleaned = String(value ?? "")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+    .replace(/^\.+/, "")
+    .slice(0, max);
+  return cleaned || fallback;
 }
 
 /**
- * Materialize task attachments under <workspace>/attachments/, then hand the paths to the Agent.
+ * Download the artifacts handed over by upstream / sibling tasks into <workspace>/upstream/.
  *
- * Attachment content enters memory only at this step; the Agent receives file paths and metadata. Large files are downloaded
- * via the control plane's one-time URL, keeping the task JSON itself small.
+ * A fan-out parent is resumed on a fresh builder with an empty workspace: the scheduler only has
+ * references (artifact_id + digest), so without this step the Agent can read the children's
+ * summaries but not their output. Every download is re-verified against the handoff digest
+ * (roles/common.fetchVerified); a mismatch fails the attempt instead of feeding the Agent
+ * unverified content. Entries that do not fit the workspace budget stay in the list with a
+ * `skipped` marker so the Agent knows what is missing.
  */
-async function materializeAttachments(
+async function materializeUpstreamArtifacts(
   task: Assignment,
-  workspaceDir: string,
+  ctx: ExecContext,
 ): Promise<Assignment> {
   const requirements = task.requirements ?? {};
-  const build = requirements.build;
-  if (!build || typeof build !== "object") return task;
-  const list = (build as Record<string, unknown>).attachments;
-  if (!Array.isArray(list) || list.length === 0) return task;
+  const raw = requirements.upstream_artifacts;
+  if (!Array.isArray(raw) || raw.length === 0) return task;
 
-  const dir = path.join(workspaceDir, "attachments");
+  const dir = path.join(ctx.workspaceDir, "upstream");
   fs.mkdirSync(dir, { recursive: true });
   const materialized: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
   const used = new Set<string>();
   let total = 0;
 
-  for (let i = 0; i < list.length && materialized.length < MAX_ATTACHMENT_FILES; i++) {
-    const item = list[i];
+  for (let index = 0; index < raw.length; index++) {
+    const item = raw[index];
     if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const buf = await loadAttachment(rec);
-    if (!buf) continue;
-    if (buf.length > MAX_ATTACHMENT_BYTES) {
-      throw new TaskFailed("ATTACHMENT_TOO_LARGE", "Attachment exceeds 32MiB");
+    const ref = item as Record<string, unknown>;
+    const id = typeof ref.artifact_id === "string" ? ref.artifact_id : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+
+    if (materialized.length >= MAX_UPSTREAM_FILES) {
+      materialized.push({ ...ref, skipped: "too_many" });
+      continue;
+    }
+
+    let buf: Buffer;
+    try {
+      buf = await fetchVerified(ctx, ref as unknown as UpstreamRef);
+    } catch (e) {
+      if (e instanceof TaskFailed) throw e;
+      throw new TaskFailed(
+        "UPSTREAM_ARTIFACT_FETCH_FAILED",
+        `Failed to download upstream artifact ${id}: ${String((e as any)?.message ?? e)}`,
+        { artifact_id: id },
+      );
+    }
+
+    if (buf.length > MAX_UPSTREAM_BYTES) {
+      materialized.push({ ...ref, skipped: "too_large", size_bytes: buf.length });
+      continue;
+    }
+    if (total + buf.length > MAX_UPSTREAM_TOTAL_BYTES) {
+      materialized.push({ ...ref, skipped: "workspace_budget", size_bytes: buf.length });
+      continue;
     }
     total += buf.length;
-    if (total > MAX_ATTACHMENT_TOTAL_BYTES) break;
 
-    let name = attachmentName(rec.name, i);
+    const type = sanitizePart(ref.task_type, "artifact", 40);
+    const short = sanitizePart(id, `a${index}`, 24);
+    let name = `${index + 1}-${type}-${short}${extForMedia(ref.media_type)}`;
     if (used.has(name)) {
       const ext = path.extname(name);
-      const stem = name.slice(0, name.length - ext.length);
-      let n = 2;
-      while (used.has(`${stem}-${n}${ext}`)) n++;
-      name = `${stem}-${n}${ext}`;
+      name = `${name.slice(0, name.length - ext.length)}-${index}${ext}`;
     }
     const file = path.join(dir, name);
     if (!file.startsWith(dir + path.sep)) continue;
     used.add(name);
     fs.writeFileSync(file, buf, { mode: 0o600 });
     materialized.push({
-      name,
-      path: `attachments/${name}`,
-      media_type: typeof rec.media_type === "string" ? rec.media_type : "application/octet-stream",
+      ...ref,
+      path: `upstream/${name}`,
       size_bytes: buf.length,
+      verified: true,
     });
   }
 
-  const nextBuild = { ...(build as Record<string, unknown>), attachments: materialized };
-  return { ...task, requirements: { ...requirements, build: nextBuild } };
+  ctx.log(`Wrote ${materialized.filter((r) => typeof r.path === "string").length} upstream artifact(s) to workspace upstream/`);
+  return { ...task, requirements: { ...requirements, upstream_artifacts: materialized } };
 }
 
 /**
@@ -244,10 +246,21 @@ export async function runAgentTask(
   const events: AdapterEvent[] = [];
   const artifactPaths: Array<{ name: string; path: string }> = [];
   let artifactError: TaskFailed | null = null;
+  // Outward actions are forwarded the moment they are announced, before the side effect happens;
+  // the set is only used to de-duplicate the report at the end.
+  const outward = new Set<string>();
+  const recordOutward = (action: string) => {
+    const label = action.trim().slice(0, 200);
+    if (!label || outward.has(label)) return;
+    outward.add(label);
+    ctx.outward?.(label);
+  };
   const hooks = {
     onEvent: (e: AdapterEvent) => {
       events.push(e);
-      if (e.type === "progress" && typeof e.percent === "number") {
+      if (e.type === "outward") {
+        recordOutward(String(e.action ?? "external side effect"));
+      } else if (e.type === "progress" && typeof e.percent === "number") {
         ctx.progress(e.percent, e.phase);
       } else if (e.type === "log") {
         ctx.log(`agent: ${redact(String(e.message ?? "")).slice(0, 2000)}`);
@@ -313,11 +326,14 @@ export async function runAgentTask(
   };
   ctx.signal.addEventListener("abort", onAbort, { once: true });
 
-  const agentTask = await materializeAttachments(task, ctx.workspaceDir);
+  let agentTask = await materializeAttachments(task, ctx.workspaceDir);
   if (agentTask !== task) {
     const count = (agentTask.requirements.build as Record<string, unknown>).attachments as unknown[];
     ctx.log(`Wrote ${count.length} attachments to workspace attachments/`);
   }
+  // Fan-out handoff: a resumed parent runs on a fresh builder, so children's artifacts must be
+  // fetched here before the Agent starts, not left as references it cannot resolve.
+  agentTask = await materializeUpstreamArtifacts(agentTask, ctx);
 
   try {
     await adapter.start();
@@ -342,10 +358,37 @@ export async function runAgentTask(
     );
     if (aborted) throw new TaskAborted(ctx.signal.reason === "lease_lost" ? "lease_lost" : "cancelled");
     if (artifactError) throw artifactError;
+    // Actions the adapter only knew about at the end still go through the same report path.
+    for (const action of result?.outward_actions ?? []) recordOutward(String(action));
+
+    if (result?.status === "NEEDS_INPUT") {
+      const question = String(result.question ?? result.summary ?? "").trim();
+      if (!question) {
+        throw new TaskFailed("QUESTION_MISSING", "The agent asked for input without stating a question");
+      }
+      return {
+        summary: question.slice(0, 2000),
+        question: question.slice(0, 8000),
+        outward: [...outward],
+      };
+    }
+    if (result?.status === "SPLIT") {
+      const split = (result.split ?? []).filter((ch) => ch && typeof ch === "object");
+      if (!split.length) {
+        throw new TaskFailed("SPLIT_EMPTY", "The agent requested a split without any child task");
+      }
+      return {
+        summary: String(result.summary ?? `Split into ${split.length} child task(s)`),
+        split,
+        outward: [...outward],
+      };
+    }
     if (!result || result.status === "FAILED") {
+      // The error detail may carry the provider's reset time; the scheduler decides what to do with it.
       throw new TaskFailed(
         String(result?.error?.code ?? "AGENT_FAILED"),
         String(result?.error?.message ?? result?.summary ?? "Agent returned a failure"),
+        result?.error?.detail,
       );
     }
 
@@ -389,6 +432,7 @@ export async function runAgentTask(
     return {
       summary: String(result.summary ?? `Agent ${profile.agent_profile_id} execution completed`),
       outputs: outputsPayload,
+      outward: [...outward],
     };
   } catch (e) {
     if (e instanceof TaskAborted || e instanceof TaskFailed) throw e;

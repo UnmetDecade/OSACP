@@ -1,4 +1,4 @@
-import type { AgentProfile, ApiProfile, Fleet, Host, Instance, LogEntry, Task } from "./types";
+import type { AgentProfile, ApiProfile, Fleet, Host, Instance, LogEntry, Sideload, Task } from "./types";
 
 /**
  * Runtime data store: pages read only; live sync writes to it.
@@ -13,4 +13,6 @@ export const db = {
   logs: [] as LogEntry[],
   /** Control plane federation tree (ΣW / fold relationships); keep the last result when the control plane is unreachable. */
   fleet: { hosts: [], total_score: 0, generated_at: "" } as Fleet,
+  /** Per-host curl tokens; the studio filters them to the current host and never shows another host's. */
+  sideloads: [] as Sideload[],
 };

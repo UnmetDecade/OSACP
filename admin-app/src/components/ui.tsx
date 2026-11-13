@@ -73,6 +73,8 @@ const TONES: Record<string, string> = {
   WARNING: "warn",
   SUSPECT: "warn",
   WAITING_APPROVAL: "warn",
+  NEEDS_INPUT: "warn",
+  WAITING_CHILDREN: "warn",
   DRAINING: "warn",
   MEDIUM: "warn",
   THROTTLED: "warn",
@@ -118,6 +120,8 @@ const LABELS: Record<string, string> = {
   REJECTED: "已拒绝",
   EXPIRED: "已过期",
   WAITING_APPROVAL: "等待审批",
+  NEEDS_INPUT: "等待回答",
+  WAITING_CHILDREN: "等待子任务",
 };
 
 export function Badge({ value, text }: { value: string; text?: string }) {

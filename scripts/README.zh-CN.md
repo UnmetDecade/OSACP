@@ -27,6 +27,7 @@ v3 时代的四角色闭环、审批、TLS/备份/压力验收脚本已随角色
 | `load-test.mjs` | 向调度机提交 N 个 `task.build`，统计 p50/p95/max、吞吐，采样 `/proc/meminfo`、`VmRSS` 与 `oom_kill` |
 | `p4-mock-upstream.mjs` | P4 验收用的本地 API 上游，带鉴权与配额行为 |
 | `seed-cli-agents.mjs` | 把 Claude Code / Codex 的 CLI Agent Profile 注册到 PCS；`--dry-run` 只打印，`--bind <instance>:<provider>` 创建后绑定。镜像必须 digest 固定且在 PCS 白名单内 |
+| `sideload-project.mjs` | 用侧载令牌在构建机上执行命令并双向传文件：`--upload` 送入输入，`--collect` 通过调度机制品通道取回任意格式的产物（含 SHA-256 校验，不受 256 KiB stdout 上限限制） |
 | `../agents/test-cli-agent.mjs` | CLI Agent 适配器的协议级测试（stub CLI，不需要真实模型或凭据） |
 
 ### load-test 环境变量

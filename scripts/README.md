@@ -27,6 +27,7 @@ The four-role loop, approval, and TLS/backup/load acceptance scripts from the v3
 | `load-test.mjs` | Submit N `task.build` tasks to the scheduler, report p50/p95/max and throughput, and sample `/proc/meminfo`, `VmRSS`, and `oom_kill` |
 | `p4-mock-upstream.mjs` | Local API upstream for P4 acceptance, with authentication and quota behavior |
 | `seed-cli-agents.mjs` | Register the Claude Code / Codex CLI Agent Profiles with PCS; `--dry-run` only prints, and `--bind <instance>:<provider>` binds after creation. The image must be pinned by digest and be in the PCS allowlist |
+| `sideload-project.mjs` | Run a shell command on a builder through a sideload token and move files both ways: `--upload` sends inputs, `--collect` brings arbitrary-format outputs back through the scheduler's artifact channel (SHA-256 verified, no 256 KiB stdout limit) |
 | `../agents/test-cli-agent.mjs` | Protocol-level tests for the CLI Agent adapter (stub CLI, no real model or credentials needed) |
 
 ### load-test Environment Variables

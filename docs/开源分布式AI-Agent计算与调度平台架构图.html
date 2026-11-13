@@ -55,9 +55,9 @@
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
-    height: 26px; padding: 0 10px; border-radius: 999px;
+    height: 26px; padding: 0 9px; border-radius: 999px;
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--text-2); font-size: 11.5px;
+    color: var(--text-2); font-size: 11.2px;
   }
   .chip.accent { background: var(--accent-soft); border-color: #dcdcf8; color: #4b4cc4; }
   .chip.green { background: var(--green-soft); border-color: #cfeee1; color: #217a55; }
@@ -145,12 +145,13 @@
 <div class="wrap">
 
   <header>
-    <div class="eyebrow"><i></i>平台架构 · v4.3 · 2026-11-12</div>
+    <div class="eyebrow"><i></i>平台架构 · v4.5 · 2026-11-13</div>
     <h1>多节点 AI Agent 计算与调度平台</h1>
     <p class="lede">
       PCS 控制面管理主机、部署与 Agent / API 档案，密钥只保存 Secret Store 引用；
       主机侧 host-runtime 执行签名命令；调度机按递归树派发任务，结点调度机逐级汇总能力；
       主机可以并入另一台主机组成联邦，跨调度机的任务只下推、不复制。
+      局域网设备可以拿侧载令牌走同一条任务链路，每个任务都能通过附件与产物通道收发文件。
     </p>
     <div class="chips">
       <span class="chip accent">控制面 PCS</span>
@@ -160,6 +161,8 @@
       <span class="chip">Agent / API 档案</span>
       <span class="chip">Secret Store</span>
       <span class="chip">MCP builders</span>
+      <span class="chip">侧载令牌</span>
+      <span class="chip">附件 / 产物</span>
       <span class="chip">工作能力值 W</span>
       <span class="chip">任务难度 D</span>
       <span class="chip">能力汇总 ΣW</span>
@@ -197,6 +200,14 @@
         <path class="edge-strong" d="M300,125 H400"/>
         <text class="lbl" x="350" y="112" text-anchor="middle">HTTPS</text>
 
+        <!-- LAN device with a sideload token -->
+        <rect class="node" x="40" y="196" width="190" height="76" rx="12"/>
+        <text class="t2" x="56" y="220">局域网设备 · 侧载</text>
+        <text class="s2" x="56" y="242">curl · sdl_ 令牌 · 权限</text>
+        <text class="s2" x="56" y="262" fill="#8a8d99">附件 ↔ 产物</text>
+        <path class="edge-strong" d="M230,210 H400"/>
+        <text class="lbl" x="311" y="202" text-anchor="middle">HTTPS · sdl_</text>
+
         <!-- PCS -->
         <rect class="hostcard" x="400" y="40" width="1160" height="180" rx="14"/>
         <text class="h1s" x="424" y="72">PCS 控制面</text>
@@ -233,7 +244,7 @@
         <text class="s2" x="1370" y="180" fill="#8a8d99">全部操作可回溯</text>
 
         <!-- PCS -> hosts -->
-        <path class="edge-arrow" d="M540,220 V250 H234 V278"/>
+        <path class="edge-arrow" d="M540,220 V250 H330 V278"/>
         <path class="edge-arrow" d="M902,220 V250 H994 V278"/>
         <text class="lbl" x="650" y="268">出站长轮询 · 签名命令幂等</text>
 
@@ -251,8 +262,8 @@
         <rect class="node pcs" x="404" y="354" width="170" height="112" rx="10"/>
         <text class="t2" x="420" y="380">scheduler</text>
         <text class="s2" x="420" y="402">根调度机 :8443</text>
-        <text class="s2" x="420" y="424">任务 · 租约 · 调度 Agent</text>
-        <text class="s2" x="420" y="446" fill="#8a8d99">MCP builders → 构建机</text>
+        <text class="s2" x="420" y="424">任务 · 租约 · 控制台任务</text>
+        <text class="s2" x="420" y="446" fill="#8a8d99">文件收发 · MCP builders</text>
 
         <rect class="node builder" x="594" y="354" width="186" height="112" rx="10"/>
         <text class="t2" x="610" y="380">builder × N</text>
@@ -282,6 +293,7 @@
         <text class="s2" x="1380" y="446" fill="#8a8d99">MCP builders → 构建机</text>
 
         <text class="s2" x="60" y="515" fill="#8a8d99">PCS 不直接调用 Docker；私钥只用于探测与一次性引导。容器 sshd 只接受部署时注入的主机登录公钥（root，密钥登录）。</text>
+        <text class="s2" x="60" y="531" fill="#8a8d99">侧载不是 Agent：设备只连 PCS，由 PCS 解析主机根调度机；令牌看不到调度机地址与实例凭据。</text>
       </svg>
     </div>
   </section>
@@ -636,6 +648,18 @@
     <article class="card">
       <h3><i>12</i>调度 Agent 与 MCP</h3>
       <p>派发仍由确定性调度循环完成；调度 Agent 只解释队列、租约与「为什么这条在等」。它通过调度机本地 MCP 服务 <code>builders</code> 调用 <code>list_builders</code>、<code>builder_exec</code>、<code>builder_ask</code>、<code>task_status</code> 查看或操作构建机，不进入任务派发路径。</p>
+    </article>
+    <article class="card">
+      <h3><i>13</i>侧载令牌</h3>
+      <p>侧载是绑定到单台主机的 curl 令牌，不是 Agent：<code>设备 → PCS → 主机根调度机</code>，复用同一套任务、租约与 fencing 路径。权限是封闭集合（<code>tasks:read</code>、<code>tasks:write</code>、<code>builders:read</code>、<code>queue:read</code>、<code>console:run</code>）；平台只存 SHA-256 哈希与末四位。</p>
+    </article>
+    <article class="card">
+      <h3><i>14</i>文件收发</h3>
+      <p>附件经 <code>POST /attachments</code> 上传（单个 24 MiB），命令执行前落到 <code>&lt;workspace&gt;/attachments/</code>。任务用 <code>requirements.console.collect</code> 收集工作区（32 个路径 / 128 个文件，单文件 64 MiB、合计 256 MiB），逐字节进入产物通道并重算 SHA-256；下载同样是原始字节。</p>
+    </article>
+    <article class="card">
+      <h3><i>15</i>信任边界</h3>
+      <p>明文令牌只展示一次；删除或到期在下一次请求即生效。在线状态最多 30 秒写一次，界面 120 秒内算在线。侧载能看到的构建机就是主机根调度机的子树，也正是任务实际能跑的范围。</p>
     </article>
   </div>
 

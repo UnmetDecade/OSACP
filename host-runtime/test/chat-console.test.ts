@@ -35,7 +35,7 @@ function assignment(partial: Partial<Assignment> = {}): Assignment {
   };
 }
 
-function makeCtx(workspaceDir = BASE): ExecContext {
+function makeCtx(workspaceDir = BASE, overrides: Partial<ExecContext> = {}): ExecContext {
   return {
     signal: new AbortController().signal,
     instanceId: "builder-ubuntu22-a",
@@ -48,6 +48,7 @@ function makeCtx(workspaceDir = BASE): ExecContext {
     async downloadArtifact() {
       return { data: Buffer.from(""), sha256: "sha256:x", media_type: "application/octet-stream" };
     },
+    ...overrides,
   };
 }
 
@@ -152,5 +153,98 @@ describe("console executor (full shell)", () => {
   it("console tasks are never routed to external Agents", () => {
     assert.equal(mustUseDeterministicExecutor("task.console.builder"), true);
     assert.equal(mustUseDeterministicExecutor("task.chat.builder"), false);
+  });
+});
+
+describe("console file channel", () => {
+  it("materializes input attachments before running the command", async () => {
+    const dir = fs.mkdtempSync(path.join(BASE, "attach-"));
+    const out = await consoleExecutorFor("builder")(
+      assignment({
+        task_type: "task.console.builder",
+        requirements: {
+          console: {
+            command: "cat attachments/notes.txt",
+            attachments: [
+              {
+                name: "notes.txt",
+                media_type: "text/plain",
+                data_base64: Buffer.from("hello from an attachment\n").toString("base64"),
+              },
+            ],
+          },
+        },
+      }),
+      makeCtx(dir),
+    );
+    const o = out.outputs as Record<string, any>;
+    assert.match(String(o.stdout), /hello from an attachment/);
+    assert.equal(o.attachments[0].name, "notes.txt");
+    assert.equal(o.attachments[0].path, "attachments/notes.txt");
+  });
+
+  it("collects workspace files of any format and keeps their names and media types", async () => {
+    const dir = fs.mkdtempSync(path.join(BASE, "collect-"));
+    const uploads: Array<{ name?: string; mediaType?: string; text: string }> = [];
+    const ctx = makeCtx(dir, {
+      async uploadArtifact(content, mediaType, name) {
+        const buf = Buffer.isBuffer(content) ? content : Buffer.from(content);
+        uploads.push({ name, mediaType, text: buf.toString("latin1") });
+        return {
+          artifact_id: `art_${uploads.length}`,
+          sha256: "sha256:x",
+          size_bytes: buf.length,
+          ...(name ? { name } : {}),
+        };
+      },
+    });
+    const out = await consoleExecutorFor("builder")(
+      assignment({
+        task_type: "task.console.builder",
+        requirements: {
+          console: {
+            command:
+              "mkdir -p out && printf 'int main() { return 0; }\\n' > out/hello.cpp && printf '\\000\\001\\377binary' > out/blob.bin",
+            collect: ["out"],
+          },
+        },
+      }),
+      ctx,
+    );
+    const o = out.outputs as Record<string, any>;
+    assert.equal(o.artifacts.length, 2);
+    const byName = Object.fromEntries(o.artifacts.map((a: any) => [a.name, a]));
+    assert.equal(byName["out/hello.cpp"].media_type, "text/x-c++src");
+    assert.equal(byName["out/blob.bin"].media_type, "application/octet-stream");
+    assert.deepEqual(
+      uploads.map((u) => u.name).sort(),
+      ["out/blob.bin", "out/hello.cpp"],
+    );
+    assert.match(out.summary, /2 file\(s\) collected/);
+  });
+
+  it("refuses collect paths that leave the workspace and does not follow symlinks", async () => {
+    const dir = fs.mkdtempSync(path.join(BASE, "escape-"));
+    fs.writeFileSync(path.join(dir, "inside.txt"), "ok\n");
+    fs.symlinkSync("/etc/passwd", path.join(dir, "passwd-link"));
+    const uploads: Array<string | undefined> = [];
+    const ctx = makeCtx(dir, {
+      async uploadArtifact(_content, _mediaType, name) {
+        uploads.push(name);
+        return { artifact_id: `art_${uploads.length}`, sha256: "sha256:x", size_bytes: 1 };
+      },
+    });
+    const out = await consoleExecutorFor("builder")(
+      assignment({
+        task_type: "task.console.builder",
+        requirements: { console: { command: "true", collect: ["../outside.txt", "."] } },
+      }),
+      ctx,
+    );
+    const o = out.outputs as Record<string, any>;
+    assert.deepEqual(uploads, ["inside.txt"]);
+    const skipped = (o.collect_skipped as Array<{ path: string; reason: string }>) ?? [];
+    assert.ok(skipped.some((s) => s.path === "../outside.txt"));
+    assert.ok(skipped.some((s) => s.path === "passwd-link" && s.reason === "symlink"));
   });
 });

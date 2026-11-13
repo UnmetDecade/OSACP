@@ -6,7 +6,8 @@ import { CHARACTERS, characterState } from "../characters";
 import { Character } from "./Character";
 import { Badge, Tag } from "./ui";
 import { osLabel } from "../api";
-import type { Host, Instance } from "../types";
+import { SideloadAddCard, SideloadLeaf, sideloadState } from "./Sideload";
+import type { Host, Instance, Sideload } from "../types";
 
 /**
  * Scene tree for the AI Agent studio.
@@ -36,8 +37,11 @@ type TreeNode = {
 /** One connection: target card, path, and whether it is online (signals run only when online). */
 type Edge = { id: string; d: string; online: boolean; delay: number };
 
-/** Card element mounted in the scene; an empty parent means it is the local root. */
-type NodeRef = { el: HTMLElement; parent?: string; online: boolean };
+/**
+ * Card element mounted in the scene; an empty parent means it is the local root.
+ * `side` is where the line attaches: below (scheduling tree) or top (sideloads above the root scheduler).
+ */
+type NodeRef = { el: HTMLElement; parent?: string; online: boolean; side?: "below" | "top" };
 
 function schedulersOn(hostId: string): Instance[] {
   return db.instances.filter((i) => i.role === "scheduler" && i.host_id === hostId);
@@ -143,36 +147,52 @@ function buildTree(host: Host): TreeNode | undefined {
   return tree;
 }
 
-/** From the parent's bottom center to the child's top center, with one rounded corner in between. */
+/**
+ * From the parent's bottom center to the child's top center, with one rounded corner in between.
+ * The same shape works upward (sideloads above the root scheduler), so `dy` may be negative.
+ */
 function elbow(x0: number, y0: number, x1: number, y1: number): string {
   const dy = y1 - y0;
   const dx = Math.abs(x1 - x0);
   if (dx < 1) return `M${x0},${y0} V${y1}`;
-  const r = Math.min(10, dx / 2, dy / 2);
+  const r = Math.min(10, dx / 2, Math.abs(dy) / 2);
   const ym = y0 + dy / 2;
-  const dir = x1 > x0 ? 1 : -1;
+  const dirX = x1 > x0 ? 1 : -1;
+  const dirY = dy >= 0 ? 1 : -1;
   return [
     `M${x0},${y0}`,
-    `V${ym - r}`,
-    `Q${x0},${ym} ${x0 + dir * r},${ym}`,
-    `H${x1 - dir * r}`,
-    `Q${x1},${ym} ${x1},${ym + r}`,
+    `V${ym - dirY * r}`,
+    `Q${x0},${ym} ${x0 + dirX * r},${ym}`,
+    `H${x1 - dirX * r}`,
+    `Q${x1},${ym} ${x1},${ym + dirY * r}`,
     `V${y1}`,
   ].join(" ");
 }
 
 /** Card registry: records elements, parents and online state, then computes paths after layout. */
-type Register = (key: string, parent: string | undefined, online: boolean) => (el: HTMLElement | null) => void;
+type Register = (
+  key: string,
+  parent: string | undefined,
+  online: boolean,
+  side?: "below" | "top",
+) => (el: HTMLElement | null) => void;
 
 export function StudioScene({
   host,
+  sideloads,
   onAdd,
+  onAddSideload,
+  onOpenSideload,
   onDeployScheduler,
   onDeployBuilder,
 }: {
   host: Host | undefined;
+  /** Sideloads of the current host only; they hang beside the root scheduler, never in another host's tree. */
+  sideloads: Sideload[];
   /** Add a character under a given scheduler; omitting it means the local entry point (root scheduler). */
   onAdd: (parent?: Instance) => void;
+  onAddSideload: () => void;
+  onOpenSideload: (sideload: Sideload) => void;
   onDeployScheduler: () => void;
   /** When the studio has no scheduling tree yet, go from the builder card to the deployment instructions. */
   onDeployBuilder: () => void;
@@ -182,8 +202,8 @@ export function StudioScene({
   const [edges, setEdges] = useState<Edge[]>([]);
 
   const register = useCallback<Register>(
-    (key, parent, online) => (el) => {
-      if (el) nodes.current.set(key, { el, parent, online });
+    (key, parent, online, side = "below") => (el) => {
+      if (el) nodes.current.set(key, { el, parent, online, side });
       else nodes.current.delete(key);
     },
     [],
@@ -203,6 +223,24 @@ export function StudioScene({
       if (!parent) continue;
       const a = parent.el.getBoundingClientRect();
       const b = node.el.getBoundingClientRect();
+      // Sideload cards sit in a row above the root scheduler: fan up from the scheduler's top center
+      // to each card's bottom center, the same rounded elbow as the tree below, mirrored.
+      if (node.side === "top") {
+        const x0 = a.left + a.width / 2 - origin.left;
+        const y0 = a.top - origin.top;
+        const x1 = b.left + b.width / 2 - origin.left;
+        const y1 = b.bottom - origin.top;
+        if (y0 - y1 < 2) continue;
+        next.push({
+          id: key,
+          d: elbow(x0, y0, x1, y1),
+          // An expired token is a dead channel and keeps its dimmed static line;
+          // a valid one animates even before the device first calls.
+          online: node.online,
+          delay: -((keys.indexOf(key) % 4) * 0.6),
+        });
+        continue;
+      }
       const x0 = a.left + a.width / 2 - origin.left;
       const y0 = a.bottom - origin.top;
       const x1 = b.left + b.width / 2 - origin.left;
@@ -254,15 +292,28 @@ export function StudioScene({
   // No scheduling tree does not mean no builders: a bare-metal builder can exist independently of a scheduler,
   // so show the builders already running instead of asking the user to deploy again.
   const builders = db.instances.filter((i) => i.role === "builder" && i.host_id === host.id);
+  // A bare-metal builder takes the whole host: the role is exclusive, so there is no scheduler slot left to
+  // offer. Hiding the empty scheduler card also keeps the left side from suggesting an action that is rejected.
+  const hasBareBuilder =
+    host.role_mode === "builder" || builders.some((b) => b.execution === "native");
   return (
     <div className="scene">
       <div className="scene-tree" ref={treeRef}>
         <SceneEdges edges={edges} />
         {tree ? (
-          <Subtree node={tree} scopeHostId={host.id} onAdd={onAdd} register={register} isRoot />
+          <Subtree
+            node={tree}
+            scopeHostId={host.id}
+            sideloads={sideloads}
+            onAdd={onAdd}
+            onAddSideload={onAddSideload}
+            onOpenSideload={onOpenSideload}
+            register={register}
+            isRoot
+          />
         ) : (
-          <div className="scene-empty-roles">
-            <EmptyRoleCard role="scheduler" onDeploy={onDeployScheduler} />
+          <div className={`scene-empty-roles${hasBareBuilder ? " is-builder-only" : ""}`}>
+            {!hasBareBuilder && <EmptyRoleCard role="scheduler" onDeploy={onDeployScheduler} />}
             {builders.length === 0 ? (
               <EmptyRoleCard role="builder" onDeploy={onDeployBuilder} />
             ) : (
@@ -373,14 +424,20 @@ function EmptyRoleCard({
 function Subtree({
   node,
   scopeHostId,
+  sideloads = [],
   onAdd,
+  onAddSideload,
+  onOpenSideload,
   register,
   parentKey,
   isRoot = false,
 }: {
   node: TreeNode;
   scopeHostId: string;
+  sideloads?: Sideload[];
   onAdd: (parent?: Instance) => void;
+  onAddSideload?: () => void;
+  onOpenSideload?: (sideload: Sideload) => void;
   register: Register;
   parentKey?: string;
   isRoot?: boolean;
@@ -393,32 +450,66 @@ function Subtree({
   const hasBranch =
     isRoot || node.children.length > 0 || node.builders.length > 0 || canAddHere;
 
+  const schedulerCard = (
+    <Link
+      className="scene-scheduler"
+      to={`/scheduler/${s.id}`}
+      title={t("打开调度台")}
+      ref={register(s.key, parentKey, online)}
+    >
+      <div className="scene-node-head">
+        <span className="scene-node-title">
+          {isRoot ? t("根调度机") : t("结点调度机")}
+        </span>
+        <Badge value={s.state} />
+      </div>
+      <Character role="scheduler" state={online ? "idle" : "offline"} size={60} flat />
+      <b className="scene-node-name">{s.name}</b>
+      <small className="scene-node-meta">{s.cpu_limit}C / {Math.round(s.mem_limit_mb / 1024)}G</small>
+      <div className="chips">
+        <Tag tone="accent" title={t("这台调度机可派发的整棵子树工作能力之和")}>ΣW {node.score}</Tag>
+      </div>
+      {node.host && (
+        <small className="scene-node-host" title={t("所属主机：{name}", { name: node.host.name })}>
+          {node.host.name}
+        </small>
+      )}
+    </Link>
+  );
+
   return (
     <div className={`scene-subtree${isRoot ? " is-root" : ""}`}>
-      <Link
-        className="scene-scheduler"
-        to={`/scheduler/${s.id}`}
-        title={t("打开调度台")}
-        ref={register(s.key, parentKey, online)}
-      >
-        <div className="scene-node-head">
-          <span className="scene-node-title">
-            {isRoot ? t("根调度机") : t("结点调度机")}
-          </span>
-          <Badge value={s.state} />
-        </div>
-        <Character role="scheduler" state={online ? "idle" : "offline"} size={60} flat />
-        <b className="scene-node-name">{s.name}</b>
-        <small className="scene-node-meta">{s.cpu_limit}C / {Math.round(s.mem_limit_mb / 1024)}G</small>
-        <div className="chips">
-          <Tag tone="accent" title={t("这台调度机可派发的整棵子树工作能力之和")}>ΣW {node.score}</Tag>
-        </div>
-        {node.host && (
-          <small className="scene-node-host" title={t("所属主机：{name}", { name: node.host.name })}>
-            {node.host.name}
-          </small>
-        )}
-      </Link>
+      {isRoot ? (
+        <>
+          <div className="scene-sideloads">
+            {sideloads.map((sideload) => (
+              <SideloadLeaf
+                key={sideload.sideload_id}
+                sideload={sideload}
+                onOpen={onOpenSideload ?? (() => {})}
+                // Every card connects straight to the root scheduler: the fan runs in the gap above it,
+                // so it never cuts across the other cards.
+                nodeRef={register(
+                  `sideload:${sideload.sideload_id}`,
+                  s.key,
+                  sideloadState(sideload) !== "expired",
+                  "top",
+                )}
+              />
+            ))}
+            {onAddSideload && (
+              // The add card gets a line too, so the strip reads as one connected row; it never animates.
+              <SideloadAddCard
+                onClick={onAddSideload}
+                nodeRef={register("add:sideload", s.key, false, "top")}
+              />
+            )}
+          </div>
+          <div className="scene-root-row">{schedulerCard}</div>
+        </>
+      ) : (
+        schedulerCard
+      )}
 
       {hasBranch && (
         <div className="scene-branch">

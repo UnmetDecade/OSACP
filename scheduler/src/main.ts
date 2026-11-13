@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { pool } from "./db.js";
 import { authEnabled } from "./auth.js";
 import { createServer } from "./http/server.js";
-import { sweepLeases } from "./loops/reaper.js";
+import { sweepLeases, sweepNeedsInput } from "./loops/reaper.js";
 import { sweepDrainTimeouts, sweepHeartbeats } from "./repo/instances.js";
 import { capabilitySnapshot } from "./repo/federation.js";
 import { getFederationParentUrl } from "./federation-state.js";
@@ -55,6 +55,9 @@ async function tick() {
         r.reclaimed.map((x) => `${x.task_id}:${x.cause}->${x.to}`).join(" "),
       );
     }
+
+    const ni = await sweepNeedsInput();
+    if (ni.expired.length) console.log("[input] expired questions", ni.expired.join(","));
   } catch (e) {
     console.error("[tick]", e);
   } finally {

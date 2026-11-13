@@ -36,6 +36,9 @@ docs/assets/.studio-frames/
 # Locally built image archives: 1.6G, not published with the repo
 images/
 
+# Local scratch space (sideload output, ad-hoc projects)
+tmp/
+
 # Logs
 *.log
 logs/

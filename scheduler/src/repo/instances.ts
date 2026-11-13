@@ -110,7 +110,7 @@ export async function register(input: RegisterInput) {
        VALUES ($1,$2,$3,'STARTING',$4,$5,$6,$7,$8,COALESCE($9, ARRAY['1.0']),
                $10, NULL, app_now(), app_now(), $11, $12::text[],
                COALESCE($13, 0), COALESCE($14::jsonb, '{}'::jsonb),
-               COALESCE($15, 'static'), COALESCE($16, 0), COALESCE($17, 0),
+               COALESCE($15, 'static'), COALESCE($16, 0), COALESCE($17::bigint, 0),
                COALESCE($18, 0), COALESCE($19, COALESCE($13, 0)), COALESCE($20, COALESCE($13, 0)),
                COALESCE($20, COALESCE($13, 0)), COALESCE($21, COALESCE($19, COALESCE($13, 0))),
                CASE WHEN $13 IS NULL AND $14 IS NULL THEN NULL ELSE app_now() END)
@@ -129,7 +129,7 @@ export async function register(input: RegisterInput) {
          capability_detail = COALESCE($14::jsonb, role_instances.capability_detail),
          scheduling_mode = COALESCE($15, role_instances.scheduling_mode),
          cap_cpu_millicores = COALESCE($16, role_instances.cap_cpu_millicores),
-         cap_mem_bytes = COALESCE($17, role_instances.cap_mem_bytes),
+         cap_mem_bytes = COALESCE($17::bigint, role_instances.cap_mem_bytes),
          capability_static_score = COALESCE($18, role_instances.capability_static_score),
          capability_ceiling_score = COALESCE($19, role_instances.capability_ceiling_score),
          capability_live_score = COALESCE($20, role_instances.capability_live_score),
@@ -466,6 +466,48 @@ export async function deregister(
       active_attempts: activeAttempts,
       reason: input.reason ?? null,
     };
+  });
+}
+
+/**
+ * Forget a dead instance registration (§7.12).
+ *
+ * Deregistration only flips the row to OFFLINE, so a deleted builder leaves a registration behind forever.
+ * The row carries no foreign keys (tasks and attempts copy the instance id), so removing it is safe once the
+ * instance stopped heartbeating. An ONLINE instance is still alive: deleting it means removing its deployment,
+ * which stops the process first; only the stale tail is removable here.
+ */
+export async function forget(instanceId: string) {
+  return tx(async (c) => {
+    const inst = (
+      await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])
+    ).rows[0];
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
+
+    const active = await c.query(
+      `SELECT count(*)::int AS n FROM leases
+        WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
+      [instanceId],
+    );
+    const activeAttempts = active.rows[0].n;
+    if (activeAttempts > 0) {
+      throw new ApiError(409, "STATE_CONFLICT", "there are still in-flight tasks; cannot forget the instance", {
+        active_attempts: activeAttempts,
+      });
+    }
+    // Only a registration that stopped reporting is removable. STARTING/SUSPECT may still be alive, and
+    // ONLINE/DRAINING certainly are; for those the deployment is the thing to delete.
+    if (inst.state !== "OFFLINE" && inst.state !== "FAILED") {
+      throw new ApiError(
+        409,
+        "INSTANCE_ALIVE",
+        `instance is ${inst.state}; remove its deployment, or wait for it to go offline`,
+        { state: inst.state },
+      );
+    }
+
+    await c.query(`DELETE FROM role_instances WHERE instance_id = $1`, [instanceId]);
+    return { instance_id: instanceId, state: inst.state, forgotten: true };
   });
 }
 

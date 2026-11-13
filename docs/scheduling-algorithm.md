@@ -183,6 +183,16 @@ ORDER BY effective_priority ASC, enqueued_at ASC, task_id ASC
 
 Lower numbers run first. Aging lifts starved low-priority tasks one class per `aging_after_seconds` (default 600 s), capped at P1 ([`001_init.sql:23`](../scheduler/sql/001_init.sql#L23)). Every ordering has a stable final key, so equal-priority tasks cannot be reordered by chance.
 
+### 3.3.1 Capability preference (local claims)
+
+Local execution is pull-based: every idle instance polls and the first poller wins. Admission alone would therefore let a 148-score builder take a task while an idle 286-score builder watches, simply because it was a few hundred milliseconds slower. A **bounded deferral** adds the preference ([`claim.ts:106`](../scheduler/src/core/claim.ts#L106)):
+
+- When this instance's `capability_dispatch` (the frozen `W` in static mode) is lower than that of a same-role peer that is **ONLINE, bound to an Agent, on a dispatchable host, and currently running no leases**, and that peer also satisfies the task's type, payload schema, capability subset, target instance and difficulty, this instance **skips** the candidate;
+- Skipping writes nothing on the task: no `blocked_attempts`, no `resource_block_reason`, no event — the task stays `QUEUED` for the stronger peer to claim on its own next poll;
+- The deferral lasts at most `CAPABILITY_PREFER_WINDOW_SECONDS` (30 s), measured from the task's enqueue time. After that any admissible instance may take it, so a peer that is ONLINE but not actually polling (hung Agent, stopped runtime) cannot starve the queue.
+
+Only **idle** peers are compared, so the preference does not pile work onto a strong builder that is already busy, and it does not change the `D ≤ W` admission rule — capability remains a threshold with a preference applied inside it.
+
 ### 3.4 Concurrency defaults
 
 | Limit | Default |

@@ -1,6 +1,6 @@
 import { t, useI18n } from "../i18n";
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
 import { Icon } from "./Icon";
@@ -29,6 +29,7 @@ export function Layout() {
   const { hosts, host, setHostId } = useHostScope();
   const { lang, setLang } = useI18n();
   const live = useLive();
+  const navigate = useNavigate();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -79,6 +80,9 @@ export function Layout() {
                   onClick={() => {
                     setHostId(item.id);
                     setHostOpen(false);
+                    // The host scope changed, so leave host-specific pages (a builder/scheduler detail view may not
+                    // exist on the new host) and return to the overview.
+                    navigate("/");
                   }}
                 >
                   <i className={`dot dot-${item.state === "ONLINE" ? "ok" : item.state === "REVOKED" ? "bad" : "idle"}`} />

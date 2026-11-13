@@ -7,6 +7,8 @@ import {
   type HostDraft,
   type HostProbe,
   type Role,
+  type Sideload,
+  type SideloadScope,
   type SubmitTaskInput,
   type TaskAttachmentRef,
 } from "./types";
@@ -16,6 +18,7 @@ import { useLive } from "./live/context";
 import {
   addLocalHost as liveAddLocalHost,
   addSshHost as liveAddSshHost,
+  answerTask as liveAnswerTask,
   bindAgentProfile,
   bindApiProfile,
   bootstrapHost as liveBootstrapHost,
@@ -86,6 +89,12 @@ export async function editHost(
     private_key?: string;
     password?: string;
     role_mode?: "containers" | "builder" | "scheduler";
+    /** Choices for the bare-metal builder created by the role switch. */
+    native_builder?: {
+      display_name?: string;
+      agent_profile_id?: string;
+      api_profile_ids?: string[];
+    };
   },
   afterRefresh: () => Promise<void>,
 ): Promise<{
@@ -104,6 +113,27 @@ export async function editHost(
     ...(out.native_builder ? { native_builder: out.native_builder } : {}),
     ...(out.warning ? { warning: out.warning } : {}),
   };
+}
+
+/**
+ * Read the control plane's deployment records for one host.
+ *
+ * Creating a deployment only records the desired state; the host applies it and acknowledges the command later.
+ * Deploy dialogs poll this so "deployed" is backed by an acknowledgement instead of an assumption.
+ */
+export async function fetchHostDeployments(hostId: string): Promise<
+  Array<{ deployment_id: string; instance_id: string; status: string; observed?: any }>
+> {
+  const out = await pcs(
+    getLiveConnection(),
+    `/api/v1/platform/deployments?host_id=${encodeURIComponent(hostId)}`,
+  );
+  return ((out?.deployments ?? []) as any[]).map((d) => ({
+    deployment_id: String(d.deployment_id),
+    instance_id: String(d.instance_id ?? ""),
+    status: String(d.status ?? ""),
+    observed: d.observed ?? null,
+  }));
 }
 
 /** Fold one host into another host's federation tree; no scheduler is restarted. */
@@ -325,11 +355,14 @@ export async function submitBuild(input: SubmitTaskInput, afterRefresh: () => Pr
   for (const item of input.attachments ?? []) {
     attachments.push(await liveUploadTaskAttachment(connection, item));
   }
+  // The title is what task lists show; without one, the first line of the description stands in.
+  const title = (input.title ?? "").trim() || instruction.split("\n")[0].slice(0, 60);
   const out = await liveSubmitBuild(connection, {
-    title: instruction.slice(0, 40),
+    title: title.slice(0, 80),
     instruction,
     target_instance_id: input.target_instance_id,
     priority: input.priority ?? 2,
+    approval_mode: input.approval_mode,
     difficulty: input.difficulty,
     attachments: attachments.length ? attachments : undefined,
     schedulerDeploymentId: input.scheduler_deployment_id ?? target?.scheduler_deployment_id ?? null,
@@ -353,6 +386,16 @@ export async function cancelBuild(
   schedulerDeploymentId?: string | null,
 ): Promise<void> {
   await liveCancelTask(getLiveConnection(), id, schedulerDeploymentId);
+  await afterRefresh();
+}
+
+export async function answerTask(
+  id: string,
+  answer: string,
+  afterRefresh: () => Promise<void>,
+  schedulerDeploymentId?: string | null,
+): Promise<void> {
+  await liveAnswerTask(getLiveConnection(), id, answer, schedulerDeploymentId);
   await afterRefresh();
 }
 
@@ -506,6 +549,41 @@ export async function setInstanceProfiles(
     if (!wanted.has(id)) await unbindApiProfile(live, hostId, instanceId, id);
   }
   await afterRefresh();
+}
+
+export type CreateSideloadInput = {
+  hostId: string;
+  name: string;
+  scopes: SideloadScope[];
+  /** Token lifetime in days; omitted means no expiry. */
+  expiresInDays?: number | null;
+};
+
+/**
+ * Create a curl token for one host.
+ * The control plane returns the plaintext token only here, together with the base URL the device should call.
+ */
+export async function createSideload(
+  input: CreateSideloadInput,
+): Promise<{ sideload: Sideload; token: string; base_url: string }> {
+  return pcs(getLiveConnection(), "/api/v1/platform/sideloads", {
+    method: "POST",
+    body: {
+      host_id: input.hostId,
+      name: input.name,
+      scopes: input.scopes,
+      ...(input.expiresInDays ? { expires_in_days: input.expiresInDays } : {}),
+    },
+  });
+}
+
+/** Delete a sideload: the token stops working on its next call and the card disappears. */
+export async function deleteSideload(
+  id: string,
+): Promise<{ sideload: { sideload_id: string; host_id: string; name: string } }> {
+  return pcs(getLiveConnection(), `/api/v1/platform/sideloads/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Call once per page to subscribe to live refreshes; returns the current refresh. */

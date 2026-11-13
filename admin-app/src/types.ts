@@ -102,7 +102,20 @@ export type InstanceState =
   | "OFFLINE"
   | "FAILED";
 
-export type TaskState = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED";
+export type TaskState =
+  | "QUEUED"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "BLOCKED"
+  | "CANCELLED"
+  /** Parked on a question for a human; answering it requeues the task. */
+  | "NEEDS_INPUT"
+  /** Parked while its child tasks run in parallel; resumes when all of them finish. */
+  | "WAITING_CHILDREN";
+
+/** How much the agent may do without asking: ask | edits | auto | full. */
+export type ApprovalMode = "ask" | "edits" | "auto" | "full";
 
 /** Host onboarding mode: local host (the machine running the admin app) or remote SSH host. */
 export type HostTransport = "local" | "ssh";
@@ -137,6 +150,8 @@ export type Host = {
   labels: Record<string, string>;
   capabilities: string[];
   registered_at: string;
+  /** Last report from the host runtime; empty when the host has never checked in. */
+  last_report_at?: string;
   maintaining: boolean;
   transport?: HostTransport;
   address?: string;
@@ -300,6 +315,57 @@ export type Task = {
   } | null;
   payload: Record<string, unknown>;
   events: TaskEvent[];
+  /** Autonomy requested for this task; the scheduler stores the effective default. */
+  approval_mode?: ApprovalMode;
+  /** Terminal classification: completed | error | cancelled | input_expired | children_exhausted | interrupted_after_outward. */
+  outcome?: string | null;
+  /** Set while the task is NEEDS_INPUT. */
+  pending_question?: { question: string; attempt_id?: string; asked_at?: string } | null;
+  /** Fan-out linkage: set on children, and on the parent for the split it started. */
+  parent_task_id?: string | null;
+  fanout_id?: string | null;
+  fanout_depth?: number;
+  /** Children of this task, filled by the detail endpoint. */
+  children?: TaskChild[];
+};
+
+/** A fan-out child in the parent's tree view. */
+export type TaskChild = {
+  task_id: string;
+  task_type: string;
+  status: TaskState;
+  outcome?: string | null;
+  title?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+/**
+ * One execution attempt of a task.
+ *
+ * The agent reports a structured error (code + message) when it fails; the task list projection does not carry it,
+ * so the detail page fetches the attempt history to show the operator why a task failed.
+ */
+export type TaskAttempt = {
+  attempt_number: number;
+  status: string;
+  error?: { code?: string; message?: string } | null;
+  /** Why the scheduler classified the failure: permanent | outward | rate_limit | busy | transient. */
+  failure_class?: string | null;
+  /** Normalized grouping key shared by the same failure across builders. */
+  failure_signature?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type FailureSignature = {
+  signature: string;
+  kind: string;
+  code: string;
+  sample?: string | null;
+  occurrences: number;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
 };
 
 export type LogEntry = {
@@ -374,11 +440,15 @@ export type HostDraft =
 
 /** Submit a build task. */
 export interface SubmitTaskInput {
+  /** Short title shown in task lists; falls back to the first line of the description when omitted. */
+  title?: string;
   /** Natural-language task description; the root scheduler dispatches it to a suitable builder Agent. */
   description: string;
   /** Optional: specify a builder; if omitted, the root scheduler chooses by the scheduling algorithm. */
   target_instance_id?: string;
   priority?: number;
+  /** Autonomy level handed to the builder Agent; omitted means the scheduler's configured default. */
+  approval_mode?: ApprovalMode;
   /** Task difficulty 0–1000; 0 or empty means unlimited (no longer shown in the admin UI). */
   difficulty?: number;
   deadline_minutes?: number;
@@ -404,4 +474,31 @@ export interface TaskAttachmentRef {
   media_type: string;
   size: number;
   url: string;
+}
+
+/** Closed sideload permission vocabulary; the control plane rejects anything else. */
+export type SideloadScope =
+  | "tasks:read"
+  | "tasks:write"
+  | "builders:read"
+  | "queue:read"
+  | "console:run";
+
+/**
+ * A device on the LAN holding a curl token for one host.
+ * The token itself is never in this type: the control plane returns it once, at creation.
+ */
+export interface Sideload {
+  sideload_id: string;
+  host_id: string;
+  name: string;
+  /** Last four characters, so two tokens can be told apart without revealing either. */
+  token_hint: string;
+  scopes: SideloadScope[];
+  created_by: string | null;
+  created_at: string;
+  expires_at: string | null;
+  last_seen_at: string | null;
+  last_ip: string | null;
+  revoked_at: string | null;
 }

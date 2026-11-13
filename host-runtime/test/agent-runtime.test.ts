@@ -1,5 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -518,5 +519,72 @@ describe("Agent executor", () => {
         }),
       (e: any) => e instanceof TaskFailed && e.code === "AGENT_CRASHED",
     );
+  });
+
+  it("downloads handed-over upstream artifacts into the workspace before the Agent starts", async () => {
+    const ws = fs.mkdtempSync(path.join(TMP, "ws-upstream-"));
+    const data = Buffer.from("child build output\n");
+    const sha256 = `sha256:${createHash("sha256").update(data).digest("hex")}`;
+    const requests: string[] = [];
+    const { ctx } = ctxFor(ws);
+    ctx.downloadArtifact = async (artifactId) => {
+      requests.push(artifactId);
+      return { data, sha256, media_type: "text/plain" };
+    };
+
+    await runAgentTask(
+      assignment({
+        requirements: {
+          message: "combine the children",
+          probe_forbidden: true,
+          upstream_artifacts: [
+            {
+              artifact_id: "art_child",
+              sha256,
+              media_type: "text/plain",
+              task_id: "task_child",
+              task_type: "task.build",
+            },
+          ],
+        },
+      }),
+      ctx,
+      { profiles: runtimeProfiles(), toolAudit: () => {} },
+    );
+
+    assert.deepEqual(requests, ["art_child"]);
+    const dir = path.join(ws, "upstream");
+    const files = fs.readdirSync(dir);
+    assert.equal(files.length, 1);
+    assert.match(files[0], /\.txt$/);
+    assert.equal(fs.readFileSync(path.join(dir, files[0]), "utf8"), "child build output\n");
+    // The Agent runs as root in the container; the file should not be world-readable by accident.
+    assert.equal(fs.statSync(path.join(dir, files[0])).mode & 0o777, 0o600);
+  });
+
+  it("refuses an upstream artifact whose content does not match the handoff digest", async () => {
+    const ws = fs.mkdtempSync(path.join(TMP, "ws-upstream-bad-"));
+    const { ctx } = ctxFor(ws);
+    ctx.downloadArtifact = async () => ({ data: Buffer.from("tampered"), sha256: "sha256:deadbeef", media_type: "text/plain" });
+
+    await assert.rejects(
+      () =>
+        runAgentTask(
+          assignment({
+            requirements: {
+              message: "merge",
+              probe_forbidden: true,
+              upstream_artifacts: [
+                { artifact_id: "art_bad", sha256: `sha256:${"0".repeat(64)}`, media_type: "text/plain" },
+              ],
+            },
+          }),
+          ctx,
+          { profiles: runtimeProfiles(), toolAudit: () => {} },
+        ),
+      (e: any) => e instanceof TaskFailed && e.code === "UPSTREAM_ARTIFACT_DIGEST_MISMATCH",
+    );
+    const dir = path.join(ws, "upstream");
+    assert.equal(fs.existsSync(dir) ? fs.readdirSync(dir).length : 0, 0);
   });
 });

@@ -2,7 +2,6 @@ import { t } from "../i18n";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { db } from "../store";
-import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import {
@@ -10,10 +9,8 @@ import {
   bootstrapHost,
   editHost,
   mergeHost,
-  probeHost,
   removeHostContainers,
   removeHostFromList,
-  unmergeHost,
   type HostDraft,
 } from "../api";
 import type { Host, HostProbe, HostRoleMode } from "../types";
@@ -23,10 +20,13 @@ import { Icon } from "../components/Icon";
 /**
  * Hosts page: one host = one machine running Docker; schedulers and builders are containers on it.
  * The local host is the machine running the admin app; remote hosts are onboarded over SSH and the private key is stored encrypted by PCS.
+ *
+ * The list stays a summary (state, address, hardware, components). Everything that acts on a host
+ * lives on its detail page, the same split the builder list uses.
  */
 
 /** On probe failure, give an actionable reason instead of dumping raw ssh output on the user. */
-function probeHint(error?: string): string {
+export function probeHint(error?: string): string {
   if (!error) return t("未知错误");
   if (/Permission denied \(publickey/i.test(error)) {
     return t("远程主机拒绝了这把私钥：公钥还没加入远程机的 ~/.ssh/authorized_keys，或私钥有口令/不完整。");
@@ -45,67 +45,9 @@ function probeHint(error?: string): string {
 export function HostsPage() {
   const live = useLive();
   const [addOpen, setAddOpen] = useState(false);
-  const [settingsTarget, setSettingsTarget] = useState<Host | null>(null);
-  const [mergeTarget, setMergeTarget] = useState<Host | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Host | null>(null);
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState<{ tone: "info" | "warn" | "bad"; text: string; log?: string } | null>(null);
-
-  const { host: current, setHostId } = useHostScope();
   const hosts = db.hosts;
   const local = hosts.filter((h) => h.transport === "local").length;
   const online = hosts.filter((h) => h.state === "ONLINE").length;
-
-  async function probe(id: string) {
-    setBusy(`${id}:probe`);
-    setError("");
-    try {
-      await probeHost(id, live.refresh);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function unmerge(host: Host) {
-    const parent = host.parent_host_id
-      ? hosts.find((h) => h.id === host.parent_host_id)?.name ?? host.parent_host_id
-      : t("上级主机");
-    if (!window.confirm(t("解除 {host} 与 {parent} 的并入关系？{host} 将重新成为联邦树的根，不再向上汇总能力。容器不会重启。", { host: host.name, parent }))) return;
-    setBusy(`${host.id}:unmerge`);
-    setError("");
-    try {
-      await unmergeHost(host.id, live.refresh);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function bootstrap(id: string) {
-    setBusy(`${id}:bootstrap`);
-    setError("");
-    setNotice(null);
-    try {
-      const out = await bootstrapHost(id, live.refresh);
-      setNotice(
-        out.online
-          ? { tone: "info", text: t("host-runtime 已启动，主机已入网，可以部署组件了。") }
-          : {
-              tone: "warn",
-              text: t("host-runtime 已启动，但主机还没入网（{status}）。检查下面的日志。", { status: out.status }),
-              log: out.log,
-            },
-      );
-    } catch (e) {
-      setNotice({ tone: "bad", text: errorMessage(e) });
-    } finally {
-      setBusy("");
-    }
-  }
 
   return (
     <div className="page">
@@ -134,14 +76,6 @@ export function HostsPage() {
         }
       />
 
-      {error && <Callout tone="bad">{error}</Callout>}
-      {notice && (
-        <Callout tone={notice.tone}>
-          {notice.text}
-          {notice.log && <pre className="payload" style={{ marginTop: 10, marginBottom: 0 }}>{notice.log}</pre>}
-        </Callout>
-      )}
-
       {hosts.length === 0 ? (
         <Card>
           <Empty text={t("还没有主机。先添加运行管理页面的本地主机，或通过 SSH 接入一台远程机器。")} />
@@ -150,19 +84,7 @@ export function HostsPage() {
         <Card flush>
           <div className="list">
             {hosts.map((h) => (
-              <HostRow
-                key={h.id}
-                host={h}
-                current={h.id === current?.id}
-                onSelect={setHostId}
-                busy={busy}
-                onProbe={probe}
-                onBootstrap={bootstrap}
-                onSettings={setSettingsTarget}
-                onMerge={setMergeTarget}
-                onUnmerge={unmerge}
-                onDelete={setDeleteTarget}
-              />
+              <HostRow key={h.id} host={h} />
             ))}
           </div>
         </Card>
@@ -175,59 +97,11 @@ export function HostsPage() {
           if (live.connected) await live.refresh();
         }}
       />
-
-      <HostSettingsModal
-        host={settingsTarget}
-        onClose={() => setSettingsTarget(null)}
-        onDone={async () => {
-          if (live.connected) await live.refresh();
-        }}
-      />
-
-      <DeleteHostModal
-        host={deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onDone={async () => {
-          if (live.connected) await live.refresh();
-        }}
-      />
-
-      <MergeHostModal
-        host={mergeTarget}
-        onClose={() => setMergeTarget(null)}
-        onDone={async () => {
-          if (live.connected) await live.refresh();
-          setMergeTarget(null);
-        }}
-      />
-
     </div>
   );
 }
 
-function HostRow({
-  host,
-  current,
-  onSelect,
-  busy,
-  onProbe,
-  onBootstrap,
-  onSettings,
-  onMerge,
-  onUnmerge,
-  onDelete,
-}: {
-  host: Host;
-  current: boolean;
-  onSelect: (id: string) => void;
-  busy: string;
-  onProbe: (id: string) => void;
-  onBootstrap: (id: string) => void;
-  onSettings: (host: Host) => void;
-  onMerge: (host: Host) => void;
-  onUnmerge: (host: Host) => void;
-  onDelete: (host: Host) => void;
-}) {
+function HostRow({ host }: { host: Host }) {
   const components = db.instances.filter((i) => i.host_id === host.id);
   const parent = host.parent_host_id ? db.hosts.find((h) => h.id === host.parent_host_id) : undefined;
   const subtreeScore = host.subtree_score ?? 0;
@@ -235,20 +109,12 @@ function HostRow({
   const probe = host.last_probe;
   const probeOk = probe?.ok === true;
   const address = host.address || host.name;
-  const probeDetail = probe
-    ? `${probeOk
-        ? t("Docker {version}{perm}", { version: probe.docker_version ?? t("已安装"), perm: probe.docker_ok === false ? t("（无 Docker 权限）") : "" })
-        : probeHint(probe.error)} · ${new Date(probe.checked_at).toLocaleString("zh-CN")}${host.key_fingerprint ? ` · ${host.key_fingerprint}` : ""}`
-    : undefined;
 
   return (
     <div className="list-row">
       <div className="list-main">
         <div className="list-title">
-          <button className="list-name" onClick={() => onSelect(host.id)} title={t("切换到这个主机")}>
-            {host.name}
-          </button>
-          {current && <Tag tone="accent">{t("当前")}</Tag>}
+          <Link className="strong" to={`/hosts/${host.id}`}>{host.name}</Link>
           <Badge value={host.state} />
           <Tag tone={host.transport === "local" ? "accent" : undefined}>
             {host.transport === "local" ? t("本地") : host.transport === "ssh" ? "SSH" : t("手工")}
@@ -263,7 +129,7 @@ function HostRow({
             </Tag>
           )}
           {probe && (
-            <Tag tone={probeOk ? "ok" : "bad"} title={probeDetail}>
+            <Tag tone={probeOk ? "ok" : "bad"} title={probeOk ? undefined : probeHint(probe.error)}>
               {probeOk ? t("可达") : t("不可达")}
             </Tag>
           )}
@@ -285,72 +151,9 @@ function HostRow({
           {components.length === 0 ? (
             <span>{t("无组件")}</span>
           ) : (
-            components.map((c) => (
-              <Link
-                key={c.id}
-                className="tag"
-                to={c.role === "scheduler" ? "/scheduler" : `/builders/${c.id}`}
-                title={c.name}
-              >
-                {c.role === "scheduler" ? t("调度机容器") : t("构建机容器")} · {c.name}
-              </Link>
-            ))
+            <span>{t("{count} 个组件", { count: components.length })}</span>
           )}
         </div>
-      </div>
-      <div className="list-actions">
-        {(host.transport === "local" || host.transport === "ssh") && (
-          <>
-            <Button size="sm" onClick={() => onSettings(host)} title={t("修改名称、地址或密钥")}>
-              <Icon name="settings" size={13} />
-              {t("设置")}
-            </Button>
-            <Button size="sm" onClick={() => onProbe(host.id)} disabled={busy === `${host.id}:probe`}>
-              <Icon name="refresh" size={13} />
-              {busy === `${host.id}:probe` ? t("探测中…") : t("探测")}
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => onBootstrap(host.id)}
-              disabled={busy === `${host.id}:bootstrap`}
-              title={t("补齐 Node / Docker 并启动 host-runtime")}
-            >
-              <Icon name="play" size={13} />
-              {busy === `${host.id}:bootstrap`
-                ? t("准备环境…")
-                : host.state === "ONLINE"
-                  ? t("重新引导")
-                  : t("启动 runtime")}
-            </Button>
-          </>
-        )}
-        {/* A folded host keeps only "Unfold"; to change parents, unfold and fold it again. */}
-        {!parent && (
-          <Button size="sm" onClick={() => onMerge(host)} title={t("把本机并入另一台主机的联邦树")}>
-            <Icon name="layers" size={13} />
-            {t("并入")}
-          </Button>
-        )}
-        {parent && (
-          <Button
-            size="sm"
-            onClick={() => onUnmerge(host)}
-            disabled={busy === `${host.id}:unmerge`}
-            title={t("解除并入，本机重新成为根")}
-          >
-            <Icon name="unlink" size={13} />
-            {t("解除")}
-          </Button>
-        )}
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={() => onDelete(host)}
-          title={t("删除主机上的容器，或整台主机连同数据一起清除")}
-        >
-          <Icon name="trash" size={13} />
-          {t("删除")}
-        </Button>
       </div>
     </div>
   );
@@ -362,14 +165,17 @@ function HostRow({
  * Single deletion removes only containers and data volumes; "Delete all" waits for the host to confirm every container is removed
  * before deleting the host record, after which the host disappears from the list. A mid-way failure preserves the state and shows the reason.
  */
-function DeleteHostModal({
+export function DeleteHostModal({
   host,
   onClose,
   onDone,
+  onDeleted,
 }: {
   host: Host | null;
   onClose: () => void;
   onDone: () => Promise<void>;
+  /** Called after the host record itself is gone, so the detail page can leave before it renders "not found". */
+  onDeleted?: () => void;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [clearData, setClearData] = useState(false);
@@ -406,6 +212,7 @@ function DeleteHostModal({
       if (kind === "list") await removeHostFromList(host!.id, ids, onDone);
       else await removeHostContainers(host!.id, ids, purge, onDone);
       onClose();
+      onDeleted?.();
     } catch (e) {
       setError(errorMessage(e));
       setBusy("");
@@ -506,7 +313,7 @@ function DeleteHostModal({
 }
 
 /** Host settings: change the name, address, port, user, or replace the private key; re-probe immediately after saving. */
-function HostSettingsModal({
+export function HostSettingsModal({
   host,
   onClose,
   onDone,
@@ -710,7 +517,7 @@ function HostSettingsModal({
  * Host fold: attach this host's root scheduler into another host's federation tree.
  * Only the control plane's parent_host_id changes; the local scheduling chain, containers and internal identity stay the same.
  */
-function MergeHostModal({
+export function MergeHostModal({
   host,
   onClose,
   onDone,

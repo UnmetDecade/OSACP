@@ -141,6 +141,23 @@ export type CommandRow = {
   acked_at: string | null;
 };
 
+/** A sideload token bound to one host. The plaintext token exists only in the creation response. */
+export type SideloadRow = {
+  sideload_id: string;
+  host_id: string;
+  name: string;
+  /** Last four characters, so the UI can tell two live tokens apart without storing the secret. */
+  token_hint: string;
+  scopes: SideloadScope[];
+  created_by: string | null;
+  created_at: string;
+  expires_at: string | null;
+  /** Updated on authenticated calls (throttled); drives the online dot in the studio. */
+  last_seen_at: string | null;
+  last_ip: string | null;
+  revoked_at: string | null;
+};
+
 const newId = (prefix: string) => `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 
 /** The task attachment limit must cover a packaged code directory; see http.ts for the request body limit. */
@@ -149,6 +166,42 @@ const TASK_ATTACHMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const hashToken = (raw: string) => createHash("sha256").update(raw).digest("hex");
 const iso = (ms: number) => new Date(ms).toISOString();
 const nowMs = () => Date.now();
+
+/**
+ * Side-load permission vocabulary.
+ *
+ * Scopes are closed units rather than roles: a device may read tasks, watch builders, look at the queue, or run
+ * console commands. `console:run` is a gate on top of `tasks:write`, because a console task executes a shell
+ * command on a builder and is the most dangerous thing a sideload can do.
+ */
+export const SIDELOAD_SCOPES = [
+  "tasks:read",
+  "tasks:write",
+  "builders:read",
+  "queue:read",
+  "console:run",
+] as const;
+export type SideloadScope = (typeof SIDELOAD_SCOPES)[number];
+
+/** Columns safe to return: token_hash never leaves the control plane. */
+const SIDELOAD_COLUMNS =
+  "sideload_id, host_id, name, token_hint, scopes, created_by, created_at, expires_at, last_seen_at, last_ip, revoked_at";
+
+/** Reject unknown permissions instead of silently dropping them: a typo must not produce a token with fewer rights than intended. */
+function normalizeSideloadScopes(raw: unknown): SideloadScope[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new PcsError(400, "SIDELOAD_SCOPE_INVALID", "scopes must be an array");
+  const list = raw.map((s) => String(s));
+  const unknown = list.filter((s) => !(SIDELOAD_SCOPES as readonly string[]).includes(s));
+  if (unknown.length) {
+    throw new PcsError(
+      400,
+      "SIDELOAD_SCOPE_UNKNOWN",
+      `unknown permission: ${unknown.join(", ")}; allowed: ${SIDELOAD_SCOPES.join(", ")}`,
+    );
+  }
+  return [...new Set(list)] as SideloadScope[];
+}
 
 /** Canonical JSON: sorted keys, undefined removed, used as input to the plan digest. */
 function canonicalJson(value: unknown): string {
@@ -735,6 +788,200 @@ export class PcsService {
     );
   }
 
+  // ---------------------------------------------------------------- Sideloads
+
+  /**
+   * Create a sideload token for one host.
+   *
+   * This is a second authentication scheme next to admin JWTs: the token is random, stored only as a SHA-256
+   * hash, and returned in plaintext exactly once. Every sideload is bound to a single host and can only see that
+   * host's builders, tasks and queue; it can never list other hosts or other sideloads.
+   */
+  async createSideload(input: {
+    host_id: string;
+    name: string;
+    scopes?: string[];
+    expires_in_days?: number | null;
+    created_by?: string;
+  }): Promise<{ sideload: SideloadRow; token: string }> {
+    const hostId = String(input.host_id ?? "").trim();
+    if (!hostId) {
+      throw new PcsError(400, "HOST_ID_REQUIRED", "host_id is required: a sideload is always scoped to one host");
+    }
+    if (!(await this.getHost(hostId))) throw notFound("HOST_NOT_FOUND", "host not found");
+
+    const name = String(input.name ?? "").trim();
+    if (!name) throw new PcsError(400, "SIDELOAD_NAME_REQUIRED", "sideload name is required");
+    if (name.length > 64) {
+      throw new PcsError(400, "SIDELOAD_NAME_TOO_LONG", "sideload name must be at most 64 characters");
+    }
+
+    const scopes = normalizeSideloadScopes(input.scopes);
+    if (!scopes.length) {
+      throw new PcsError(400, "SIDELOAD_SCOPE_REQUIRED", "grant at least one permission to the sideload");
+    }
+    // A console scope without tasks:write would be unusable: creating the console task is the write path itself.
+    if (scopes.includes("console:run") && !scopes.includes("tasks:write")) {
+      throw new PcsError(
+        400,
+        "SIDELOAD_SCOPE_CONFLICT",
+        "console:run requires tasks:write, otherwise the sideload cannot submit a console task",
+      );
+    }
+
+    let expiresAt: string | null = null;
+    if (input.expires_in_days !== undefined && input.expires_in_days !== null) {
+      const days = Number(input.expires_in_days);
+      if (!Number.isFinite(days) || days <= 0 || days > 3650) {
+        throw new PcsError(400, "SIDELOAD_EXPIRY_INVALID", "expires_in_days must be between 1 and 3650");
+      }
+      expiresAt = iso(nowMs() + Math.round(days) * 24 * 60 * 60 * 1000);
+    }
+
+    const sideloadId = newId("sdl");
+    const token = `sdl_${randomBytes(32).toString("base64url")}`;
+    const r = await query<SideloadRow>(
+      `INSERT INTO pcs_sideloads
+         (sideload_id, host_id, name, token_hash, token_hint, scopes, created_by, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       RETURNING ${SIDELOAD_COLUMNS}`,
+      [
+        sideloadId,
+        hostId,
+        name,
+        hashToken(token),
+        token.slice(-4),
+        scopes,
+        input.created_by ?? null,
+        expiresAt,
+      ],
+    );
+    const sideload = r.rows[0];
+    await this.audit(input.created_by ?? "unknown", "sideload.create", sideloadId, null, {
+      host_id: hostId,
+      name,
+      scopes,
+      expires_at: expiresAt,
+    });
+    return { sideload, token };
+  }
+
+  async listSideloads(hostId?: string): Promise<SideloadRow[]> {
+    const r = hostId
+      ? await query<SideloadRow>(
+          `SELECT ${SIDELOAD_COLUMNS} FROM pcs_sideloads WHERE host_id=$1 ORDER BY created_at DESC`,
+          [hostId],
+        )
+      : await query<SideloadRow>(
+          `SELECT ${SIDELOAD_COLUMNS} FROM pcs_sideloads ORDER BY created_at DESC`,
+        );
+    return r.rows;
+  }
+
+  /** Delete a sideload outright; its token stops working on the next request. */
+  async deleteSideload(
+    sideloadId: string,
+    operator: string,
+  ): Promise<{ sideload_id: string; host_id: string; name: string }> {
+    const r = await query<{ sideload_id: string; host_id: string; name: string }>(
+      `DELETE FROM pcs_sideloads WHERE sideload_id=$1
+        RETURNING sideload_id, host_id, name`,
+      [sideloadId],
+    );
+    const sideload = r.rows[0];
+    if (!sideload) throw notFound("SIDELOAD_NOT_FOUND", "sideload not found");
+    await this.audit(operator, "sideload.delete", sideloadId, null, {
+      host_id: sideload.host_id,
+      name: sideload.name,
+    });
+    return sideload;
+  }
+
+  /** Verify a sideload bearer token and touch last_seen_at (throttled to one write per 30 s). */
+  async authenticateSideload(token: string, ip?: string): Promise<SideloadRow> {
+    const raw = String(token ?? "").trim();
+    if (!raw.startsWith("sdl_")) {
+      throw forbidden("SIDELOAD_TOKEN_INVALID", "invalid sideload token");
+    }
+    const hash = hashToken(raw);
+    const r = await query<SideloadRow & { token_hash: string }>(
+      `SELECT ${SIDELOAD_COLUMNS}, token_hash FROM pcs_sideloads WHERE token_hash=$1`,
+      [hash],
+    );
+    const row = r.rows[0];
+    const matches =
+      row !== undefined &&
+      row.token_hash.length === hash.length &&
+      timingSafeEqual(Buffer.from(row.token_hash), Buffer.from(hash));
+    if (!row || !matches) throw forbidden("SIDELOAD_TOKEN_INVALID", "invalid sideload token");
+    if (row.revoked_at) throw forbidden("SIDELOAD_REVOKED", "sideload has been revoked");
+    if (row.expires_at && new Date(row.expires_at).getTime() <= nowMs()) {
+      throw forbidden("SIDELOAD_EXPIRED", "sideload token has expired");
+    }
+
+    // Presence is advisory: never fail the request because the touch could not be written.
+    void query(
+      `UPDATE pcs_sideloads SET last_seen_at = now(), last_ip = $2
+        WHERE sideload_id = $1
+          AND (last_seen_at IS NULL OR last_seen_at < now() - interval '30 seconds')`,
+      [row.sideload_id, ip ?? null],
+    ).catch(() => {});
+
+    const { token_hash: _ignored, ...sideload } = row;
+    return sideload;
+  }
+
+  /** The scheduler a sideload talks through: the host's root scheduler, falling back to any live scheduler. */
+  async rootSchedulerForHost(hostId: string): Promise<DeploymentRow> {
+    const r = await query<DeploymentRow>(
+      `SELECT * FROM pcs_deployments
+        WHERE host_id=$1 AND role_id='scheduler' AND status <> 'REMOVED'
+        ORDER BY CASE WHEN scheduler_role = 'root' THEN 0 WHEN scheduler_role IS NULL THEN 1 ELSE 2 END,
+                 created_at ASC
+        LIMIT 1`,
+      [hostId],
+    );
+    const dep = r.rows[0];
+    if (!dep) {
+      throw new PcsError(
+        503,
+        "SCHEDULER_NOT_DEPLOYED",
+        "no scheduler is deployed on this host, so the sideload has nothing to talk to",
+      );
+    }
+    return dep;
+  }
+
+  /** Forward a sideload request to its host's root scheduler; the token never reaches the scheduler. */
+  async proxySideloadRequest(
+    sideload: SideloadRow,
+    method: "GET" | "POST",
+    pathname: string,
+    search: string,
+    body: unknown,
+  ): Promise<unknown> {
+    const dep = await this.rootSchedulerForHost(sideload.host_id);
+    return this.proxySchedulerDeployment(dep.deployment_id, method, pathname, search, body);
+  }
+
+  /**
+   * Builders reachable through the sideload's root scheduler.
+   *
+   * This is the scheduler's subtree, not just the sideload's own host: the root scheduler already dispatches
+   * across folded child hosts, so the list must match what a submitted task can actually run on.
+   */
+  async sideloadBuilders(sideload: SideloadRow): Promise<{ items: unknown[] }> {
+    const out = (await this.proxySideloadRequest(
+      sideload,
+      "GET",
+      "/v1/instances",
+      "",
+      undefined,
+    )) as { items?: unknown[] } | null;
+    const items = Array.isArray(out?.items) ? out!.items : [];
+    return { items: items.filter((i: any) => i?.role_id === "builder") };
+  }
+
   // ---------------------------------------------------------------- Hosts
 
   async createHost(input: { name: string; labels?: Record<string, unknown> }): Promise<{
@@ -972,6 +1219,12 @@ export class PcsService {
       password?: string;
       /** The host's own role: container host / bare-metal builder / bare-metal scheduler, one of three. */
       role_mode?: "containers" | "builder" | "scheduler";
+      /** Choices for the bare-metal builder created (or restored) by the role switch. */
+      native_builder?: {
+        display_name?: string;
+        agent_profile_id?: string;
+        api_profile_ids?: string[];
+      };
     },
     operator = "system",
   ): Promise<{
@@ -1049,7 +1302,13 @@ export class PcsService {
         key_fingerprint: cred.key_fingerprint,
         probe,
         ...(input.role_mode ? { role_mode: input.role_mode } : {}),
-        ...(await this.afterRoleModeChange(hostId, previousRole, input.role_mode, operator)),
+        ...(await this.afterRoleModeChange(
+          hostId,
+          previousRole,
+          input.role_mode,
+          operator,
+          input.native_builder ?? {},
+        )),
       };
     }
 
@@ -1123,7 +1382,13 @@ export class PcsService {
       key_fingerprint: fingerprint,
       probe,
       ...(input.role_mode ? { role_mode: input.role_mode } : {}),
-      ...(await this.afterRoleModeChange(hostId, previousRole, input.role_mode, operator)),
+      ...(await this.afterRoleModeChange(
+        hostId,
+        previousRole,
+        input.role_mode,
+        operator,
+        input.native_builder ?? {},
+      )),
     };
   }
 
@@ -1136,14 +1401,18 @@ export class PcsService {
     previous: "containers" | "builder" | "scheduler",
     next: "containers" | "builder" | "scheduler" | undefined,
     operator: string,
+    options: { display_name?: string; agent_profile_id?: string; api_profile_ids?: string[] } = {},
   ): Promise<{
     native_builder?: { deployment_id: string; created: boolean; status: string };
     warning?: string;
   }> {
-    if (!next || next === previous) return {};
+    if (!next) return {};
+    // Idempotent by design: even when the host is already a bare-metal builder, its native deployment may be gone
+    // (removed earlier, marked FAILED, or lost after a reinstall), so a repeated "deploy bare-metal builder" must
+    // recreate it instead of silently doing nothing.
     if (next === "builder") {
       try {
-        return { native_builder: await this.ensureNativeBuilder(hostId, operator) };
+        return { native_builder: await this.ensureNativeBuilder(hostId, operator, options) };
       } catch (e) {
         return { warning: e instanceof Error ? e.message : String(e) };
       }
@@ -1175,12 +1444,24 @@ export class PcsService {
   async ensureNativeBuilder(
     hostId: string,
     operator: string,
+    options: { display_name?: string; agent_profile_id?: string; api_profile_ids?: string[] } = {},
   ): Promise<{ deployment_id: string; created: boolean; status: string }> {
     const host = await this.getHost(hostId);
     if (!host) throw notFound("HOST_NOT_FOUND", "host not found");
     if (host.role_mode !== "builder") {
       throw conflict("HOST_NOT_NATIVE_BUILDER", "first set the host role to bare-metal builder");
     }
+    const displayName = String(options.display_name ?? "").trim();
+    if (displayName.length > 32) {
+      throw new PcsError(400, "INVALID_INSTANCE_NAME", "name must be at most 32 characters");
+    }
+    // The display name is what the user typed; the instance id is the ASCII identifier used by container names,
+    // volume names, scheduler node ids and databases. The scheduler keys instances by instance_id alone, so the
+    // platform-chosen default must be unique per host: a shared default makes two builders overwrite each other
+    // and leaves one host unable to receive tasks.
+    const instanceId = displayName
+      ? instanceIdFromName(displayName)
+      : `native-builder-${hostId.slice(-6)}`;
     const existing = (await this.activeNativeBuilders(hostId))[0];
     if (existing && existing.status !== "FAILED" && existing.actual_state !== "MISSING") {
       if (existing.desired_state === "STOPPED") {
@@ -1214,16 +1495,36 @@ export class PcsService {
     // Bind a builder Agent that can be delivered with the deployment; deterministic subtasks can still run when no Profile is available.
     let agent: AgentProfileRow | null = null;
     let delivery: ReturnType<PcsService["agentDelivery"]> | null = null;
-    for (const candidate of await this.listAgentProfiles()) {
-      if (candidate.role_id !== "builder" || !candidate.enabled) continue;
-      try {
-        const out = this.agentDelivery(candidate, "builder", "native-builder");
-        agent = candidate;
-        delivery = out;
-        break;
-      } catch {
-        // A Profile that references the Secret Store cannot be delivered with the deployment, so try the next one.
+    const requestedAgentId = String(options.agent_profile_id ?? "").trim();
+    if (requestedAgentId) {
+      const chosen = await this.getAgentProfile(requestedAgentId);
+      if (!chosen) throw notFound("AGENT_PROFILE_NOT_FOUND", "Agent Profile not found");
+      if (!chosen.enabled) throw conflict("AGENT_PROFILE_DISABLED", "Agent Profile is disabled");
+      if (chosen.role_id !== "builder") {
+        throw forbidden("ROLE_AGENT_NOT_ALLOWED", "Agent Profile does not belong to the builder role");
       }
+      delivery = this.agentDelivery(chosen, "builder", instanceId);
+      agent = chosen;
+    } else {
+      for (const candidate of await this.listAgentProfiles()) {
+        if (candidate.role_id !== "builder" || !candidate.enabled) continue;
+        try {
+          const out = this.agentDelivery(candidate, "builder", instanceId);
+          agent = candidate;
+          delivery = out;
+          break;
+        } catch {
+          // A Profile that references the Secret Store cannot be delivered with the deployment, so try the next one.
+        }
+      }
+    }
+
+    // Validate the chosen API Profiles before creating the deployment, so a bad id leaves no half-created instance behind.
+    const apiProfileIds = [...new Set((options.api_profile_ids ?? []).map(String))];
+    for (const apiId of apiProfileIds) {
+      const profile = await this.getApiProfile(apiId);
+      if (!profile) throw notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
+      if (!profile.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile is disabled: ${apiId}`);
     }
 
     const resources = (host.resources ?? {}) as Record<string, any>;
@@ -1246,7 +1547,7 @@ export class PcsService {
     );
 
     const env: Record<string, string> = {
-      INSTANCE_ID: "native-builder",
+      INSTANCE_ID: instanceId,
       ROLE_ID: "builder",
       HOST_ID: hostId,
       BUILDER_OS: host.os || "linux",
@@ -1270,9 +1571,9 @@ export class PcsService {
 
     const { deployment } = await this.createDeployment({
       host_id: hostId,
-      instance_id: "native-builder",
+      instance_id: instanceId,
       role_id: "builder",
-      display_name: host.hostname || "native-builder",
+      display_name: displayName || host.hostname || instanceId,
       execution: "native",
       resource_profile: {
         cpu_limit: cpu,
@@ -1293,13 +1594,18 @@ export class PcsService {
     });
 
     if (agent && delivery) {
-      await this.bindAgent(hostId, "native-builder", agent.agent_profile_id, "builder", operator)
-        .catch(() => undefined);
+      await this.bindAgent(hostId, instanceId, agent.agent_profile_id, "builder", operator).catch(
+        () => undefined,
+      );
     }
-    await this.audit(operator, "host.native_builder.ensure", deployment.deployment_id, "native-builder", {
+    for (const apiId of apiProfileIds) {
+      await this.bindApi(hostId, instanceId, apiId, operator).catch(() => undefined);
+    }
+    await this.audit(operator, "host.native_builder.ensure", deployment.deployment_id, instanceId, {
       host_id: hostId,
       scheduler_url: schedulerUrl,
       agent_profile_id: agent?.agent_profile_id ?? null,
+      api_profile_ids: apiProfileIds,
     });
     console.log(`[audit] native builder ${hostId}/${deployment.deployment_id} by ${operator}`);
     return {
@@ -2682,6 +2988,21 @@ export class PcsService {
     return r.rows;
   }
 
+  /** Resolve the URL the control plane should use to reach a scheduler deployment. */
+  private async schedulerBase(deploymentId: string): Promise<string> {
+    const dep = await this.getDeployment(deploymentId);
+    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "deployment not found");
+    if (dep.role_id !== "scheduler") {
+      throw new PcsError(400, "NOT_A_SCHEDULER", "only scheduler deployments can use this proxy");
+    }
+    const base =
+      String(dep.scheduler_url ?? "").trim() ||
+      this.cfg.schedulerUrls[dep.host_id] ||
+      this.cfg.schedulerUrl;
+    if (!base) throw new PcsError(503, "SCHEDULER_URL_MISSING", "no scheduler address is available");
+    return base;
+  }
+
   /**
    * Forward the admin app's task requests to "the scheduler that owns the instance".
    *
@@ -2696,16 +3017,7 @@ export class PcsService {
     search: string,
     body: unknown,
   ): Promise<unknown> {
-    const dep = await this.getDeployment(deploymentId);
-    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "deployment not found");
-    if (dep.role_id !== "scheduler") {
-      throw new PcsError(400, "NOT_A_SCHEDULER", "only scheduler deployments can use this proxy");
-    }
-    const base =
-      String(dep.scheduler_url ?? "").trim() ||
-      this.cfg.schedulerUrls[dep.host_id] ||
-      this.cfg.schedulerUrl;
-    if (!base) throw new PcsError(503, "SCHEDULER_URL_MISSING", "no scheduler address is available");
+    const base = await this.schedulerBase(deploymentId);
     const pathPart = pathname.startsWith("/") ? pathname : `/${pathname}`;
     const qs = search ? (search.startsWith("?") ? search : `?${search}`) : "";
     const target = `${base.replace(/\/+$/, "")}${pathPart}${qs}`;
@@ -2744,6 +3056,86 @@ export class PcsService {
       );
     }
     return data;
+  }
+
+  /**
+   * Stream one verified artifact through the scheduler's operator download route.
+   *
+   * The bytes never pass through JSON: a file can be 64 MiB and of any format, so this returns the
+   * raw buffer plus the headers needed to hand it to the caller unchanged. The scheduler-side route
+   * sits in the same trusted network as the other operator routes; PCS authenticates the caller.
+   */
+  async proxySchedulerArtifactDownload(
+    deploymentId: string,
+    artifactId: string,
+  ): Promise<{ media_type: string; sha256: string; name: string; data: Buffer }> {
+    const base = await this.schedulerBase(deploymentId);
+    const target = `${base.replace(/\/+$/, "")}/v1/artifacts/${encodeURIComponent(artifactId)}/download`;
+
+    let res: Response;
+    try {
+      res = await fetch(target, { signal: AbortSignal.timeout(120_000) });
+    } catch (e) {
+      throw new PcsError(
+        502,
+        "SCHEDULER_UNREACHABLE",
+        `scheduler unreachable: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let data: any = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text;
+        }
+      }
+      const err = data?.error ?? {};
+      throw new PcsError(
+        res.status,
+        String(err.code ?? "SCHEDULER_ERROR"),
+        String(err.message ?? `scheduler returned ${res.status}`),
+        err.detail,
+      );
+    }
+    const header = (name: string) => String(res.headers.get(name) ?? "");
+    const encodedName = header("x-artifact-name");
+    let name = "";
+    if (encodedName) {
+      try {
+        name = decodeURIComponent(encodedName);
+      } catch {
+        name = encodedName;
+      }
+    }
+    return {
+      media_type: header("content-type") || "application/octet-stream",
+      sha256: header("x-artifact-sha256"),
+      name: name || `${artifactId}.bin`,
+      data: Buffer.from(await res.arrayBuffer()),
+    };
+  }
+
+  /** List one task's files through the sideload channel (bytes are fetched separately). */
+  async sideloadTaskArtifacts(sideload: SideloadRow, taskId: string): Promise<unknown> {
+    return this.proxySideloadRequest(
+      sideload,
+      "GET",
+      `/v1/tasks/${encodeURIComponent(taskId)}/artifacts`,
+      "",
+      undefined,
+    );
+  }
+
+  /** Download one file through the sideload's root scheduler. */
+  async sideloadArtifactDownload(
+    sideload: SideloadRow,
+    artifactId: string,
+  ): Promise<{ media_type: string; sha256: string; name: string; data: Buffer }> {
+    const dep = await this.rootSchedulerForHost(sideload.host_id);
+    return this.proxySchedulerArtifactDownload(dep.deployment_id, artifactId);
   }
 
   /**
@@ -2838,6 +3230,9 @@ export class PcsService {
       );
     }
     const files: Array<{ path: string; content: string }> = [];
+    // The Agent Profile's entry point is fixed at /opt/platform/agents/cli-agent.mjs, and the adapter imports its helper
+    // modules by relative path, so they have to ship in the same directory instead of under app/.
+    const agentModules = new Set(["cli-agent.mjs", "task-envelope.mjs"]);
     const walk = (abs: string, rel: string): void => {
       for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
         if (entry.name.startsWith(".")) continue;
@@ -2847,9 +3242,8 @@ export class PcsService {
           walk(childAbs, childRel);
         } else {
           files.push({
-            // The Agent Profile's entry point is fixed at /opt/platform/agents/cli-agent.mjs.
-            path: childRel === "cli-agent.mjs"
-              ? "/opt/platform/agents/cli-agent.mjs"
+            path: agentModules.has(childRel)
+              ? `/opt/platform/agents/${childRel}`
               // Codex's config directory is fixed at /opt/platform/codex (CODEX_HOME).
               : childRel.startsWith("codex/")
                 ? `/opt/platform/${childRel}`

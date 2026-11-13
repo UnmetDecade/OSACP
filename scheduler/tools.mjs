@@ -13,6 +13,7 @@
  *   SCHEDULER_URL  defaults to http://127.0.0.1:8443 (the scheduler itself inside its container)
  */
 import readline from "node:readline";
+import { boundedSection, readResult } from "./tool-result-gate.mjs";
 
 const BASE = (process.env.SCHEDULER_URL || `http://127.0.0.1:${process.env.PORT || "8443"}`).replace(/\/+$/, "");
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"]);
@@ -70,8 +71,8 @@ function render(task, extra = {}) {
   ];
   if (out.exit_code !== undefined) lines.push(`exit_code: ${out.exit_code}`);
   if (out.duration_ms !== undefined) lines.push(`duration_ms: ${out.duration_ms}`);
-  if (typeof out.stdout === "string" && out.stdout) lines.push("", "stdout:", out.stdout);
-  if (typeof out.stderr === "string" && out.stderr) lines.push("", "stderr:", out.stderr);
+  if (typeof out.stdout === "string" && out.stdout) lines.push("", boundedSection("stdout", out.stdout));
+  if (typeof out.stderr === "string" && out.stderr) lines.push("", boundedSection("stderr", out.stderr));
   if (!TERMINAL.has(status)) {
     lines.push(
       "",
@@ -95,7 +96,8 @@ const TOOLS = [
     name: "builder_exec",
     description:
       "Run a shell command inside a builder container (full privileges, equivalent to SSH) and return the exit code and output. " +
-      "Use it to inspect the environment, install packages, or compile. Long commands return RUNNING and a task_id first; fetch the result with task_status.",
+      "Use it to inspect the environment, install packages, or compile. Long commands return RUNNING and a task_id first; fetch the result with task_status. " +
+      "Output over about 8000 chars comes back as head + tail plus a handle; use read_result to look at the rest.",
     inputSchema: {
       type: "object",
       properties: {
@@ -132,6 +134,24 @@ const TOOLS = [
       type: "object",
       properties: { task_id: { type: "string" } },
       required: ["task_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_result",
+    description:
+      "Read a bounded slice of an output that was too large to return in full. The tool result names the handle to use. " +
+      "Prefer grep to locate the line you need; use offset/limit to page through characters. Every answer is capped, so never ask for everything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        handle: { type: "string", description: "Result handle, e.g. r3, as printed in the truncated tool result" },
+        grep: { type: "string", description: "Case-insensitive regular expression; returns matching lines with line numbers" },
+        context: { type: "integer", minimum: 0, maximum: 20, description: "Lines of context around each grep match, default 2" },
+        offset: { type: "integer", minimum: 0, description: "Character offset to start from when not grepping" },
+        limit: { type: "integer", minimum: 1, maximum: 8000, description: "Characters to return, default and maximum 8000" },
+      },
+      required: ["handle"],
       additionalProperties: false,
     },
   },
@@ -195,7 +215,7 @@ async function callTool(name, args) {
     const done = await waitTask(task.task_id, MAX_WAIT_MS);
     const out = outputsOf(done);
     const reply = String(out.reply ?? done?.result_summary ?? "");
-    return `${render(done, { instance_id: instanceId })}${reply ? `\n\nreply:\n${reply}` : ""}`;
+    return `${render(done, { instance_id: instanceId })}${reply ? `\n\n${boundedSection("reply", reply)}` : ""}`;
   }
 
   if (name === "task_status") {
@@ -203,6 +223,12 @@ async function callTool(name, args) {
     if (!taskId) throw new Error("task_id is required");
     const task = await api(`/v1/tasks/${encodeURIComponent(taskId)}`);
     return render(task);
+  }
+
+  if (name === "read_result") {
+    const handle = String(args?.handle ?? "").trim();
+    if (!handle) throw new Error("handle is required");
+    return readResult(handle, args);
   }
 
   throw new Error(`Unknown tool: ${name}`);

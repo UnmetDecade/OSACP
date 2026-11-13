@@ -1,26 +1,36 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 import readline from "node:readline";
+import { redact } from "../redact.js";
 import type { AgentProfile } from "./types.js";
 
 export interface AdapterEvent {
-  type: "progress" | "log" | "artifact";
+  type: "progress" | "log" | "artifact" | "outward";
   percent?: number;
   phase?: string;
   level?: string;
   message?: string;
   name?: string;
   path?: string;
+  /** outward: a short, machine-readable label of the side effect about to happen. */
+  action?: string;
 }
 
 export interface AdapterResult {
-  status: "SUCCEEDED" | "FAILED";
+  status: "SUCCEEDED" | "FAILED" | "NEEDS_INPUT" | "SPLIT";
   summary?: string;
   /** Optional text reply for chat-type tasks; ordinary build tasks do not need to set it */
   reply?: string;
   outputs?: Array<{ name: string; path: string }>;
   metrics?: Record<string, unknown>;
-  error?: { code?: string; message?: string };
+  /** detail carries recovery hints such as a provider reset time (`retry_at`); the scheduler decides what to do with it. */
+  error?: { code?: string; message?: string; detail?: Record<string, unknown> };
+  /** NEEDS_INPUT: the question a person has to answer. */
+  question?: string;
+  /** SPLIT: child tasks the parent asks the scheduler to run in parallel. */
+  split?: Array<{ task_type?: string; title?: string; instruction?: string; requirements?: Record<string, unknown> }>;
+  /** Outward actions observed by the adapter, including ones declared in the result file. */
+  outward_actions?: string[];
 }
 
 export interface AdapterHooks {
@@ -166,6 +176,10 @@ export class StdioAdapter {
       this.hooks.onEvent({ type, name: params.name, path: params.path });
       return;
     }
+    if (type === "outward") {
+      this.hooks.onEvent({ type, action: String(params.action ?? "external side effect") });
+      return;
+    }
     this.hooks.onLog(`Unknown agent.event type: ${type}`);
   }
 
@@ -256,9 +270,5 @@ export class StdioAdapter {
   }
 }
 
-export function redact(line: string): string {
-  return line
-    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>")
-    .replace(/((?:secret|token|password|passwd|api[_-]?key)\s*[=:]\s*)[^\s,"'}]+/gi, "$1<redacted>")
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<redacted-private-key>");
-}
+// Kept exported here because every adapter consumer already imports from this module.
+export { redact };

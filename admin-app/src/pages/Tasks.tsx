@@ -7,15 +7,46 @@ import { tasksForHost } from "../host-tasks";
 import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { getLiveConnection } from "../live/config";
-import { fetchTaskEvents } from "../live/sync";
-import type { Task, TaskEvent } from "../types";
+import { fetchFailureSignatures, fetchTaskDetail, fetchTaskEvents } from "../live/sync";
+import type { FailureSignature, Task, TaskAttempt, TaskChild, TaskEvent } from "../types";
 import { Character } from "../components/Character";
 import { CreateTaskModal } from "../components/CreateTask";
 import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
-import { cancelBuild, retryBuild } from "../api";
+import { answerTask, cancelBuild, retryBuild } from "../api";
 
-const FILTERS = ["ALL", "QUEUED", "RUNNING", "SUCCEEDED", "FAILED"] as const;
+const FILTERS = ["ALL", "QUEUED", "RUNNING", "NEEDS_INPUT", "WAITING_CHILDREN", "SUCCEEDED", "FAILED"] as const;
+
+const OUTCOME_LABELS: Record<string, string> = {
+  completed: "已完成",
+  error: "执行错误",
+  cancelled: "已取消",
+  input_expired: "等待回答超时",
+  input_exhausted: "回答轮次用尽",
+  children_exhausted: "子任务轮次用尽",
+  interrupted_after_outward: "外部操作后中断",
+};
+
+const FAILURE_CLASS_LABELS: Record<string, string> = {
+  permanent: "确定性失败",
+  outward: "外部操作后中断",
+  rate_limit: "限流",
+  busy: "资源占用",
+  transient: "暂时性错误",
+};
+
+const APPROVAL_LABELS: Record<string, string> = {
+  ask: "只读并提问",
+  edits: "可改文件",
+  auto: "可执行命令",
+  full: "完全自主",
+};
+
+/** Internal payload keys mean nothing to an operator; show the platform wording instead. */
+const PAYLOAD_LABELS: Record<string, string> = {
+  payload_ref: "载荷引用",
+  resource_profile_id: "资源规格",
+};
 
 export function TaskList() {
   const live = useLive();
@@ -125,7 +156,13 @@ export function TaskList() {
                       <div className="small"><code>{task.id}</code></div>
                     </td>
                     <td><Tag>{task.type}</Tag></td>
-                    <td><Badge value={task.state} /></td>
+                    <td>
+                      <Badge value={task.state} />
+                      {/* A retrying task is QUEUED between attempts; the counter is the only hint in the list that it already failed. */}
+                      {task.state === "QUEUED" && task.attempts > 0 && (
+                        <div className="small muted">{t("上次执行失败，等待自动重试")}</div>
+                      )}
+                    </td>
                     <td>{inst ? <Link className="link" to={`/builders/${inst.id}`}>{inst.name}</Link> : <span className="muted">{t("自动选择")}</span>}</td>
                     <td>P{task.priority}</td>
                     <td className="muted small">{new Date(task.created_at).toLocaleString("zh-CN")}</td>
@@ -134,10 +171,12 @@ export function TaskList() {
                         {(task.state === "FAILED" || task.state === "CANCELLED") && (
                           <Button size="sm" onClick={() => act(task.id, "retry", task.scheduler_deployment_id)} disabled={busy === `${task.id}-retry`}>{t("重试")}</Button>
                         )}
-                        {(task.state === "QUEUED" || task.state === "RUNNING") && (
+                        {(task.state === "QUEUED" ||
+                          task.state === "RUNNING" ||
+                          task.state === "NEEDS_INPUT" ||
+                          task.state === "WAITING_CHILDREN") && (
                           <Button size="sm" onClick={() => act(task.id, "cancel", task.scheduler_deployment_id)} disabled={busy === `${task.id}-cancel`}>{t("取消")}</Button>
                         )}
-                        <Link className="icon-btn" to={`/tasks/${task.id}`} title={t("详情")}><Icon name="arrow" size={14} /></Link>
                       </div>
                     </td>
                   </tr>
@@ -158,8 +197,14 @@ export function TaskShow() {
   const live = useLive();
   const task = db.tasks.find((t) => t.id === id);
   const [events, setEvents] = useState<TaskEvent[]>(task?.events ?? []);
+  // The list projection has no failure text; the attempt history is the only place the agent's error message lives.
+  const [attempts, setAttempts] = useState<TaskAttempt[]>([]);
+  const [children, setChildren] = useState<TaskChild[]>([]);
+  // How often this same normalized failure has been seen across the fleet; one row, not one per run.
+  const [signatures, setSignatures] = useState<FailureSignature[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [answer, setAnswer] = useState("");
 
   useEffect(() => {
     setEvents(task?.events ?? []);
@@ -169,8 +214,18 @@ export function TaskShow() {
     fetchTaskEvents(conn, task.id, task.scheduler_deployment_id)
       .then((items) => { if (alive) setEvents(items); })
       .catch(() => {});
+    fetchTaskDetail(conn, task.id, task.scheduler_deployment_id)
+      .then((detail) => {
+        if (!alive) return;
+        setAttempts(detail.attempts);
+        setChildren(detail.children);
+      })
+      .catch(() => {});
+    fetchFailureSignatures(conn, task.scheduler_deployment_id)
+      .then((items) => { if (alive) setSignatures(items); })
+      .catch(() => {});
     return () => { alive = false; };
-  }, [task?.id, task?.events]);
+  }, [task?.id, task?.events, task?.state, task?.attempts]);
 
   if (!task) {
     return (
@@ -182,9 +237,24 @@ export function TaskShow() {
   }
 
   const inst = db.instances.find((i) => i.id === task.instance_id);
+  // requirements is an object: reading it with String() printed "[object Object]" instead of the task body.
+  const requirements = (task.payload.requirements ?? {}) as Record<string, any>;
   const instruction = String(
-    task.payload.instruction ?? task.payload.command ?? task.payload.requirements ?? "",
+    task.payload.instruction ??
+      requirements.build?.instruction ??
+      requirements.chat?.message ??
+      task.payload.command ??
+      "",
   );
+  // The newest failed attempt explains why the task is queued for a retry or dead-lettered; a later success supersedes it.
+  const lastFailure =
+    task.state === "QUEUED" || task.state === "FAILED"
+      ? [...attempts].reverse().find((a) => a.status === "FAILED" && a.error)
+      : undefined;
+  // The fleet-wide row for this exact failure: occurrence count, not another message.
+  const sameFailure = lastFailure?.failure_signature
+    ? signatures.find((s) => s.signature === lastFailure.failure_signature)
+    : undefined;
 
   async function act(action: "retry" | "cancel") {
     setBusy(action);
@@ -200,8 +270,24 @@ export function TaskShow() {
     }
   }
 
+  async function submitAnswer() {
+    const text = answer.trim();
+    if (!text) return;
+    setBusy("answer");
+    setError("");
+    try {
+      await answerTask(task!.id, text, live.refresh, task!.scheduler_deployment_id);
+      setAnswer("");
+      if (live.connected) await live.refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return (
-    <div className="page">
+    <div className="page page-task">
       <Link className="back" to="/tasks"><Icon name="back" size={13} />{t("任务")}</Link>
       <PageHead
         title={
@@ -230,7 +316,7 @@ export function TaskShow() {
                 {busy === "retry" ? t("重试中…") : t("重试")}
               </Button>
             )}
-            {(task.state === "QUEUED" || task.state === "RUNNING") && (
+            {(task.state === "QUEUED" || task.state === "RUNNING" || task.state === "WAITING_CHILDREN") && (
               <Button onClick={() => act("cancel")} disabled={busy === "cancel"}>
                 <Icon name="stop" size={13} />
                 {t("取消")}
@@ -248,6 +334,56 @@ export function TaskShow() {
 
       {error && <Callout tone="bad">{error}</Callout>}
       {task.block_reason && <Callout tone="bad">{task.block_reason}</Callout>}
+      {/* The agent stopped and is waiting for a person. Answering requeues the task and hands the
+          answer to the next attempt; it is not a failure and does not consume the retry budget. */}
+      {task.state === "NEEDS_INPUT" && (
+        <Card style={{ marginBottom: 16 }}>
+          <CardTitle>{t("等待回答")}</CardTitle>
+          <div className="question-box">{task.pending_question?.question ?? t("（没有记录问题内容）")}</div>
+          <textarea
+            className="input"
+            rows={4}
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            placeholder={t("回答后任务会带着这个回答继续执行")}
+            style={{ width: "100%", marginTop: 10, resize: "vertical" }}
+          />
+          <div className="actions" style={{ marginTop: 10 }}>
+            <Button variant="primary" onClick={() => void submitAnswer()} disabled={busy === "answer" || !answer.trim()}>
+              {busy === "answer" ? t("提交中…") : t("提交回答并继续")}
+            </Button>
+            <Button onClick={() => act("cancel")} disabled={busy === "cancel"}>{t("放弃任务")}</Button>
+          </div>
+        </Card>
+      )}
+
+      {lastFailure && (
+        <Callout tone="bad">
+          {t("第 {n} 次执行失败（{code}）：{message}", {
+            n: lastFailure.attempt_number,
+            code: lastFailure.error?.code ?? "UNKNOWN",
+            message: lastFailure.error?.message ?? "",
+          })}
+          {lastFailure.failure_class
+            ? ` ${t("分类：{label}。", {
+                label: t(FAILURE_CLASS_LABELS[lastFailure.failure_class] ?? lastFailure.failure_class),
+              })}`
+            : ""}
+          {sameFailure ? ` ${t("同类失败已出现 {count} 次。", { count: sameFailure.occurrences })}` : ""}
+          {task.state === "QUEUED"
+            ? ` ${
+                lastFailure.failure_class === "rate_limit"
+                  ? t("正在等待外部限制恢复，恢复后自动重试。")
+                  : t("调度机正在退避后自动重试。")
+              }`
+            : ""}
+          {lastFailure.failure_signature && (
+            <div className="muted small" style={{ marginTop: 6 }}>
+              {t("失败签名：{signature}", { signature: lastFailure.failure_signature })}
+            </div>
+          )}
+        </Callout>
+      )}
 
       <div className="detail-grid">
         <Card>
@@ -256,6 +392,19 @@ export function TaskShow() {
             <KeyVal label={t("工作流")}>{task.workflow}</KeyVal>
             <KeyVal label={t("阶段")}>{task.stage}</KeyVal>
             <KeyVal label={t("目标角色")}>{task.target_role}</KeyVal>
+            {task.approval_mode && (
+              <KeyVal label={t("自主程度")}>
+                {t(APPROVAL_LABELS[task.approval_mode] ?? task.approval_mode)}
+              </KeyVal>
+            )}
+            {task.outcome && (
+              <KeyVal label={t("结果")}>{t(OUTCOME_LABELS[task.outcome] ?? task.outcome)}</KeyVal>
+            )}
+            {task.parent_task_id && (
+              <KeyVal label={t("父任务")}>
+                <Link className="link" to={`/tasks/${task.parent_task_id}`}>{task.parent_task_id}</Link>
+              </KeyVal>
+            )}
             <KeyVal label={t("构建机")}>{inst ? <Link className="link" to={`/builders/${inst.id}`}>{inst.name}</Link> : t("等待派发")}</KeyVal>
             <KeyVal label={t("创建时间")}>{new Date(task.created_at).toLocaleString("zh-CN")}</KeyVal>
             <KeyVal label={t("开始时间")}>{task.started_at ? new Date(task.started_at).toLocaleString("zh-CN") : "-"}</KeyVal>
@@ -270,27 +419,66 @@ export function TaskShow() {
             {Object.entries(task.payload)
               .filter(([k]) => k !== "instruction" && k !== "command" && k !== "requirements")
               .map(([k, v]) => (
-                <KeyVal key={k} label={k}>{typeof v === "object" ? JSON.stringify(v) : String(v)}</KeyVal>
+                <KeyVal key={k} label={PAYLOAD_LABELS[k] ? t(PAYLOAD_LABELS[k]) : k}>
+                  {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                </KeyVal>
               ))}
           </div>
         </Card>
       </div>
 
-      <Card style={{ marginTop: 16 }}>
+      {/* Fan-out: the parent waits here until every child is terminal, then resumes with their results. */}
+      {(children.length || task.children?.length || task.parent_task_id) && (
+        <Card style={{ marginTop: 16 }}>
+          <CardTitle>{t("子任务")}</CardTitle>
+          {(children.length ? children : task.children ?? []).length ? (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>{t("任务")}</th>
+                  <th>{t("类型")}</th>
+                  <th>{t("状态")}</th>
+                  <th>{t("结果")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(children.length ? children : task.children ?? []).map((c) => (
+                  <tr key={c.task_id}>
+                    <td>
+                      <Link className="strong" to={`/tasks/${c.task_id}`}>{c.title || c.task_id}</Link>
+                    </td>
+                    <td><Tag>{c.task_type}</Tag></td>
+                    <td><Badge value={c.status} /></td>
+                    <td className="muted small">{c.outcome ? t(OUTCOME_LABELS[c.outcome] ?? c.outcome) : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <Empty text={t("这个任务由父任务拆分而来，等待父任务汇总结果。")} />
+          )}
+        </Card>
+      )}
+
+      <Card className="events-card" style={{ marginTop: 16 }}>
         <CardTitle>{t("事件")}</CardTitle>
         {events.length ? (
-          <ul className="timeline">
-            {events.map((e, i) => (
-              <li key={`${e.at}-${i}`}>
-                <span className={`tl-dot tl-${e.type.toLowerCase()}`} />
-                <div>
-                  <b>{e.type}</b>
-                  <p>{e.message}</p>
-                  <small>{new Date(e.at).toLocaleString("zh-CN")}</small>
-                </div>
-              </li>
-            ))}
-          </ul>
+          // The event trail grows for the whole task lifetime; scroll it inside the card instead of stretching the page.
+          <div className="events-scroll">
+            <ul className="timeline">
+              {/* Newest first: the latest state is what an operator opens the page for. */}
+              {[...events].reverse().map((e, i) => (
+                <li key={`${e.at}-${i}`}>
+                  <span className={`tl-dot tl-${e.type.toLowerCase()}`} />
+                  <div>
+                    <b>{e.type}</b>
+                    <p>{e.message}</p>
+                    <small>{new Date(e.at).toLocaleString("zh-CN")}</small>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : (
           <Empty text={t("还没有事件。实时模式下会从调度机拉取。")} />
         )}

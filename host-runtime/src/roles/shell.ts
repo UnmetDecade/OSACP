@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 /**
  * The only entry point for running commands inside the builder.
@@ -17,10 +18,16 @@ export interface ShellResult {
 
 const MAX_CAPTURE = 256 * 1024;
 
+/**
+ * The runtime itself runs under node, so its directory always has a working interpreter. Putting it first keeps
+ * `node` resolvable on native hosts, where the system PATH may not include it at all.
+ */
+const NODE_BIN_DIR = path.dirname(process.execPath);
+
 /** Inherit only the minimal environment needed to run; platform tokens do not enter the build process. */
 export function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    PATH: [NODE_BIN_DIR, process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"].join(":"),
     HOME: process.env.HOME ?? "/root",
     LANG: process.env.LANG ?? "C.UTF-8",
     TERM: "dumb",

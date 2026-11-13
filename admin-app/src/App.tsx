@@ -5,6 +5,7 @@ import { LiveProvider } from "./live/context";
 import { Dashboard } from "./pages/Dashboard";
 import { Builders } from "./pages/Builders";
 import { HostsPage } from "./pages/Hosts";
+import { HostShow } from "./pages/HostShow";
 import { BuilderShow } from "./pages/BuilderShow";
 import { SchedulerPage } from "./pages/Scheduler";
 import { SchedulerShow } from "./pages/SchedulerShow";
@@ -23,6 +24,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route index element={<Dashboard />} />
             <Route path="hosts" element={<HostsPage />} />
+            <Route path="hosts/:id" element={<HostShow />} />
             <Route path="builders" element={<Builders />} />
             <Route path="builders/:id" element={<BuilderShow />} />
             <Route path="scheduler" element={<SchedulerPage />} />

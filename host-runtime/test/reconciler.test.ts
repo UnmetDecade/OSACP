@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { AdmissionBroker } from "../src/admission-broker.js";
 import type { CommandPayload, InstanceSpec } from "../src/command-verify.js";
 import { containerName } from "../src/container-spec.js";
+import { OperationJournal } from "../src/journal.js";
+import { HostPolicyGate } from "../src/policy.js";
 import { Reconciler } from "../src/reconciler.js";
 import type { RuntimeHostConfig } from "../src/runtime-config.js";
 import { RuntimeState } from "../src/runtime-state.js";
@@ -69,6 +71,10 @@ function setup(opts: {
   watchdog?: HostState | null;
   agentEnvFile?: string;
   cacheDir?: string;
+  journal?: OperationJournal;
+  policyFile?: string;
+  audit?: (event: string, data?: Record<string, unknown>) => void;
+  auditBroken?: () => boolean;
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reconciler-test-"));
   const state = new RuntimeState(dir);
@@ -108,6 +114,10 @@ function setup(opts: {
     },
     log: () => {},
     now: () => now,
+    ...(opts.journal ? { journal: opts.journal } : {}),
+    ...(opts.policyFile ? { policy: new HostPolicyGate(opts.policyFile, () => {}) } : {}),
+    ...(opts.audit ? { audit: opts.audit } : {}),
+    ...(opts.auditBroken ? { auditBroken: opts.auditBroken } : {}),
   });
   return { dir, state, engine, broker, reconciler, hostStateFile };
 }
@@ -388,6 +398,101 @@ test("reconciliation: STOPPED deployments are no longer started", async () => {
     await reconciler.reconcile(true);
     assert.equal(engine.containers.get(containerName(insId))?.state, "exited");
   } finally {
+    cleanup(dir);
+  }
+});
+
+test("rollback: a deploy that fails after create leaves no half-created container", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reconciler-rb-"));
+  const journal = new OperationJournal(path.join(dir, "journal.jsonl"));
+  const { engine, reconciler, dir: stateDir } = setup({ journal });
+  try {
+    engine.failArchive = true;
+    const cmd = command("DEPLOY", "dep_rb", "ins_rb");
+    // Writing config files happens after the container is created; the failure lands mid-deploy.
+    cmd.instance!.files = [{ path: "/opt/platform/profile.json", content: "{}" }];
+    const out = await reconciler.execute(cmd, true);
+    assert.equal(out.ok, false);
+    assert.equal(engine.containers.has(containerName("ins_rb")), false);
+    assert.equal(journal.pending().length, 0, "a rolled-back transaction leaves nothing open");
+  } finally {
+    cleanup(stateDir);
+    cleanup(dir);
+  }
+});
+
+test("policy veto: a kill switch blocks DEPLOY before any container is created", async () => {
+  const policyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "reconciler-pol-")), "host-policy.json");
+  fs.writeFileSync(policyFile, JSON.stringify({ version: 1, kill_switch: true }));
+  fs.chmodSync(policyFile, 0o600);
+  const events: string[] = [];
+  const { dir, engine, reconciler } = setup({ policyFile, audit: (event) => events.push(event) });
+  try {
+    const out = await reconciler.execute(command("DEPLOY", "dep_pol", "ins_pol"), true);
+    assert.equal(out.ok, false);
+    assert.equal(out.result.code, "HOST_KILL_SWITCH");
+    assert.equal(engine.calls.includes(`create:${containerName("ins_pol")}`), false);
+    assert.deepEqual(events, ["policy.denied"]);
+  } finally {
+    cleanup(dir);
+    cleanup(path.dirname(policyFile));
+  }
+});
+
+test("audit: a broken chain blocks new deployments", async () => {
+  const { dir, engine, reconciler } = setup({ auditBroken: () => true });
+  try {
+    const out = await reconciler.execute(command("DEPLOY", "dep_aud", "ins_aud"), true);
+    assert.equal(out.ok, false);
+    assert.equal(out.result.code, "AUDIT_CHAIN_BROKEN");
+    assert.equal(engine.calls.includes(`create:${containerName("ins_aud")}`), false);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("journal recovery: a container left by an interrupted create is removed on startup", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reconciler-rec-"));
+  const file = path.join(dir, "journal.jsonl");
+  const { engine, reconciler, dir: stateDir } = setup({ journal: new OperationJournal(file) });
+  try {
+    const name = containerName("ins_rec2");
+    engine.images.add(IMAGE);
+    await engine.create(name, {
+      Image: IMAGE,
+      Labels: {
+        "platform.managed": "true",
+        "platform.deployment_id": "dep_rec2",
+        "platform.instance_id": "ins_rec2",
+      },
+    });
+    // Simulate a crash after the container was created but before the command committed.
+    const crashed = new OperationJournal(file);
+    crashed.applied(crashed.begin("cmd_crash", "CONTAINER_CREATE", name, { deployment_id: "dep_rec2" }));
+
+    const reopened = new OperationJournal(file);
+    const recovered = new Reconciler({
+      engine,
+      state: new RuntimeState(stateDir),
+      cfg: cfg,
+      broker: new AdmissionBroker(() => 8 * G, () => 8 * G, {
+        host_reserve_bytes: 0,
+        system_reserve_bytes: 0,
+        safety_margin_bytes: 0,
+        max_task_grant_bytes: 4 * G,
+        grant_ttl_seconds: 3600,
+      }),
+      readWatchdog: () => null,
+      log: () => {},
+      now: () => now,
+      journal: reopened,
+    });
+    await recovered.recoverJournal();
+    assert.equal(engine.containers.has(name), false);
+    assert.equal(reopened.pending().length, 0);
+    void reconciler;
+  } finally {
+    cleanup(stateDir);
     cleanup(dir);
   }
 });

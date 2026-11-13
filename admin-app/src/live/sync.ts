@@ -3,6 +3,7 @@ import type {
   AgentProfile,
   ApiProfile,
   BuilderOs,
+  FailureSignature,
   Fleet,
   Host,
   HostState,
@@ -10,7 +11,11 @@ import type {
   InstanceState,
   LogEntry,
   Role,
+  Sideload,
+  SideloadScope,
   Task,
+  TaskAttempt,
+  TaskChild,
   TaskEvent,
   TaskState,
 } from "../types";
@@ -75,6 +80,8 @@ function taskState(status: string): TaskState {
     case "FAILED":
     case "BLOCKED":
     case "CANCELLED":
+    case "NEEDS_INPUT":
+    case "WAITING_CHILDREN":
       return status;
     case "ASSIGNED":
       return "RUNNING";
@@ -91,6 +98,23 @@ function osOf(reported: string | undefined, image: string | undefined): BuilderO
   const hit =
     BUILDER_OS.find((o) => o.id === reported) ?? BUILDER_OS.find((o) => image?.includes(o.id));
   return hit?.id ?? "ubuntu22.04";
+}
+
+/**
+ * Human-readable task title. Older rows have no build.title, so fall back to the instruction's first line instead of
+ * the payload ref number (admin://builds/1794555162975 means nothing in a list).
+ */
+function taskTitle(t: any): string {
+  const req = (t.requirements ?? {}) as Record<string, any>;
+  const raw =
+    req.build?.title ??
+    req.chat?.message ??
+    req.build?.instruction ??
+    req.console?.command ??
+    "";
+  const text = String(raw).trim().split("\n")[0].trim();
+  if (text) return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  return String(t.payload_ref?.split("/").filter(Boolean).pop() || t.task_type);
 }
 
 function roleOf(raw: string | undefined, taskType = ""): Role {
@@ -132,6 +156,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     bindingsRes,
     auditsRes,
     fleetRes,
+    sideloadsRes,
   ] = await Promise.allSettled([
     scheduler(connection, "/v1/instances"),
     scheduler(connection, "/v1/tasks?limit=300"),
@@ -142,6 +167,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     pcs(connection, "/api/v1/platform/bindings"),
     pcs(connection, "/api/v1/platform/audit-logs?limit=300"),
     pcs(connection, "/api/v1/platform/fleet"),
+    pcs(connection, "/api/v1/platform/sideloads"),
   ]);
 
   // The control plane is a required dependency of the admin pages; the scheduler only feeds the task view.
@@ -211,6 +237,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
         labels: Object.fromEntries(Object.entries(h.labels ?? {}).map(([k, v]) => [k, String(v)])),
         capabilities: (h.tools ?? []).map((t: unknown) => String(t)),
         registered_at: h.enrolled_at ?? h.created_at ?? new Date().toISOString(),
+        last_report_at: h.last_report_at ?? h.last_seen_at ?? undefined,
         maintaining: false,
         transport: h.transport === "local" || h.transport === "ssh" ? h.transport : undefined,
         address: h.address ?? undefined,
@@ -228,6 +255,29 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       };
       });
     replace(db.hosts, hosts);
+  }
+
+  // ---- Sideloads (control plane): the studio shows only the current host's rows; the API keeps them per host.
+  const sideloadsOut = settled(sideloadsRes);
+  if (sideloadsOut) {
+    replace(
+      db.sideloads,
+      ((sideloadsOut?.sideloads ?? []) as any[]).map(
+        (s): Sideload => ({
+          sideload_id: String(s.sideload_id),
+          host_id: String(s.host_id),
+          name: String(s.name ?? ""),
+          token_hint: String(s.token_hint ?? ""),
+          scopes: (Array.isArray(s.scopes) ? s.scopes.map(String) : []) as SideloadScope[],
+          created_by: s.created_by ?? null,
+          created_at: s.created_at ?? "",
+          expires_at: s.expires_at ?? null,
+          last_seen_at: s.last_seen_at ?? null,
+          last_ip: s.last_ip ?? null,
+          revoked_at: s.revoked_at ?? null,
+        }),
+      ),
+    );
   }
 
   // ---- Agent / API (control plane)
@@ -419,6 +469,9 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       deployment_id: dep?.deployment_id ? String(dep.deployment_id) : undefined,
       name: String(dep?.display_name ?? id),
       role,
+      // Bare-metal roles run directly on the host instead of a container; the studio uses this to avoid
+      // offering a scheduler slot on a host that a bare builder has taken over.
+      execution: dep?.execution === "native" ? "native" : "container",
       os: role === "builder" ? osOf(String(row?.capabilities?.os ?? ""), image) : undefined,
       host_id: hostId,
       // SSH runs on the host machine, so use the host address rather than the display name, or the copied command will not connect.
@@ -428,6 +481,14 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       })(),
       ssh_port: Number.isFinite(sshPort) && sshPort > 0 ? sshPort : role === "scheduler" ? 2200 : undefined,
       ssh_user: "root",
+      // Builder containers mount /opt/platform/workspace. A bare-metal builder runs as the host login
+      // user, which cannot write under /opt, so its workspace root sits in that user's home instead
+      // (attempt subdirectories are kept after the task). The terminal opens in the same directory.
+      workspace: String(
+        (Array.isArray(dep?.volumes) ? (dep.volumes as any[]) : []).find(
+          (v) => v?.name === "workspace",
+        )?.mount ?? (dep?.execution === "native" ? "~/platform/workspace" : "/opt/platform/workspace"),
+      ),
       agent_profile_id: String(binding?.agent_profile_id || row?.agent_profile_id || ""),
       desired_agent_profile_id: undefined,
       api_profile_ids: Array.isArray(binding?.api_profile_ids)
@@ -444,7 +505,12 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
         : "-",
       cpu_limit: cpu,
       mem_limit_mb: memMb,
-      disk_gb: num(dep?.labels?.disk_gb, 20),
+      // The deployment row has no labels column, so the declared capacity lives in capability_detail; 20 GiB is
+      // only the last-resort display fallback for deployments created before that detail was recorded.
+      disk_gb: num(
+        dep?.labels?.disk_gb,
+        num((dep?.capability_detail as Record<string, unknown> | undefined)?.disk_gb, 20),
+      ),
       // The image is still on its way to the target host: the scheduler may still hold stale state from the previous round
       // (OFFLINE / STARTING); trust the control plane's SYNCING so the UI shows "syncing image".
       //
@@ -541,7 +607,8 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     })
     .map(({ row: t, schedulerDep, schedulerInstance }) => ({
       id: t.task_id,
-      title: String(t.payload_ref?.split("/").filter(Boolean).pop() || t.task_type),
+      // Prefer the title the submitter wrote; older tasks only carry the instruction, then the payload ref.
+      title: taskTitle(t),
       type: t.task_type,
       workflow: t.workflow_run_id ?? "-",
       stage: t.status,
@@ -562,6 +629,12 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
         resource_profile_id: t.resource_profile_id,
       },
       events: [],
+      approval_mode: t.approval_mode ?? undefined,
+      outcome: t.outcome ?? null,
+      pending_question: t.pending_question ?? null,
+      parent_task_id: t.parent_task_id ?? null,
+      fanout_id: t.fanout_id ?? null,
+      fanout_depth: num(t.fanout_depth) || 0,
     }));
   if (schedulerDeps.length || settled(tasksRes)) {
     replace(db.tasks, tasks);
@@ -593,6 +666,88 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
     logs: db.logs.length,
     at: new Date().toISOString(),
   };
+}
+
+/** Attempt history carries the failure reason; the task list projection only carries counters. */
+export async function fetchTaskAttempts(
+  connection: LiveConnection,
+  taskId: string,
+  schedulerDeploymentId?: string | null,
+): Promise<TaskAttempt[]> {
+  const out = await schedulerFor(
+    connection,
+    schedulerDeploymentId,
+    `/v1/tasks/${encodeURIComponent(taskId)}`,
+  );
+  return mapAttempts(out);
+}
+
+export type TaskDetail = {
+  attempts: TaskAttempt[];
+  /** Fan-out children, in creation order; the parent detail page renders them as a tree. */
+  children: TaskChild[];
+};
+
+/** One round trip for the detail page: the list projection carries neither attempts nor children. */
+export async function fetchTaskDetail(
+  connection: LiveConnection,
+  taskId: string,
+  schedulerDeploymentId?: string | null,
+): Promise<TaskDetail> {
+  const out = await schedulerFor(
+    connection,
+    schedulerDeploymentId,
+    `/v1/tasks/${encodeURIComponent(taskId)}`,
+  );
+  return {
+    attempts: mapAttempts(out),
+    children: ((out?.children ?? []) as any[]).map((c) => ({
+      task_id: String(c.task_id),
+      task_type: String(c.task_type ?? ""),
+      status: taskState(String(c.status ?? "")),
+      outcome: c.outcome ?? null,
+      title: c.title ?? null,
+      created_at: c.created_at ?? undefined,
+      updated_at: c.updated_at ?? undefined,
+    })),
+  };
+}
+
+function mapAttempts(out: any): TaskAttempt[] {
+  return ((out?.attempts ?? []) as any[]).map((a) => ({
+    attempt_number: Number(a.attempt_number) || 0,
+    status: String(a.status ?? ""),
+    error:
+      a.error && typeof a.error === "object"
+        ? { code: a.error.code, message: a.error.message }
+        : null,
+    failure_class: a.failure_class ?? null,
+    failure_signature: a.failure_signature ?? null,
+    started_at: a.started_at ?? null,
+    finished_at: a.finished_at ?? null,
+  }));
+}
+
+/** Fleet-wide failure triage: one row per normalized failure, newest first. */
+export async function fetchFailureSignatures(
+  connection: LiveConnection,
+  schedulerDeploymentId?: string | null,
+  limit = 50,
+): Promise<FailureSignature[]> {
+  const out = await schedulerFor(
+    connection,
+    schedulerDeploymentId,
+    `/v1/failure-signatures?limit=${encodeURIComponent(String(limit))}`,
+  );
+  return ((out?.items ?? []) as any[]).map((s) => ({
+    signature: String(s.signature ?? ""),
+    kind: String(s.kind ?? ""),
+    code: String(s.code ?? ""),
+    sample: s.sample ?? null,
+    occurrences: Number(s.occurrences) || 0,
+    first_seen_at: s.first_seen_at ?? null,
+    last_seen_at: s.last_seen_at ?? null,
+  }));
 }
 
 export async function fetchTaskEvents(

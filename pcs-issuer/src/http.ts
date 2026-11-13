@@ -9,6 +9,8 @@ import type {
   CreateDeploymentPlanInput,
   EnrollInput,
   PcsService,
+  SideloadRow,
+  SideloadScope,
 } from "./service.js";
 import { issueTerminalTicket } from "./terminal.js";
 
@@ -22,6 +24,27 @@ function send(res: http.ServerResponse, status: number, body: unknown): void {
     "content-length": Buffer.byteLength(text),
   });
   res.end(text);
+}
+
+/** Stream raw bytes (task files) without touching JSON. */
+function sendRaw(
+  res: http.ServerResponse,
+  status: number,
+  body: Buffer,
+  headers: Record<string, string>,
+): void {
+  res.writeHead(status, {
+    "content-length": String(body.length),
+    "cache-control": "no-store",
+    ...headers,
+  });
+  res.end(body);
+}
+
+/** RFC 6266: an ASCII fallback plus the UTF-8 name, so non-ASCII file names survive the download. */
+function contentDisposition(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, any>> {
@@ -146,10 +169,225 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         );
       }
 
+      // ---- Sideloads: per-host tokens so a device on the LAN can drive tasks with curl
+      if (method === "POST" && path === "/api/v1/platform/sideloads") {
+        const claims = admin("host:admin");
+        const body = await readJson(req);
+        const out = await service.createSideload({
+          host_id: String(body.host_id ?? ""),
+          name: String(body.name ?? ""),
+          scopes: body.scopes,
+          expires_in_days: body.expires_in_days,
+          created_by: String(claims.operator_id ?? claims.sub),
+        });
+        // The plaintext token is returned exactly once, with the base URL the device should call.
+        return send(res, 201, { ...out, base_url: publicUrl(req, cfg) });
+      }
+
+      if (method === "GET" && path === "/api/v1/platform/sideloads") {
+        admin("host:read");
+        return send(res, 200, {
+          sideloads: await service.listSideloads(url.searchParams.get("host_id") ?? undefined),
+        });
+      }
+
+      const sideloadDelete = /^\/api\/v1\/platform\/sideloads\/([^/]+)$/.exec(path);
+      if (method === "DELETE" && sideloadDelete) {
+        const claims = admin("host:admin");
+        return send(res, 200, {
+          sideload: await service.deleteSideload(
+            decodeURIComponent(sideloadDelete[1]),
+            String(claims.operator_id ?? claims.sub),
+          ),
+        });
+      }
+
+      // ---- Sideload channel: a device calls these with its sdl_ token; the token is bound to one host
+      const sideloadAuth = () =>
+        service.authenticateSideload(bearer(req), req.socket.remoteAddress ?? undefined);
+      const requireSideloadScope = (s: SideloadRow, scope: SideloadScope): void => {
+        if (!s.scopes.includes(scope)) {
+          throw new PcsError(
+            403,
+            "SIDELOAD_SCOPE_DENIED",
+            `this sideload does not have the ${scope} permission`,
+          );
+        }
+      };
+
+      if (method === "GET" && path === "/api/v1/sideload/me") {
+        const s = await sideloadAuth();
+        const owner = await service.getHost(s.host_id);
+        return send(res, 200, {
+          sideload: s,
+          host: {
+            host_id: s.host_id,
+            name: owner?.hostname ?? s.host_id,
+            status: owner?.status ?? "UNKNOWN",
+          },
+        });
+      }
+
+      if (method === "GET" && path === "/api/v1/sideload/builders") {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "builders:read");
+        return send(res, 200, await service.sideloadBuilders(s));
+      }
+
+      if (method === "GET" && path === "/api/v1/sideload/tasks") {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:read");
+        return send(
+          res,
+          200,
+          await service.proxySideloadRequest(s, "GET", "/v1/tasks", url.search, undefined),
+        );
+      }
+
+      if (method === "POST" && path === "/api/v1/sideload/tasks") {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:write");
+        const body = await readJson(req);
+        // A console task runs a shell command on a builder; keep it behind its own permission.
+        if (String(body.task_type ?? "").startsWith("task.console.")) {
+          requireSideloadScope(s, "console:run");
+        }
+        return send(
+          res,
+          201,
+          await service.proxySideloadRequest(s, "POST", "/v1/tasks", "", body),
+        );
+      }
+
+      // Input files: upload first, then reference the returned URLs in requirements.console.attachments
+      // (or requirements.build.attachments). Any media type is stored verbatim.
+      if (method === "POST" && path === "/api/v1/sideload/attachments") {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:write");
+        const body = await readJson(req);
+        return send(
+          res,
+          201,
+          await service.createTaskAttachment({
+            name: body.name,
+            media_type: body.media_type,
+            data_base64: body.data_base64,
+          }),
+        );
+      }
+
+      // Output files: list a task's artifacts, then download each by id.
+      const sideloadTaskArtifacts = /^\/api\/v1\/sideload\/tasks\/([^/]+)\/artifacts$/.exec(path);
+      if (method === "GET" && sideloadTaskArtifacts) {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:read");
+        return send(
+          res,
+          200,
+          await service.sideloadTaskArtifacts(s, decodeURIComponent(sideloadTaskArtifacts[1])),
+        );
+      }
+
+      const sideloadArtifactDownload = /^\/api\/v1\/sideload\/artifacts\/([^/]+)\/download$/.exec(
+        path,
+      );
+      if (method === "GET" && sideloadArtifactDownload) {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:read");
+        const out = await service.sideloadArtifactDownload(
+          s,
+          decodeURIComponent(sideloadArtifactDownload[1]),
+        );
+        return sendRaw(res, 200, out.data, {
+          "content-type": out.media_type,
+          "content-disposition": contentDisposition(out.name),
+          "x-artifact-sha256": out.sha256,
+          "x-artifact-name": encodeURIComponent(out.name),
+        });
+      }
+
+      const sideloadTaskEvents = /^\/api\/v1\/sideload\/tasks\/([^/]+)\/events$/.exec(path);
+      if (method === "GET" && sideloadTaskEvents) {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:read");
+        return send(
+          res,
+          200,
+          await service.proxySideloadRequest(
+            s,
+            "GET",
+            `/v1/tasks/${encodeURIComponent(decodeURIComponent(sideloadTaskEvents[1]))}/events`,
+            url.search,
+            undefined,
+          ),
+        );
+      }
+
+      const sideloadTaskAction = /^\/api\/v1\/sideload\/tasks\/([^/]+)\/(cancel|retry|answer)$/.exec(
+        path,
+      );
+      if (method === "POST" && sideloadTaskAction) {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:write");
+        const body = await readJson(req);
+        return send(
+          res,
+          200,
+          await service.proxySideloadRequest(
+            s,
+            "POST",
+            `/v1/tasks/${encodeURIComponent(decodeURIComponent(sideloadTaskAction[1]))}/${sideloadTaskAction[2]}`,
+            "",
+            body,
+          ),
+        );
+      }
+
+      const sideloadTask = /^\/api\/v1\/sideload\/tasks\/([^/]+)$/.exec(path);
+      if (method === "GET" && sideloadTask) {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "tasks:read");
+        return send(
+          res,
+          200,
+          await service.proxySideloadRequest(
+            s,
+            "GET",
+            `/v1/tasks/${encodeURIComponent(decodeURIComponent(sideloadTask[1]))}`,
+            url.search,
+            undefined,
+          ),
+        );
+      }
+
+      if (method === "GET" && path === "/api/v1/sideload/queue") {
+        const s = await sideloadAuth();
+        requireSideloadScope(s, "queue:read");
+        return send(
+          res,
+          200,
+          await service.proxySideloadRequest(s, "GET", "/v1/queue/stats", url.search, undefined),
+        );
+      }
+
       // ---- Scheduler proxy: forward task requests to the scheduler (root or node) that owns the target instance
       const schedProxy = /^\/api\/v1\/platform\/schedulers\/([^/]+)\/proxy(\/.*)$/.exec(path);
       if (schedProxy && (method === "GET" || method === "POST")) {
         admin(method === "GET" ? "deployment:read" : "deployment:write");
+        // Artifact bytes are raw; the JSON proxy would corrupt them (and base64-bloat a 64 MiB file).
+        const artifactDownload = /^\/v1\/artifacts\/([^/]+)\/download$/.exec(schedProxy[2]);
+        if (method === "GET" && artifactDownload) {
+          const out = await service.proxySchedulerArtifactDownload(
+            decodeURIComponent(schedProxy[1]),
+            decodeURIComponent(artifactDownload[1]),
+          );
+          return sendRaw(res, 200, out.data, {
+            "content-type": out.media_type,
+            "content-disposition": contentDisposition(out.name),
+            "x-artifact-sha256": out.sha256,
+            "x-artifact-name": encodeURIComponent(out.name),
+          });
+        }
         const body = method === "GET" ? undefined : await readJson(req);
         return send(
           res,
@@ -253,6 +491,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
             private_key: body.private_key,
             password: body.password,
             role_mode: body.role_mode,
+            native_builder: body.native_builder,
           },
           String(claims.operator_id ?? claims.sub),
         );

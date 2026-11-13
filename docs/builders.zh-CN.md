@@ -35,6 +35,8 @@
 │   ├── agent-runtime.mjs
 │   └── sshd_config
 ├── agents/                    # CLI Agent 适配器（部署时写入）
+│   ├── cli-agent.mjs          # Agent Profile 入口
+│   └── task-envelope.mjs      # 适配器按相对路径导入，必须同目录
 ├── cache/                     # 主机缓存（只读挂载）
 │   ├── node/                  # Node 22+
 │   ├── agents/                # claude / codex
@@ -184,6 +186,8 @@ STARTING → REGISTERING → ONLINE ⇄ SUSPECT → OFFLINE
 - 构建机 token 与 SSH 私钥分离：token 用于调度，私钥只给使用者。
 - 不在镜像里放业务密钥；需要时通过环境变量或 Secret Store 注入。
 - 如果未来需要收紧：把 `root` 改为 `builder` 用户 + sudo，或启用 `AllowUsers`/`ForceCommand`。
+- host-runtime 在主机本地还有三道护栏：操作日志会回滚被中断的部署命令；root 所有的策略文件可以否决部署（kill switch）；
+  哈希链审计日志被篡改时会阻止新部署。详见 [agent-control.zh-CN.md](agent-control.zh-CN.md#5-主机侧护栏host-runtime)。
 
 ---
 

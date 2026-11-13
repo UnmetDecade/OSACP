@@ -20,6 +20,14 @@ import { spawnSshPty, type SshTarget } from "./ssh.js";
 const TICKET_TTL_MS = 30_000;
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+/**
+ * Workspace root for bare-metal role processes; keep in sync with `NATIVE_WORKSPACE_DIR` in
+ * host-runtime's reconciler. Native builders run there, so the terminal starts there too.
+ * A native builder runs as the host login user, so the root lives in that user's home (Docker
+ * containers keep `/opt/platform/workspace`; bare metal cannot write under `/opt`).
+ */
+const NATIVE_WORKSPACE_DIR = "$HOME/platform/workspace";
+
 type Ticket = {
   hostId: string;
   instanceId: string;
@@ -120,8 +128,12 @@ export function handleTerminalUpgrade(
 function startSession(socket: Duplex, ticket: Ticket, head: Buffer): void {
   // Container instances go into the container; bare-metal instances land directly in the host shell (privileges equal to the SSH login user).
   const inner = `stty cols ${ticket.cols} rows ${ticket.rows} 2>/dev/null; exec bash -l`;
+  // Bare-metal builds run in the same visible workspace path a builder container mounts. Start the
+  // shell there so an administrator lands on the build output instead of the login directory.
+  // The runtime creates the directory on the host; if it does not exist yet the shell still opens
+  // (a failing mkdir must never cost an administrator their terminal).
   const execCmd = ticket.native
-    ? `exec bash -l`
+    ? `mkdir -p ${NATIVE_WORKSPACE_DIR} 2>/dev/null; cd ${NATIVE_WORKSPACE_DIR} 2>/dev/null; exec bash -l`
     : `docker exec -it ${shellQuote(ticket.container)} bash -lc ${shellQuote(inner)}`;
   const env = {
     ...process.env,

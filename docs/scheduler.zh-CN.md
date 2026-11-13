@@ -5,6 +5,7 @@
 > 版本：v4.3 · 2026-11-12
 > 调度机是唯一的状态权威。它只做四件事：收任务、排队、派发、记账。
 > 分配与调度数学（`W`、注水、并发、压力）见 [scheduling-algorithm.zh-CN.md](scheduling-algorithm.zh-CN.md)。
+> Agent 驱动的暂停、任务拆分与主机侧护栏见 [agent-control.zh-CN.md](agent-control.zh-CN.md)。
 
 ---
 
@@ -99,9 +100,14 @@ ORDER BY effective_priority ASC, enqueued_at ASC, task_id ASC
 QUEUED ──claim──▶ ASSIGNED ──start-ack──▶ RUNNING ──result──▶ SUCCEEDED
    │                  │                      │
    │                  │                      ├──▶ FAILED ──retry──▶ QUEUED
+   │                  │                      ├──▶ NEEDS_INPUT ──回答──▶ QUEUED
+   │                  │                      ├──▶ WAITING_CHILDREN ──子任务全部结束──▶ QUEUED
    │                  │                      └──▶ BLOCKED
    └──cancel────────────────────────────────▶ CANCELLED
 ```
+
+`NEEDS_INPUT` 与 `WAITING_CHILDREN` 是暂停而不是失败：它们释放租约，并退回这次 attempt 的重试额度，
+只消耗 `resume_rounds`；上限与语义见 [agent-control.zh-CN.md](agent-control.zh-CN.md)。
 
 ### 4.2 实例
 
@@ -123,9 +129,11 @@ STARTING → ONLINE ⇄ SUSPECT → OFFLINE
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | `max_attempts` | 3 | 可重试失败的最大尝试次数 |
-| `retry_backoff` | 指数退避 5s / 15s / 45s | 不超过 5 分钟 |
+| `retry_backoff` | 指数退避 5m / 15m / 45m | 按尝试次数递增，即 `retry` 动作的退避表 |
+| `failure_class` | 每次失败推导 | `permanent` / `outward` 直接死信，`transient` 重试，`rate_limit` 与 `busy` 等待且不消耗尝试次数（受 `retry_waivers` 限制，最多 6 次） |
 | `deadline_at` | 无 | 超时任务置 FAILED |
 | `BLOCKED` | 达到上限 | 等待人工重新提交或重置 |
+| 外部操作 | — | attempt 已对工作区外产生副作用后，失败一律不重试，任务以 `outcome: interrupted_after_outward` 进死信 |
 
 ---
 
@@ -159,11 +167,21 @@ wft_build = [ EXECUTE(task.build) ]
 | `POST` | `/v1/claim` | 领取任务 |
 | `POST` | `/v1/tasks/:id/start-ack` | 确认开始 |
 | `POST` | `/v1/tasks/:id/progress` | 进度 |
-| `POST` | `/v1/tasks/:id/result` | 结果 |
+| `POST` | `/v1/tasks/:id/result` | 结果（`SUCCEEDED` / `FAILED` / `CANCELLED` / `NEEDS_INPUT`） |
+| `POST` | `/v1/tasks/:id/split` | 把 RUNNING 任务拆成子任务 |
+| `POST` | `/v1/tasks/:id/answer` | 回答停住的问题并继续任务 |
+| `GET` | `/v1/failure-signatures` | 最近的规范化失败签名 |
 | `GET` | `/v1/instances` | 实例列表 |
+| `GET` | `/v1/tasks/:id/artifacts` | 列出一个任务的文件（名称、媒体类型、大小、摘要、状态） |
+| `GET` | `/v1/artifacts/:id/download` | 以原始字节下载一个已校验的文件 |
 | `POST` | `/v1/builders` | 创建构建机（容器） |
 | `POST` | `/v1/builders/:id/:action` | start/stop/restart/remove |
 | `GET` | `/v1/events/stream` | SSE 事件流 |
+
+文件通道：构建机通过 artifact 通道写出产物（`POST /v1/artifacts` 声明摘要，
+`PUT /v1/artifacts/:id/content` 上传任意格式的原始字节，`POST /v1/artifacts/:id/complete` 由服务端重算
+SHA-256）。上面两条运维路由负责列出和下载这些文件，不需要实例凭证——与其他运维路由处于同一信任边界，
+由 PCS 负责认证调用方。
 
 认证：实例用 Bearer token；管理应用用可选的管理令牌。v4 不再区分 viewer/operator/approver。
 
@@ -176,6 +194,7 @@ wft_build = [ EXECUTE(task.build) ]
 | `tasks` | 任务主表 |
 | `task_attempts` | 每次领取 |
 | `task_events` | 状态事件 |
+| `failure_signatures` | 规范化失败聚类（`kind:sha256[...]`、出现次数、首末时间） |
 | `role_instances` | 构建机/调度机实例 |
 | `leases` | 租约与 fencing |
 | `resource_reservations` | 资源预留 |

@@ -7,7 +7,7 @@ import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { submitBuild } from "../api";
 import { zipFiles } from "../zip";
-import type { TaskAttachment } from "../types";
+import type { ApprovalMode, TaskAttachment } from "../types";
 import { Button, Callout, Field, Modal, Tag } from "./ui";
 
 /**
@@ -159,8 +159,13 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
       (!host || i.host_id === host.id) &&
       (i.scheduler_role ?? "root") === "root",
   );
+  // The title is the human-readable row in the task list; the description carries the full instruction.
+  const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState(2);
+  // The default matches scheduler_config.default_approval_mode; a stricter level makes the
+  // agent stop and ask instead of acting, which is what most exploratory work wants.
+  const [approval, setApproval] = useState<ApprovalMode>("full");
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
   const [reading, setReading] = useState(false);
   const [packing, setPacking] = useState("");
@@ -174,8 +179,10 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
 
   useEffect(() => {
     if (open) {
+      setTitle("");
       setDescription("");
       setPriority(2);
+      setApproval("full");
       setAttachments([]);
       setError("");
       setDragging(false);
@@ -325,8 +332,10 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
     try {
       await submitBuild(
         {
+          title: title.trim(),
           description: description.trim() || attachments.map((a) => a.name).join("、"),
           priority,
+          approval_mode: approval,
           scheduler_deployment_id: rootScheduler.deployment_id,
           attachments,
         },
@@ -367,6 +376,16 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
         onDragLeave={(e) => { if (e.currentTarget === e.target) setDragging(false); }}
         onDrop={onDrop}
       >
+        <Field label={t("标题")} hint={t("列表里显示这一行，留空则取任务内容的第一行")}>
+          <input
+            className="input"
+            value={title}
+            maxLength={80}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={t("例如：像素风网页游戏 Demo")}
+          />
+        </Field>
+
         <Field label={t("任务内容")}>
           <textarea
             className="input"
@@ -471,6 +490,18 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
               <button key={p} className={`segment${priority === p ? " active" : ""}`} onClick={() => setPriority(p)}>
                 P{p}
                 <em>{[t("最高"), t("高"), t("普通"), t("低")][p]}</em>
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {/* The agent parks with a question when the level forbids an action, so a stricter level is
+            a way to review the plan before anything runs. */}
+        <Field label={t("自主程度")} hint={t("从低到高：只读并提问、可改文件、可执行命令、完全自主")}>
+          <div className="segmented">
+            {(["ask", "edits", "auto", "full"] as const).map((mode) => (
+              <button key={mode} className={`segment${approval === mode ? " active" : ""}`} onClick={() => setApproval(mode)}>
+                {t({ ask: "只读并提问", edits: "可改文件", auto: "可执行命令", full: "完全自主" }[mode])}
               </button>
             ))}
           </div>

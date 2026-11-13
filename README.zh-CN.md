@@ -36,11 +36,13 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 | **构建机就是机器** | 官方 Ubuntu 容器或整台裸机，root SSH、自己的工具链、真实 shell。不是假沙箱。 |
 | **Agent 不绑定** | Claude Code、Codex、DeepSeek 或自定义 CLI/HTTP Agent。档案只存引用，密钥运行时解析。 |
 | **对话与终端也是任务** | 对话和容器终端走同一条任务管线、同一套租约与 fencing，没有旁路执行器。 |
+| **文件双向进出** | 输入附件在命令执行前落进工作区；收集到的产物走专用产物通道（单文件 64 MiB，SHA-256 校验）并按原始字节下载，不靠 stdout 里的 base64。 |
+| **局域网设备走同一条链路** | 侧载令牌让一台设备用 `curl` 驱动某台主机的构建机 —— 与控制台同一套任务、租约与 fencing，权限是封闭集合，也拿不到调度机地址。 |
 
 ## 架构
 
 <a href="docs/开源分布式AI-Agent计算与调度平台架构图.html">
-  <img src="docs/assets/architecture-zh.png" alt="平台架构 —— PCS 控制面、host-runtime、递归调度机与跨调度机中继" width="100%">
+  <img src="docs/assets/architecture-zh.png" alt="平台架构 —— PCS 控制面、host-runtime、递归调度机、侧载通道与跨调度机中继" width="100%">
 </a>
 
 <p align="center"><sub>点击架构图打开完整 HTML 版本。</sub></p>
@@ -51,6 +53,8 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 - **host-runtime** 跑在每台主机上。它向 PCS 长轮询、验证 Ed25519 命令、创建容器、上报实际态与资源；只出站，不监听管理端口。
 - **调度机** 是状态权威。它排队、准入、发租约、fencing、派发、记账。根与结点调度机组成递归树；跨调度机的任务只下推，不复制。
 - **构建机** 是唯一的工作角色。它领取任务，运行 Agent 适配器或确定性 Shell，持续上报进度并上传产物。
+
+侧载不是第五个部件：它是一枚按主机限定的令牌，从 PCS 进来后落到该主机的根调度机，所以局域网设备走的是和控制台一样的任务链路。文件跟着任务走 —— 附件进、产物出。
 
 完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](docs/开源分布式AI-Agent计算与调度平台架构图.html)与 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
 
@@ -122,6 +126,20 @@ npm run dev
 npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 ```
 
+### 4. 可选：从另一台设备驱动主机
+
+在工作室里点「接入侧载」创建令牌，然后带文件跑一个项目：
+
+```bash
+SIDELOAD_TOKEN='sdl_…' PCS_URL='http://pcs.example:7901' \
+  node scripts/sideload-project.mjs --out ./out \
+  --upload ./input/data.csv \
+  --command 'g++ -O2 -std=c++17 hello.cpp -o hello && ./hello > result.txt' \
+  --collect .
+```
+
+输入在命令执行前落到 `attachments/`；收集路径下的每个文件都会下载到 `--out`，并按调度机的 SHA-256 校验。
+
 ## 核心模型
 
 | 概念 | 怎么工作 |
@@ -134,6 +152,8 @@ npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 | **Agent / API 档案** | PCS 保存档案与绑定；调度机只看见 `profile_id` 引用，从不接触密钥。 |
 | **Secret Store** | 档案只存 `secret://` 引用；按实例身份解析成短期凭据，审计不记录值。 |
 | **中继** | `D > W` 的任务下推到子调度机，不复制；结果沿链上浮，最大深度 8。 |
+| **文件** | `requirements.console.attachments` 在命令执行前写入 `<workspace>/attachments/`。`collect` 扫描工作区（32 个路径 / 128 个文件，单文件 64 MiB、合计 256 MiB），每个文件都带新的 SHA-256 进入产物通道。 |
+| **侧载** | `sdl_` 令牌绑定到单台主机，平台只存 SHA-256 哈希与末四位。权限是封闭集合，`console:run` 单独放行 Shell 任务；调用链是 `设备 → PCS → 根调度机`。 |
 
 ## 调度算法
 
@@ -209,8 +229,8 @@ ORDER BY effective_priority, enqueued_at, task_id
 | [`secret-store/`](secret-store/README.zh-CN.md) | Secret Store 参考实现，按实例解析短期凭据 |
 | [`agents/`](agents/README.zh-CN.md) | Claude Code / Codex / 自定义 CLI 的 Agent 适配器 |
 | [`deploy/`](deploy/README.zh-CN.md) | 单机 Compose、容器入口、部署载荷构建 |
-| [`docs/`](docs/) | 架构、调度算法、构建机、调度机、管理应用、联邦、部署文档 |
-| [`scripts/`](scripts/README.zh-CN.md) | 验收、压测、备份、PKI 与载荷脚本 |
+| [`docs/`](docs/) | 架构、调度算法、构建机、调度机、管理应用、侧载、联邦、部署文档 |
+| [`scripts/`](scripts/README.zh-CN.md) | 验收、压测、备份、PKI、载荷与侧载脚本 |
 
 ## 安全模型
 
@@ -222,6 +242,7 @@ ORDER BY effective_priority, enqueued_at, task_id
 - 构建机 SSH 只允许密钥；主机登录公钥在部署时注入。
 - PCS 用 AES-256-GCM 加密主机私钥，接口只返回指纹。
 - 模型凭据只留在运行时容器，并经过 `PLATFORM_AGENT_PASS_ENV` 与 Profile `--pass-env` 两层放行。
+- 侧载令牌只展示一次、只存 SHA-256 哈希，且只连 PCS；设备看不到调度机地址与实例凭据。
 - PCS（7901）、调度机 API（8443）与 SSH 端口必须放在防火墙或 VPN 后面，不要直接暴露公网。
 
 漏洞报告方式见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
@@ -246,6 +267,8 @@ cd admin-app   && npm install && npm run build
 - [构建机](docs/builders.zh-CN.md)
 - [调度机](docs/scheduler.zh-CN.md)
 - [管理应用](docs/admin-app.zh-CN.md)
+- [Agent 控制](docs/agent-control.zh-CN.md) —— 任务暂停、自主程度、归类结果、失败分类
+- [侧载](docs/sideload.zh-CN.md) —— curl 令牌、权限、文件收发
 - [部署](docs/deployment.zh-CN.md)
 - [English README](README.md)
 

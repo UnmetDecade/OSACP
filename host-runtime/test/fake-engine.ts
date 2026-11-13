@@ -12,6 +12,8 @@ export class FakeEngine implements EngineAdapter {
   networks = new Set<string>();
   archives = new Map<string, Buffer>();
   calls: string[] = [];
+  /** Forces the post-create step to fail, so tests can exercise rollback of a half-finished deploy. */
+  failArchive = false;
   private seq = 0;
 
   async ping(): Promise<void> {
@@ -111,6 +113,7 @@ export class FakeEngine implements EngineAdapter {
 
   async putArchive(nameOrId: string, targetDir: string, tar: Buffer): Promise<void> {
     this.calls.push(`archive:${nameOrId}:${targetDir}`);
+    if (this.failArchive) throw new DockerError(500, "DOCKER_ARCHIVE_FAILED", "simulated archive failure");
     const c = this.find(nameOrId);
     if (!c) throw new DockerError(404, "DOCKER_ARCHIVE_FAILED", "not found");
     this.archives.set(c.name, tar);

@@ -55,9 +55,9 @@
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
-    height: 26px; padding: 0 10px; border-radius: 999px;
+    height: 26px; padding: 0 9px; border-radius: 999px;
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--text-2); font-size: 11.5px;
+    color: var(--text-2); font-size: 11.2px;
   }
   .chip.accent { background: var(--accent-soft); border-color: #dcdcf8; color: #4b4cc4; }
   .chip.green { background: var(--green-soft); border-color: #cfeee1; color: #217a55; }
@@ -145,14 +145,15 @@
 <div class="wrap">
 
   <header>
-    <div class="eyebrow"><i></i>Platform architecture · v4.3 · 2026-11-12</div>
+    <div class="eyebrow"><i></i>Platform architecture · v4.5 · 2026-11-13</div>
     <h1>Multi-Node AI Agent Compute &amp; Scheduling Platform</h1>
     <p class="lede">
       The PCS control plane manages hosts, deployments and Agent / API profiles, storing only
       Secret Store references for keys. host-runtime on each host executes signed commands.
       Schedulers dispatch over a recursive tree and node schedulers aggregate capability upward;
       a host can merge into another host to form a federation, and tasks that cross schedulers are
-      pushed down, never copied.
+      pushed down, never copied. A sideload token lets one LAN device reach the same task path, and
+      every task can move files in and out through the attachment and artifact channel.
     </p>
     <div class="chips">
       <span class="chip accent">PCS control plane</span>
@@ -162,6 +163,8 @@
       <span class="chip">Agent / API profiles</span>
       <span class="chip">Secret Store</span>
       <span class="chip">MCP builders</span>
+      <span class="chip">Sideload token</span>
+      <span class="chip">Files in / out</span>
       <span class="chip">Capability score W</span>
       <span class="chip">Task difficulty D</span>
       <span class="chip">Aggregated ΣW</span>
@@ -199,6 +202,14 @@
         <path class="edge-strong" d="M300,125 H400"/>
         <text class="lbl" x="350" y="112" text-anchor="middle">HTTPS</text>
 
+        <!-- sideload device -->
+        <rect class="node" x="40" y="196" width="190" height="76" rx="12"/>
+        <text class="t2" x="56" y="220">LAN device · sideload</text>
+        <text class="s2" x="56" y="242">curl · sdl_ token · scopes</text>
+        <text class="s2" x="56" y="262" fill="#8a8d99">attachments ↔ artifacts</text>
+        <path class="edge-strong" d="M230,210 H400"/>
+        <text class="lbl" x="311" y="202" text-anchor="middle">HTTPS · sdl_</text>
+
         <!-- PCS -->
         <rect class="hostcard" x="400" y="40" width="1160" height="180" rx="14"/>
         <text class="h1s" x="424" y="72">PCS control plane</text>
@@ -235,7 +246,7 @@
         <text class="s2" x="1370" y="180" fill="#8a8d99">Every action traceable</text>
 
         <!-- PCS -> hosts -->
-        <path class="edge-arrow" d="M540,220 V250 H234 V278"/>
+        <path class="edge-arrow" d="M540,220 V250 H330 V278"/>
         <path class="edge-arrow" d="M902,220 V250 H994 V278"/>
         <text class="lbl" x="650" y="268">Outbound long poll · idempotent signed commands</text>
 
@@ -253,8 +264,8 @@
         <rect class="node pcs" x="404" y="354" width="170" height="112" rx="10"/>
         <text class="t2" x="420" y="380">scheduler</text>
         <text class="s2" x="420" y="402">Root scheduler :8443</text>
-        <text class="s2" x="420" y="424">Tasks · leases · sched Agent</text>
-        <text class="s2" x="420" y="446" fill="#8a8d99">MCP builders · exec / ask</text>
+        <text class="s2" x="420" y="424">Tasks · leases · console runs</text>
+        <text class="s2" x="420" y="446" fill="#8a8d99">Files in/out · MCP builders</text>
 
         <rect class="node builder" x="594" y="354" width="186" height="112" rx="10"/>
         <text class="t2" x="610" y="380">builder × N</text>
@@ -284,6 +295,7 @@
         <text class="s2" x="1380" y="446" fill="#8a8d99">MCP builders · exec / ask</text>
 
         <text class="s2" x="60" y="515" fill="#8a8d99">PCS never calls Docker directly; private keys are only for probing and one-time bootstrap. Container sshd accepts only the host login key injected at deploy time (root, key-only).</text>
+        <text class="s2" x="60" y="531" fill="#8a8d99">A sideload is not an Agent: the device only talks to PCS, which resolves the host's root scheduler; the token never sees the scheduler address or its credentials.</text>
       </svg>
     </div>
   </section>
@@ -638,6 +650,18 @@
     <article class="card">
       <h3><i>12</i>Scheduler Agent &amp; MCP</h3>
       <p>Dispatch stays deterministic; the scheduler Agent only explains queues, leases and "why is this one waiting". It calls the local <code>builders</code> MCP server (<code>list_builders</code>, <code>builder_exec</code>, <code>builder_ask</code>, <code>task_status</code>) to inspect or operate builders, outside the dispatch path.</p>
+    </article>
+    <article class="card">
+      <h3><i>13</i>Sideload tokens</h3>
+      <p>A sideload is a curl token bound to one host, not an Agent: <code>device → PCS → host's root scheduler</code>, reusing the same task, lease and fencing path. Scopes are a closed set (<code>tasks:read</code>, <code>tasks:write</code>, <code>builders:read</code>, <code>queue:read</code>, <code>console:run</code>); the token is stored as a SHA-256 hash plus its last four characters.</p>
+    </article>
+    <article class="card">
+      <h3><i>14</i>Files in and out</h3>
+      <p>Attachments go in through <code>POST /attachments</code> (24 MiB each) and are materialized under <code>&lt;workspace&gt;/attachments/</code> before the command runs. <code>requirements.console.collect</code> walks the workspace (32 paths / 128 files, 64 MiB each, 256 MiB total) and pushes every file through the artifact channel, which recomputes SHA-256; downloads are byte-for-byte.</p>
+    </article>
+    <article class="card">
+      <h3><i>15</i>Trust boundary</h3>
+      <p>The plaintext token is shown once; deleting or expiring it takes effect on the next call. Presence is throttled to one write per 30 seconds, and the studio shows online within 120 seconds. Builders listed to a sideload are the host root scheduler's subtree — exactly what a submitted task can run on.</p>
     </article>
   </div>
 

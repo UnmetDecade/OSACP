@@ -73,6 +73,13 @@ Two **cute robots** replace the original cartoon characters. Hand-drawn SVG, no 
   - The scheduler card is pinned at the top: robot, status, instance ID, resources, capability tags, and deploy or view scheduler console.
   - Below the connector line are builder cards: robot, instance name, OS and resources, current task or idle.
   - A dashed card is pinned at the end, for creating a builder directly.
+  - Above the root scheduler is the sideload strip, connected to it by animated lines: the dashed "Attach
+    sideload" card issues a curl token to a LAN device; existing sideloads show a host cartoon, online/offline
+    state, the token's last four characters and permission tags, and open to details and deletion.
+  - Only the current host's sideloads appear here; sideloads of folded child hosts do not.
+  - When the host is already a bare-metal builder, the empty scheduler card is not shown at all: the host can
+    hold only one role, and that card would only lead to an action the control plane rejects. The builder
+    cards stay, centered.
 - Right column:
   - Getting started: deploy scheduler → deploy builder → submit the first task, showing completed / next step based on actual state.
   - Recent activity: control plane audit records, at most 5.
@@ -126,10 +133,19 @@ Two **cute robots** replace the original cartoon characters. Hand-drawn SVG, no 
   - Tasks are executed only by an Agent: the target builder must be online, have an Agent bound, and declare support for `task.build`; otherwise submission is disabled.
   - Shell commands and working directories are no longer entered; the natural-language description is sent as `requirements.build.instruction`, and the deterministic Shell executor fails immediately when it encounters it (`AGENT_REQUIRED`) rather than mistaking it for a command.
 - Details:
-  - Status timeline (QUEUED → ASSIGNED → RUNNING → SUCCEEDED).
+  - Status timeline (QUEUED → ASSIGNED → RUNNING → SUCCEEDED, plus the `NEEDS_INPUT` and `WAITING_CHILDREN` parks).
   - Live logs (SSE / polling).
   - Artifact list and download.
   - Cancel / retry.
+- Agent control:
+  - A task waiting for a decision shows the agent's question and an answer box; submitting the
+    answer resumes the task, and "Abandon task" cancels it instead.
+  - The execution card shows the autonomy level (`ask` / `edits` / `auto` / `full`) and the typed
+    outcome (`completed`, `error`, `input_expired`, `interrupted_after_outward`, …).
+  - A fan-out parent lists its children with state and outcome; a child links back to its parent.
+  - A failed attempt shows its failure class (deterministic / after an outward action / rate limit /
+    resource busy / transient), how many times the same normalized failure has been seen fleet-wide,
+    and the failure signature, so the same fault on several builders reads as one problem.
 
 ### 4.5 Terminal (Full SSH Access)
 

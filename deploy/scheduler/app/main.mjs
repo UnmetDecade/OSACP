@@ -6153,7 +6153,9 @@ async function demandRows(c, hostId) {
          LEFT JOIN leases l ON l.instance_id = r.instance_id
          LEFT JOIN tasks t ON t.task_id = l.task_id
          LEFT JOIN resource_profiles p ON p.profile_id = t.resource_profile_id
-        WHERE r.host_id = $1 AND r.role_id = 'builder'
+        -- Any instance explicitly switched to dynamic mode is grant-managed, even when it keeps a
+        -- legacy role id (the role name is historical; scheduling_mode is what selects the ledger).
+        WHERE r.host_id = $1 AND (r.role_id = 'builder' OR r.scheduling_mode = 'dynamic')
           AND r.state NOT IN ('OFFLINE','FAILED')
         GROUP BY r.instance_id
         ORDER BY r.instance_id`,
@@ -6360,7 +6362,7 @@ async function recomputeHostGrants(c, hostId, policy = config.dynamicPolicy) {
     `UPDATE host_resource_pools
         SET cpu_granted_millicores = $2,
             mem_granted_bytes = $3,
-            available_commitment_bytes = GREATEST(0, $4 - $3),
+            available_commitment_bytes = GREATEST(0::bigint, $4::bigint - $3::bigint),
             pressure_state = $5,
             updated_at = app_now()
       WHERE host_id = $1`,
@@ -6466,6 +6468,39 @@ var dynamicScoreOf = (inst) => {
   if (live > 0) return live;
   return Number(inst.capability_score ?? 0);
 };
+var CAPABILITY_PREFER_WINDOW_SECONDS = 30;
+async function loadIdlePeers(c, inst) {
+  const rows = (await c.query(
+    `SELECT p.*
+         FROM role_instances p
+         JOIN hosts h ON h.host_id = p.host_id
+        WHERE p.role_id = $1
+          AND p.instance_id <> $2
+          AND p.state = 'ONLINE'
+          AND p.agent_profile_id IS NOT NULL
+          AND h.host_state IN ('NORMAL','WARNING')
+          AND NOT EXISTS (
+            SELECT 1 FROM leases l
+             WHERE l.instance_id = p.instance_id
+               AND l.released_at IS NULL AND l.expires_at > app_now()
+          )`,
+    [inst.role_id, inst.instance_id]
+  )).rows;
+  return rows.map((row) => ({ row, score: dynamicScoreOf(row) }));
+}
+function peerCanTakeTask(p, task) {
+  if (!(p.allowed_task_types ?? []).includes(task.task_type)) return false;
+  if (!(p.payload_schemas ?? []).includes(task.payload_schema)) return false;
+  const target = task.requirements?.target_instance_id;
+  if (target && target !== p.instance_id) return false;
+  const needed = task.requirements?.capabilities ?? [];
+  const healthy = p.capabilities?.healthy ?? [];
+  const unhealthy = p.capabilities?.unhealthy ?? [];
+  if (needed.some((x) => !healthy.includes(x) || unhealthy.includes(x))) return false;
+  const score = dynamicScoreOf(p);
+  if (score > 0 && Number(task.difficulty ?? 0) > score) return false;
+  return true;
+}
 async function claim(input) {
   if (!input.instance_id) throw new ApiError(400, "BAD_REQUEST", "instance_id is required");
   return tx(async (c) => {
@@ -6571,6 +6606,12 @@ async function claim(input) {
       maxScan
     ]);
     const ctx = { cfg, inst, host, mode, res, policy };
+    let idlePeers = null;
+    const strongerIdlePeer = async (task) => {
+      if (Number(task.waited_seconds ?? 0) >= CAPABILITY_PREFER_WINDOW_SECONDS) return false;
+      idlePeers ??= await loadIdlePeers(c, inst);
+      return idlePeers.some((p) => p.score > capabilityScore && peerCanTakeTask(p.row, task));
+    };
     for (const task of cand.rows) {
       const blocked = await admit(c, ctx, task);
       if (blocked) {
@@ -6578,6 +6619,7 @@ async function claim(input) {
         await recordBlock(c, task, blocked, cfg, input.trace_id);
         continue;
       }
+      if (await strongerIdlePeer(task)) continue;
       const assignment = await assign(c, cfg, inst, host, task, input.trace_id, mode, res?.grant ?? null);
       if (mode === "dynamic") {
         await recomputeHostGrants(c, host.host_id, policy);
@@ -6947,6 +6989,7 @@ async function assign(c, cfg, inst, host, task, traceId, mode, grant) {
     deadline_at: t.deadline_at,
     difficulty: Number(t.difficulty ?? 0),
     requirements: t.requirements ?? {},
+    approval_mode: t.approval_mode ?? null,
     // P4: send only references, never implementations, API addresses or secrets; the instance validates against its locally loaded Profile
     agent: {
       profile_id: inst.agent_profile_id,
@@ -6989,7 +7032,21 @@ var TRANSITIONS = {
     FAILED: "result_failed_retry_exhausted",
     QUEUED: "result_failed_retryable | lease_expired",
     BLOCKED: "external_dependency_unavailable",
-    CANCELLED: "cancel_ack | forced_cancel"
+    CANCELLED: "cancel_ack | forced_cancel",
+    NEEDS_INPUT: "agent_needs_input",
+    WAITING_CHILDREN: "agent_split"
+  },
+  // Parking is not a failure: both waiting states leave QUEUED or FAILED (expired / children
+  // exhausted) as the only forward edges, plus cancellation.
+  NEEDS_INPUT: {
+    QUEUED: "answered",
+    FAILED: "input_expired",
+    CANCELLED: "operator_cancel"
+  },
+  WAITING_CHILDREN: {
+    QUEUED: "children_settled",
+    FAILED: "children_exhausted",
+    CANCELLED: "operator_cancel"
   },
   BLOCKED: {
     QUEUED: "dependency_recovered",
@@ -6999,6 +7056,7 @@ var TRANSITIONS = {
   FAILED: {},
   CANCELLED: {}
 };
+var APPROVAL_MODES = ["ask", "edits", "auto", "full"];
 var TERMINAL = ["SUCCEEDED", "FAILED", "CANCELLED"];
 function isTerminal(s) {
   return TERMINAL.includes(s);
@@ -7356,6 +7414,23 @@ async function syncRelays(limit = 50) {
   return { checked: rows.length, updated };
 }
 
+// scheduler/src/core/lease.ts
+async function closeActiveLease(c, taskId, reason, reservationState = "RELEASED") {
+  const lease = (await c.query(
+    `UPDATE leases SET released_at = app_now(), release_reason = $2
+        WHERE task_id = $1 AND released_at IS NULL
+        RETURNING attempt_id`,
+    [taskId, reason]
+  )).rows[0];
+  if (!lease) return;
+  await c.query(
+    `UPDATE resource_reservations
+        SET state = $3, closed_at = app_now(), close_reason = $2
+      WHERE attempt_id = $1 AND state IN ('HELD','ACTIVE')`,
+    [lease.attempt_id, reason, reservationState]
+  );
+}
+
 // scheduler/src/repo/task-insert.ts
 async function insertTask(c, input) {
   if (!input.task_type) throw new ApiError(400, "BAD_REQUEST", "task_type is required");
@@ -7371,6 +7446,15 @@ async function insertTask(c, input) {
   const difficulty = normalizeDifficulty(input.difficulty);
   const relayParent = input.relay?.parent_task_id?.trim() || null;
   const relayDepth = relayParent ? Math.max(0, Math.min(64, Number(input.relay?.depth) || 0)) : 0;
+  if (input.approval_mode && !APPROVAL_MODES.includes(input.approval_mode)) {
+    throw new ApiError(
+      422,
+      "APPROVAL_MODE_INVALID",
+      `approval_mode must be one of ${APPROVAL_MODES.join(", ")}`
+    );
+  }
+  const approvalMode = input.approval_mode ?? (await c.query(`SELECT default_approval_mode FROM scheduler_config WHERE id = TRUE`)).rows[0]?.default_approval_mode ?? "full";
+  const fanoutDepth = Math.max(0, Math.min(32, Number(input.fanout_depth) || 0));
   if (relayParent) {
     const existing = await c.query(`SELECT * FROM tasks WHERE relay_parent_task_id = $1`, [
       relayParent
@@ -7381,8 +7465,9 @@ async function insertTask(c, input) {
     `INSERT INTO tasks (task_id, task_type, task_version, workflow_run_id, parent_task_id,
                         priority_class, status, payload_ref, payload_sha256, payload_schema,
                         requirements, resource_profile_id, max_attempts, difficulty, enqueued_at,
-                        deadline_at, created_at, updated_at, relay_parent_task_id, relay_depth)
-     VALUES ($1,$2,$3,$4,$5,$6,'QUEUED',$7,$8,$9,$10,$11,$12,$13, app_now(), $14, app_now(), app_now(), $15, $16)
+                        deadline_at, created_at, updated_at, relay_parent_task_id, relay_depth,
+                        approval_mode, fanout_id, fanout_depth)
+     VALUES ($1,$2,$3,$4,$5,$6,'QUEUED',$7,$8,$9,$10,$11,$12,$13, app_now(), $14, app_now(), app_now(), $15, $16, $17, $18, $19)
      ON CONFLICT (relay_parent_task_id) WHERE relay_parent_task_id IS NOT NULL DO NOTHING
      RETURNING *`,
     [
@@ -7401,7 +7486,10 @@ async function insertTask(c, input) {
       difficulty,
       input.deadline_at ? new Date(input.deadline_at) : null,
       relayParent,
-      relayDepth
+      relayDepth,
+      approvalMode,
+      input.fanout_id ?? null,
+      fanoutDepth
     ]
   );
   if (!res.rows[0]) {
@@ -7419,6 +7507,7 @@ async function insertTask(c, input) {
       task_type: input.task_type,
       priority_class: priority,
       difficulty,
+      approval_mode: approvalMode,
       ...relayParent ? { relay_parent_task_id: relayParent, parent_node_id: input.relay?.parent_node_id ?? null } : {}
     },
     trace_id: input.trace_id
@@ -7837,123 +7926,328 @@ async function listWorkflowRuns(limit = 100) {
   );
 }
 
-// scheduler/src/repo/tasks.ts
-async function createTask(input) {
-  return tx((c) => insertTask(c, input));
+// scheduler/src/core/fanout.ts
+function isObject(v) {
+  return Boolean(v) && typeof v === "object" && !Array.isArray(v);
 }
-async function getTask(taskId) {
-  const task = await q1("SELECT * FROM tasks WHERE task_id = $1", [taskId]);
-  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
-  const attempts = await q(
-    `SELECT attempt_id, attempt_number, instance_id, status, result_summary, outputs,
-            error, started_at, finished_at
-       FROM task_attempts WHERE task_id = $1 ORDER BY attempt_number`,
-    [taskId]
-  );
-  const lease = await q1(
-    `SELECT lease_token, attempt_id, fencing_token, issued_at, expires_at
-       FROM leases WHERE task_id = $1 AND released_at IS NULL`,
-    [taskId]
-  );
-  const relay = await q1(
-    `SELECT child_node_id, child_url, child_task_id, state, child_state,
-            child_result, sync_failures, last_error, created_at, updated_at
-       FROM task_relays WHERE parent_task_id = $1`,
-    [taskId]
-  );
-  return { ...task, attempts, lease, relay: relay ?? null };
+async function loadConfig2(c) {
+  const row = (await c.query(`SELECT * FROM scheduler_config WHERE id = TRUE`)).rows[0] ?? {};
+  return {
+    max_fanout_children: Number(row.max_fanout_children) || 16,
+    max_fanout_depth: Number(row.max_fanout_depth) || 4,
+    max_resume_rounds: Number(row.max_resume_rounds) || 8
+  };
 }
-async function listTasks(filter) {
-  const where = [];
-  const params = [];
-  if (filter.status) {
-    params.push(filter.status);
-    where.push(`t.status = $${params.length}`);
+async function splitTask(taskId, proof2, children) {
+  if (!Array.isArray(children) || children.length === 0) {
+    throw new ApiError(422, "SPLIT_INVALID", "split requires at least one child");
   }
-  if (filter.task_type) {
-    params.push(filter.task_type);
-    where.push(`t.task_type = $${params.length}`);
-  }
-  if (filter.role) {
-    params.push(filter.role);
-    where.push(`td.target_role = $${params.length}`);
-  }
-  params.push(Math.min(filter.limit ?? 100, 500));
-  return q(
-    `SELECT t.*, td.target_role,
-            a.instance_id AS current_instance_id,
-            a.attempt_number AS current_attempt_number
-       FROM tasks t
-       JOIN task_definitions td USING (task_type)
-       LEFT JOIN task_attempts a ON a.attempt_id = t.current_attempt_id
-      ${where.length ? "WHERE " + where.join(" AND ") : ""}
-      ORDER BY t.enqueued_at DESC, t.task_id
-      LIMIT $${params.length}`,
-    params
-  );
-}
-async function listEvents(taskId) {
-  return q(
-    `SELECT event_id::text, event_type, from_status, to_status, actor, payload, created_at
-       FROM task_events WHERE task_id = $1 ORDER BY event_id`,
-    [taskId]
-  );
-}
-async function cancelTask(taskId, actor = "operator") {
   return tx(async (c) => {
-    const row = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
-    if (!row) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
-    const from = row.status;
-    if (isTerminal(from)) {
-      throw new ApiError(409, "STATE_CONFLICT", `task is already terminal (${from}); cannot cancel`);
-    }
-    if (from === "RUNNING") {
-      await c.query(
-        `UPDATE tasks SET cancel_requested_at = COALESCE(cancel_requested_at, app_now()),
-                          version = version + 1, updated_at = app_now()
-          WHERE task_id = $1`,
-        [taskId]
+    const cfg = await loadConfig2(c);
+    if (children.length > cfg.max_fanout_children) {
+      throw new ApiError(
+        422,
+        "SPLIT_TOO_WIDE",
+        `split requested ${children.length} children; the limit is ${cfg.max_fanout_children}`
       );
-      await appendEvent(c, {
-        task_id: taskId,
-        event_type: "CANCEL_REQUESTED",
-        from_status: from,
-        to_status: from,
-        actor
-      });
-      return { ...row, cancel_requested_at: /* @__PURE__ */ new Date(), status: from };
     }
-    assertTransition(from, "CANCELLED", "operator_cancel");
-    await closeActiveLease(c, taskId, "CANCEL_REQUESTED");
+    const task = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
+    if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+    if (task.status !== "RUNNING") {
+      throw new ApiError(409, "STATE_CONFLICT", `task is ${task.status}; only a RUNNING task can be split`);
+    }
+    const attempt = (await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [
+      task.current_attempt_id
+    ])).rows[0];
+    const lease = (await c.query(`SELECT * FROM leases WHERE attempt_id = $1 AND released_at IS NULL FOR UPDATE`, [
+      attempt?.attempt_id
+    ])).rows[0];
+    if (!attempt || !lease) {
+      throw new ApiError(409, "LEASE_EXPIRED", "the attempt has no active lease; cannot split");
+    }
+    if (Number(lease.fencing_token) !== Number(proof2.fencing_token)) {
+      throw new ApiError(409, "FENCING_STALE", "fencing_token is stale; split rejected");
+    }
+    if (lease.lease_token !== proof2.lease_token) {
+      throw new ApiError(409, "LEASE_MISMATCH", "lease_token does not match the current attempt");
+    }
+    if (proof2.auth_instance_id && proof2.auth_instance_id !== lease.instance_id) {
+      throw new ApiError(403, "ROLE_NOT_ALLOWED", "instance tokens cannot split attempts of other instances");
+    }
+    const now = (await c.query(`SELECT app_now() AS t`)).rows[0].t;
+    if (new Date(lease.expires_at).getTime() <= now.getTime()) {
+      throw new ApiError(409, "LEASE_EXPIRED", "the lease has expired; cannot split");
+    }
+    if (Number(task.fanout_depth) + 1 > cfg.max_fanout_depth) {
+      throw new ApiError(422, "SPLIT_TOO_DEEP", `fan-out depth limit (${cfg.max_fanout_depth}) reached`);
+    }
+    if (Number(task.fanout_rounds) + 1 > cfg.max_resume_rounds) {
+      throw new ApiError(422, "SPLIT_TOO_MANY", `task already split ${task.fanout_rounds} times`);
+    }
+    const parentReq = isObject(task.requirements) ? task.requirements : {};
+    const parentBuild = isObject(parentReq.build) ? parentReq.build : {};
+    const attachments = Array.isArray(parentBuild.attachments) ? parentBuild.attachments : [];
+    const requestedArtifacts = children.flatMap(
+      (ch) => Array.isArray(ch.artifact_ids) ? ch.artifact_ids.map(String) : []
+    );
+    const allowedArtifacts = requestedArtifacts.length ? (await c.query(
+      `SELECT artifact_id, actual_sha256, media_type FROM artifacts
+              WHERE task_id = $1 AND status = 'COMPLETE' AND artifact_id = ANY($2::text[])`,
+      [taskId, requestedArtifacts]
+    )).rows : [];
+    const inheritedUpstream = Array.isArray(parentReq.upstream_artifacts) ? parentReq.upstream_artifacts : [];
+    const created = [];
+    for (let index = 0; index < children.length; index++) {
+      const child = children[index] ?? {};
+      if (!child || typeof child !== "object" || Array.isArray(child)) {
+        throw new ApiError(422, "SPLIT_INVALID", `child ${index} is not an object`);
+      }
+      const childType = String(child.task_type ?? task.task_type);
+      const childReq = { ...isObject(child.requirements) ? child.requirements : {} };
+      const childBuild = isObject(childReq.build) ? { ...childReq.build } : {};
+      if (typeof child.title === "string" && child.title.trim()) childBuild.title = child.title.trim();
+      else if (typeof parentBuild.title === "string" && !childBuild.title) childBuild.title = parentBuild.title;
+      if (typeof child.instruction === "string" && child.instruction.trim()) {
+        childBuild.instruction = child.instruction.trim();
+      } else if (!childBuild.instruction) {
+        throw new ApiError(422, "SPLIT_INVALID", `child ${index} has no instruction`);
+      }
+      if (!Array.isArray(childBuild.attachments) && attachments.length) {
+        childBuild.attachments = attachments;
+      }
+      childReq.build = childBuild;
+      childReq.fanout = { parent_task_id: taskId, index, total: children.length };
+      const childArtifacts = child.artifact_ids?.length ? [
+        ...inheritedUpstream,
+        ...allowedArtifacts.filter((a) => child.artifact_ids.map(String).includes(a.artifact_id)).map((a) => ({
+          artifact_id: a.artifact_id,
+          sha256: a.actual_sha256,
+          media_type: a.media_type,
+          task_id: taskId,
+          task_type: task.task_type
+        }))
+      ] : inheritedUpstream;
+      if (childArtifacts.length) childReq.upstream_artifacts = childArtifacts;
+      const row = await insertTask(c, {
+        task_type: childType,
+        parent_task_id: taskId,
+        fanout_id: taskId,
+        fanout_depth: Number(task.fanout_depth) + 1,
+        priority_class: child.priority_class ?? task.priority_class,
+        payload_ref: task.payload_ref ?? void 0,
+        payload_sha256: task.payload_sha256 ?? void 0,
+        payload_schema: task.payload_schema ?? "1.0",
+        requirements: childReq,
+        approval_mode: task.approval_mode,
+        difficulty: child.difficulty,
+        max_attempts: child.max_attempts,
+        deadline_at: task.deadline_at ? new Date(task.deadline_at).toISOString() : void 0,
+        trace_id: task.trace_id ?? void 0
+      });
+      created.push(row.task_id);
+    }
+    await c.query(
+      `UPDATE task_attempts
+          SET status = 'PARKED', park_reason = 'SPLIT', parked_at = app_now(),
+              result_summary = $2
+        WHERE attempt_id = $1`,
+      [attempt.attempt_id, `split into ${created.length} child task(s)`]
+    );
+    await closeActiveLease(c, taskId, "TASK_SPLIT", "RELEASED");
     const updated = await c.query(
-      `UPDATE tasks SET status = 'CANCELLED', version = version + 1, updated_at = app_now()
+      `UPDATE tasks
+          SET status = 'WAITING_CHILDREN', current_attempt_id = NULL,
+              fanout_rounds = fanout_rounds + 1,
+              version = version + 1, updated_at = app_now()
         WHERE task_id = $1 RETURNING *`,
       [taskId]
     );
     await appendEvent(c, {
       task_id: taskId,
-      event_type: "TASK_CANCELLED",
-      from_status: from,
-      to_status: "CANCELLED",
-      actor
+      event_type: "TASK_SPLIT",
+      from_status: "RUNNING",
+      to_status: "WAITING_CHILDREN",
+      actor: lease.instance_id,
+      payload: { attempt_id: attempt.attempt_id, child_ids: created, depth: Number(task.fanout_depth) + 1 }
     });
-    await advanceWorkflow(c, row, "CANCELLED");
-    return updated.rows[0];
+    return { task: updated.rows[0], children: created };
   });
 }
-async function closeActiveLease(c, taskId, reason, reservationState = "RELEASED") {
-  const lease = (await c.query(
-    `UPDATE leases SET released_at = app_now(), release_reason = $2
-        WHERE task_id = $1 AND released_at IS NULL
-        RETURNING attempt_id`,
-    [taskId, reason]
-  )).rows[0];
-  if (!lease) return;
+async function settleFanout(c, child) {
+  const parentId = child.fanout_id;
+  if (!parentId) return null;
+  const siblings = (await c.query(
+    `SELECT t.task_id, t.status, t.outcome, a.result_summary AS summary
+         FROM tasks t
+         LEFT JOIN LATERAL (
+           SELECT result_summary FROM task_attempts
+            WHERE task_id = t.task_id ORDER BY attempt_number DESC LIMIT 1
+         ) a ON TRUE
+        WHERE t.fanout_id = $1
+        ORDER BY t.created_at, t.task_id`,
+    [parentId]
+  )).rows;
+  if (siblings.some((s) => !["SUCCEEDED", "FAILED", "CANCELLED"].includes(s.status))) return null;
+  const parent = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [parentId])).rows[0];
+  if (!parent || parent.status !== "WAITING_CHILDREN") return null;
+  const cfg = await loadConfig2(c);
+  const summaries = siblings.map((s) => ({
+    task_id: s.task_id,
+    status: s.status,
+    outcome: s.outcome,
+    summary: s.summary ? String(s.summary).slice(0, 500) : null
+  }));
+  if (Number(parent.resume_rounds) >= cfg.max_resume_rounds) {
+    await c.query(
+      `UPDATE tasks
+          SET status = 'FAILED', current_attempt_id = NULL, dead_letter = TRUE, outcome = 'children_exhausted',
+              version = version + 1, updated_at = app_now()
+        WHERE task_id = $1`,
+      [parentId]
+    );
+    await appendEvent(c, {
+      task_id: parentId,
+      event_type: "TASK_DEAD_LETTERED",
+      from_status: "WAITING_CHILDREN",
+      to_status: "FAILED",
+      actor: "scheduler",
+      payload: { outcome: "children_exhausted", resume_rounds: Number(parent.resume_rounds), children: summaries }
+    });
+    return parentId;
+  }
+  const artifacts = (await c.query(
+    `SELECT artifact_id, actual_sha256, media_type, task_id, task_type
+         FROM artifacts a JOIN tasks t USING (task_id)
+        WHERE a.task_id = ANY($1::text[]) AND a.status = 'COMPLETE'
+        ORDER BY a.completed_at DESC, a.artifact_id DESC
+        LIMIT 100`,
+    [siblings.map((s) => s.task_id)]
+  )).rows;
+  const req = isObject(parent.requirements) ? parent.requirements : {};
+  const inherited = Array.isArray(req.upstream_artifacts) ? req.upstream_artifacts : [];
+  const refs = [
+    ...inherited,
+    ...artifacts.map((a) => ({
+      artifact_id: a.artifact_id,
+      sha256: a.actual_sha256,
+      media_type: a.media_type,
+      task_id: a.task_id,
+      task_type: a.task_type
+    }))
+  ].filter((v, i, all) => all.findIndex((x) => x.artifact_id === v.artifact_id) === i);
+  const requirements = {
+    ...req,
+    fanout_results: summaries,
+    ...refs.length ? { upstream_artifacts: refs } : {}
+  };
+  assertTransition(parent.status, "QUEUED", "children_settled");
+  const updated = await c.query(
+    `UPDATE tasks
+        SET status = 'QUEUED', current_attempt_id = NULL,
+            requirements = $2,
+            attempt_count = GREATEST(0, attempt_count - 1),
+            resume_rounds = resume_rounds + 1,
+            pending_question = NULL, needs_input_at = NULL, needs_input_expires_at = NULL,
+            next_attempt_at = NULL, enqueued_at = app_now(),
+            version = version + 1, updated_at = app_now()
+      WHERE task_id = $1 RETURNING *`,
+    [parentId, JSON.stringify(requirements)]
+  );
+  await appendEvent(c, {
+    task_id: parentId,
+    event_type: "TASK_CHILDREN_SETTLED",
+    from_status: "WAITING_CHILDREN",
+    to_status: "QUEUED",
+    actor: "scheduler",
+    payload: {
+      children: summaries,
+      artifacts: refs.slice(-50).map((r) => r.artifact_id),
+      resume_rounds: Number(parent.resume_rounds) + 1
+    }
+  });
+  return updated.rows[0]?.task_id ?? parentId;
+}
+async function cancelFanoutChildren(c, parentId, actor) {
+  const cancelled = [];
+  const rows = (await c.query(
+    `SELECT task_id, status FROM tasks
+        WHERE fanout_id = $1 AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED')
+        FOR UPDATE`,
+    [parentId]
+  )).rows;
+  for (const row of rows) {
+    await closeActiveLease(c, row.task_id, "PARENT_CANCELLED", "RELEASED");
+    await c.query(
+      `UPDATE task_attempts
+          SET status = CASE WHEN status IN ('SUCCEEDED','FAILED','CANCELLED','TIMEOUT','PARKED')
+                            THEN status ELSE 'CANCELLED' END,
+              finished_at = COALESCE(finished_at, app_now())
+        WHERE task_id = $1`,
+      [row.task_id]
+    );
+    await c.query(
+      `UPDATE tasks SET status = 'CANCELLED', current_attempt_id = NULL,
+                        pending_question = NULL, needs_input_at = NULL, needs_input_expires_at = NULL,
+                        version = version + 1, updated_at = app_now()
+        WHERE task_id = $1`,
+      [row.task_id]
+    );
+    await appendEvent(c, {
+      task_id: row.task_id,
+      event_type: "TASK_CANCELLED",
+      from_status: row.status,
+      to_status: "CANCELLED",
+      actor,
+      payload: { reason: "PARENT_CANCELLED", parent_task_id: parentId }
+    });
+    cancelled.push(row.task_id);
+    cancelled.push(...await cancelFanoutChildren(c, row.task_id, actor));
+  }
+  return cancelled;
+}
+
+// scheduler/src/repo/failures.ts
+import { createHash as createHash2 } from "node:crypto";
+var MAX_SAMPLE = 240;
+function normalizeFailure(text) {
+  return String(text ?? "").replace(/```[\s\S]*?```/g, " <code> ").replace(/https?:\/\/\S+/gi, "<url>").replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "<email>").replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>").replace(/(?:[A-Za-z]:)?(?:[\\/][^\s:*?"<>|]+)+/g, "<path>").replace(/\b[0-9a-f]{16,}\b/gi, "<hex>").replace(/\b\d+(?:\.\d+)?\b/g, "<n>").replace(/\s+/g, " ").trim().slice(0, MAX_SAMPLE);
+}
+function failureKind(code) {
+  const upper = code.toUpperCase();
+  if (/TIMEOUT|DEADLINE/.test(upper)) return "timeout";
+  if (/STALL/.test(upper)) return "stalled";
+  if (/RATE_LIMIT|QUOTA|USAGE_LIMIT|TOO_MANY_REQUESTS/.test(upper)) return "rate_limit";
+  if (/OUTWARD/.test(upper)) return "outward";
+  if (/DIGEST|SCHEMA|INVALID|DENIED|NOT_ALLOWED|UNKNOWN/.test(upper)) return "permanent";
+  return "error";
+}
+function failureSignature(code, message) {
+  const sample = normalizeFailure(message);
+  const digest = createHash2("sha256").update(`${code}|${sample}`).digest("hex").slice(0, 16);
+  const kind = failureKind(code);
+  return { signature: `${kind}:${digest}`, kind, sample };
+}
+async function recordFailureSignature(c, input) {
+  const sig = failureSignature(input.code, input.message);
   await c.query(
-    `UPDATE resource_reservations
-        SET state = $3, closed_at = app_now(), close_reason = $2
-      WHERE attempt_id = $1 AND state IN ('HELD','ACTIVE')`,
-    [lease.attempt_id, reason, reservationState]
+    `INSERT INTO failure_signatures (signature, kind, code, sample, occurrences, first_seen_at, last_seen_at)
+     VALUES ($1, $2, $3, $4, 1, app_now(), app_now())
+     ON CONFLICT (signature) DO UPDATE
+        SET occurrences = failure_signatures.occurrences + 1,
+            sample = EXCLUDED.sample,
+            last_seen_at = app_now()`,
+    [sig.signature, sig.kind, input.code, sig.sample]
+  );
+  return sig.signature;
+}
+async function listFailureSignatures(limit) {
+  const bounded = Math.min(200, Math.max(1, Number(limit) || 50));
+  return q(
+    `SELECT signature, kind, code, sample, occurrences, first_seen_at, last_seen_at
+       FROM failure_signatures
+      ORDER BY last_seen_at DESC
+      LIMIT $1`,
+    [bounded]
   );
 }
 
@@ -7985,6 +8279,54 @@ var NON_RETRYABLE = /* @__PURE__ */ new Set([
   "WORKSPACE_PATH_DENIED",
   "ARTIFACT_PATH_DENIED"
 ]);
+var RATE_LIMIT_CODES = /* @__PURE__ */ new Set([
+  "PROVIDER_RATE_LIMITED",
+  "RATE_LIMITED",
+  "RATE_LIMIT",
+  "USAGE_LIMIT",
+  "QUOTA_EXCEEDED",
+  "TOO_MANY_REQUESTS"
+]);
+var BUSY_CODES = /* @__PURE__ */ new Set(["AGENT_BUSY", "HOST_BUSY", "WORKSPACE_BUSY"]);
+var MAX_RETRY_WAIVERS = 6;
+var BUSY_RECHECK_SECONDS = 30;
+var RATE_LIMIT_DEFAULT_WAIT_SECONDS = 15 * 60;
+var RATE_LIMIT_MAX_WAIT_SECONDS = 12 * 3600;
+function parseRetryAt(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value < 1e12 ? value * 1e3 : value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+}
+function planFailure(input) {
+  if (input.outward) {
+    return { failure_class: "outward", action: "dead", outcome: "interrupted_after_outward" };
+  }
+  const mayWait = input.waivers < MAX_RETRY_WAIVERS;
+  if (RATE_LIMIT_CODES.has(input.code)) {
+    if (!mayWait) return { failure_class: "rate_limit", action: "dead", outcome: "rate_limited" };
+    const reset = parseRetryAt(input.retryAt);
+    const byReset = reset ? Math.round((reset.getTime() - input.now.getTime()) / 1e3) : RATE_LIMIT_DEFAULT_WAIT_SECONDS;
+    const wait = Math.min(RATE_LIMIT_MAX_WAIT_SECONDS, Math.max(60, byReset));
+    return { failure_class: "rate_limit", action: "wait", outcome: "rate_limited_wait", wait_seconds: wait };
+  }
+  if (BUSY_CODES.has(input.code)) {
+    if (!mayWait) return { failure_class: "busy", action: "dead", outcome: "error" };
+    return { failure_class: "busy", action: "wait", outcome: "busy_wait", wait_seconds: BUSY_RECHECK_SECONDS };
+  }
+  if (NON_RETRYABLE.has(input.code)) {
+    return { failure_class: "permanent", action: "dead", outcome: "error" };
+  }
+  if (input.attemptCount >= input.maxAttempts) {
+    return { failure_class: "transient", action: "dead", outcome: "error" };
+  }
+  return { failure_class: "transient", action: "retry", outcome: "error", wait_seconds: input.backoffSeconds };
+}
 var DEFAULT_BACKOFF = [300, 900, 2700];
 function backoffSeconds2(table, attemptCount) {
   const arr = Array.isArray(table) && table.length > 0 ? table : DEFAULT_BACKOFF;
@@ -8113,23 +8455,44 @@ async function renew(attemptId, proof2) {
 }
 async function progress(attemptId, proof2) {
   return tx(async (c) => {
-    const { task, lease } = await lockContext(c, attemptId, proof2);
+    const { attempt, task, lease } = await lockContext(c, attemptId, proof2);
+    const added = mergeOutward(attempt.outward_actions, proof2.outward);
+    if (added.length) {
+      await c.query(`UPDATE task_attempts SET outward_actions = $2 WHERE attempt_id = $1`, [
+        attemptId,
+        JSON.stringify(added)
+      ]);
+    }
     await appendEvent(c, {
       task_id: task.task_id,
-      event_type: "TASK_PROGRESS",
+      event_type: added.length && proof2.outward?.length ? "TASK_OUTWARD_ACTION" : "TASK_PROGRESS",
       from_status: task.status,
       to_status: task.status,
       actor: lease.instance_id,
-      payload: { attempt_id: attemptId, percent: proof2.percent ?? null, note: proof2.note ?? null }
+      payload: {
+        attempt_id: attemptId,
+        percent: proof2.percent ?? null,
+        note: proof2.note ?? null,
+        ...added.length ? { outward_actions: added } : {}
+      }
     });
-    return { ok: true };
+    return { ok: true, outward_actions: added };
   });
+}
+function mergeOutward(existing, incoming) {
+  const out = /* @__PURE__ */ new Set();
+  for (const v of Array.isArray(existing) ? existing : []) out.add(String(v));
+  for (const v of Array.isArray(incoming) ? incoming : []) {
+    const action = String(v).trim();
+    if (action) out.add(action.slice(0, 200));
+  }
+  return [...out];
 }
 async function submitResult(attemptId, input) {
   return tx(async (c) => {
     const attemptRow = (await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])).rows[0];
     if (!attemptRow) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${attemptId}`);
-    if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(attemptRow.status)) {
+    if (["SUCCEEDED", "FAILED", "CANCELLED", "PARKED"].includes(attemptRow.status)) {
       return {
         idempotent: true,
         attempt_id: attemptId,
@@ -8138,26 +8501,76 @@ async function submitResult(attemptId, input) {
         result_summary: attemptRow.result_summary
       };
     }
-    const { task, lease } = await lockContext(c, attemptId, input);
+    const { attempt, task, lease, now } = await lockContext(c, attemptId, input);
     if (!["RUNNING", "ASSIGNED"].includes(task.status)) {
       throw new ApiError(409, "STATE_CONFLICT", `task state ${task.status} does not accept results`);
     }
     if (task.status === "ASSIGNED") {
       throw new ApiError(409, "STATE_CONFLICT", "task has not been start-acked; results are not accepted");
     }
+    const outward = mergeOutward(attempt.outward_actions, input.outward_actions);
+    if (outward.length !== (Array.isArray(attempt.outward_actions) ? attempt.outward_actions.length : 0)) {
+      await c.query(`UPDATE task_attempts SET outward_actions = $2 WHERE attempt_id = $1`, [
+        attemptId,
+        JSON.stringify(outward)
+      ]);
+    }
+    if (input.status === "NEEDS_INPUT") {
+      const question = String(input.question ?? "").trim();
+      if (!question) {
+        throw new ApiError(422, "QUESTION_REQUIRED", "NEEDS_INPUT requires a non-empty question");
+      }
+      assertTransition(task.status, "NEEDS_INPUT", "agent_needs_input");
+      const ttl = Number(
+        (await c.query(`SELECT needs_input_ttl_seconds FROM scheduler_config WHERE id = TRUE`)).rows[0]?.needs_input_ttl_seconds
+      ) || 86400;
+      await c.query(
+        `UPDATE task_attempts
+            SET status = 'PARKED', park_reason = 'NEEDS_INPUT', parked_at = app_now(),
+                result_summary = $2
+          WHERE attempt_id = $1`,
+        [attemptId, String(input.summary ?? question).slice(0, 500)]
+      );
+      await closeActiveLease(c, task.task_id, "NEEDS_INPUT", "RELEASED");
+      const updated2 = await c.query(
+        `UPDATE tasks
+            SET status = 'NEEDS_INPUT', current_attempt_id = NULL,
+                pending_question = $2,
+                needs_input_at = app_now(),
+                needs_input_expires_at = app_now() + make_interval(secs => $3),
+                version = version + 1, updated_at = app_now()
+          WHERE task_id = $1 RETURNING *`,
+        [
+          task.task_id,
+          JSON.stringify({ question: question.slice(0, 4e3), attempt_id: attemptId, asked_at: (/* @__PURE__ */ new Date()).toISOString() }),
+          ttl
+        ]
+      );
+      await appendEvent(c, {
+        task_id: task.task_id,
+        event_type: "TASK_NEEDS_INPUT",
+        from_status: task.status,
+        to_status: "NEEDS_INPUT",
+        actor: lease.instance_id,
+        // The question may contain business detail; the event keeps its shape, not its text.
+        payload: { attempt_id: attemptId, question_chars: question.length, expires_in_seconds: ttl }
+      });
+      return { task: updated2.rows[0], attempt_status: "PARKED", needs_input: true };
+    }
     if (input.status === "SUCCEEDED") {
       assertTransition(task.status, "SUCCEEDED", "result_succeeded");
+      const outcome2 = input.outcome ?? "completed";
       await c.query(
         `UPDATE task_attempts SET status = 'SUCCEEDED', result_summary = $2,
-                                  outputs = $3, finished_at = app_now()
+                                  outputs = $3, outcome = $4, finished_at = app_now()
           WHERE attempt_id = $1`,
-        [attemptId, input.summary ?? null, input.outputs ? JSON.stringify(input.outputs) : null]
+        [attemptId, input.summary ?? null, input.outputs ? JSON.stringify(input.outputs) : null, outcome2]
       );
       const updated2 = await c.query(
-        `UPDATE tasks SET status = 'SUCCEEDED', current_attempt_id = NULL,
+        `UPDATE tasks SET status = 'SUCCEEDED', outcome = $2, current_attempt_id = NULL,
                           version = version + 1, updated_at = app_now()
           WHERE task_id = $1 RETURNING *`,
-        [task.task_id]
+        [task.task_id, outcome2]
       );
       await closeActiveLease(c, task.task_id, "SUCCEEDED", "RELEASED");
       await appendEvent(c, {
@@ -8166,19 +8579,26 @@ async function submitResult(attemptId, input) {
         from_status: task.status,
         to_status: "SUCCEEDED",
         actor: lease.instance_id,
-        payload: { attempt_id: attemptId, summary: input.summary ?? null }
+        payload: {
+          attempt_id: attemptId,
+          summary: input.summary ?? null,
+          outcome: outcome2,
+          ...outward.length ? { outward_actions: outward } : {}
+        }
       });
       await advanceWorkflow(c, task, "SUCCEEDED");
-      return { task: updated2.rows[0], attempt_status: "SUCCEEDED" };
+      await settleFanout(c, { task_id: task.task_id, fanout_id: task.fanout_id });
+      return { task: updated2.rows[0], attempt_status: "SUCCEEDED", outcome: outcome2 };
     }
     if (input.status === "CANCELLED") {
       assertTransition(task.status, "CANCELLED", "cancel_ack");
       await c.query(
-        `UPDATE task_attempts SET status = 'CANCELLED', finished_at = app_now() WHERE attempt_id = $1`,
+        `UPDATE task_attempts SET status = 'CANCELLED', outcome = 'cancelled', finished_at = app_now()
+          WHERE attempt_id = $1`,
         [attemptId]
       );
       const updated2 = await c.query(
-        `UPDATE tasks SET status = 'CANCELLED', current_attempt_id = NULL,
+        `UPDATE tasks SET status = 'CANCELLED', outcome = 'cancelled', current_attempt_id = NULL,
                           version = version + 1, updated_at = app_now()
           WHERE task_id = $1 RETURNING *`,
         [task.task_id]
@@ -8193,27 +8613,95 @@ async function submitResult(attemptId, input) {
         payload: { attempt_id: attemptId, confirmed: true }
       });
       await advanceWorkflow(c, task, "CANCELLED");
+      await settleFanout(c, { task_id: task.task_id, fanout_id: task.fanout_id });
       return { task: updated2.rows[0], attempt_status: "CANCELLED" };
     }
     const code = input.error?.code ?? "UNKNOWN";
-    const retryable = !NON_RETRYABLE.has(code) && task.attempt_count < task.max_attempts;
+    const outwardFailure = outward.length > 0;
+    const cfg = (await c.query(`SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`)).rows[0];
+    const backoff = backoffSeconds2(cfg.retry_backoff_seconds, task.attempt_count);
+    const detail = input.error?.detail ?? {};
+    const plan = planFailure({
+      code,
+      outward: outwardFailure,
+      retryAt: detail.retry_at ?? detail.reset_at,
+      now,
+      attemptCount: task.attempt_count,
+      maxAttempts: task.max_attempts,
+      waivers: Number(task.retry_waivers ?? 0),
+      backoffSeconds: backoff
+    });
+    const outcome = input.outcome ?? plan.outcome;
+    const signature = await recordFailureSignature(c, {
+      code,
+      message: input.error?.message ?? input.summary ?? code
+    });
     await c.query(
-      `UPDATE task_attempts SET status = 'FAILED', error = $2, finished_at = app_now()
+      `UPDATE task_attempts
+          SET status = 'FAILED', error = $2, outcome = $3, failure_class = $4,
+              failure_signature = $5, finished_at = app_now()
         WHERE attempt_id = $1`,
-      [attemptId, JSON.stringify(input.error ?? { code })]
+      [attemptId, JSON.stringify(input.error ?? { code }), outcome, plan.failure_class, signature]
     );
     await closeActiveLease(c, task.task_id, "ATTEMPT_FAILED", "RELEASED");
-    if (retryable) {
-      const cfg = (await c.query(`SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`)).rows[0];
-      const backoff = backoffSeconds2(cfg.retry_backoff_seconds, task.attempt_count);
+    const priorFailure = {
+      attempt_number: Number(attempt.attempt_number ?? task.attempt_count),
+      builder: lease.instance_id,
+      error_code: code,
+      failure_class: plan.failure_class,
+      outcome,
+      at: new Date(now).toISOString(),
+      ...outward.length ? { outward_actions: outward } : {}
+    };
+    const priorJson = JSON.stringify({ prior_failure: priorFailure });
+    if (plan.action === "wait") {
+      assertTransition(task.status, "QUEUED", "result_failed_wait");
+      const updated2 = await c.query(
+        `UPDATE tasks
+            SET status = 'QUEUED', current_attempt_id = NULL,
+                attempt_count = GREATEST(0, attempt_count - 1),
+                retry_waivers = retry_waivers + 1,
+                next_attempt_at = app_now() + make_interval(secs => $2),
+                requirements = COALESCE(requirements, '{}'::jsonb) || $3::jsonb,
+                version = version + 1, updated_at = app_now()
+          WHERE task_id = $1 RETURNING *`,
+        [task.task_id, plan.wait_seconds ?? 60, priorJson]
+      );
+      await appendEvent(c, {
+        task_id: task.task_id,
+        event_type: "TASK_RETRY_WAITED",
+        from_status: task.status,
+        to_status: "QUEUED",
+        actor: lease.instance_id,
+        payload: {
+          attempt_id: attemptId,
+          error_code: code,
+          failure_class: plan.failure_class,
+          failure_signature: signature,
+          wait_reason: plan.outcome,
+          wait_seconds: plan.wait_seconds ?? 60,
+          retry_waivers: Number(task.retry_waivers ?? 0) + 1,
+          ...outward.length ? { outward_actions: outward } : {}
+        }
+      });
+      return {
+        task: updated2.rows[0],
+        attempt_status: "FAILED",
+        retry_in_seconds: plan.wait_seconds ?? 60,
+        outcome,
+        failure_class: plan.failure_class
+      };
+    }
+    if (plan.action === "retry") {
       assertTransition(task.status, "QUEUED", "result_failed_retryable");
       const updated2 = await c.query(
         `UPDATE tasks
             SET status = 'QUEUED', current_attempt_id = NULL,
                 next_attempt_at = app_now() + make_interval(secs => $2),
+                requirements = COALESCE(requirements, '{}'::jsonb) || $3::jsonb,
                 version = version + 1, updated_at = app_now()
           WHERE task_id = $1 RETURNING *`,
-        [task.task_id, backoff]
+        [task.task_id, backoff, priorJson]
       );
       await appendEvent(c, {
         task_id: task.task_id,
@@ -8224,19 +8712,28 @@ async function submitResult(attemptId, input) {
         payload: {
           attempt_id: attemptId,
           error_code: code,
+          failure_class: plan.failure_class,
+          failure_signature: signature,
           attempt_count: task.attempt_count,
           max_attempts: task.max_attempts,
-          backoff_seconds: backoff
+          backoff_seconds: backoff,
+          ...outward.length ? { outward_actions: outward } : {}
         }
       });
-      return { task: updated2.rows[0], attempt_status: "FAILED", retry_in_seconds: backoff };
+      return {
+        task: updated2.rows[0],
+        attempt_status: "FAILED",
+        retry_in_seconds: backoff,
+        outcome,
+        failure_class: plan.failure_class
+      };
     }
     assertTransition(task.status, "FAILED", "result_failed_retry_exhausted");
     const updated = await c.query(
-      `UPDATE tasks SET status = 'FAILED', current_attempt_id = NULL, dead_letter = TRUE,
+      `UPDATE tasks SET status = 'FAILED', outcome = $2, current_attempt_id = NULL, dead_letter = TRUE,
                         version = version + 1, updated_at = app_now()
         WHERE task_id = $1 RETURNING *`,
-      [task.task_id]
+      [task.task_id, outcome]
     );
     await appendEvent(c, {
       task_id: task.task_id,
@@ -8247,18 +8744,30 @@ async function submitResult(attemptId, input) {
       payload: {
         attempt_id: attemptId,
         error_code: code,
+        failure_class: plan.failure_class,
+        failure_signature: signature,
+        outcome,
         attempt_count: task.attempt_count,
-        non_retryable: NON_RETRYABLE.has(code),
+        non_retryable: plan.failure_class === "permanent" || plan.failure_class === "outward",
+        retry_waivers: Number(task.retry_waivers ?? 0),
+        ...outward.length ? { outward_actions: outward } : {},
         alert: "P1"
       }
     });
     await advanceWorkflow(c, task, "FAILED");
-    return { task: updated.rows[0], attempt_status: "FAILED", dead_letter: true };
+    await settleFanout(c, { task_id: task.task_id, fanout_id: task.fanout_id });
+    return {
+      task: updated.rows[0],
+      attempt_status: "FAILED",
+      dead_letter: true,
+      outcome,
+      failure_class: plan.failure_class
+    };
   });
 }
 
 // scheduler/src/core/artifacts.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import fs2 from "node:fs";
 import path from "node:path";
 var MAX_BYTES = 64 * 1024 * 1024;
@@ -8278,7 +8787,13 @@ function normalizeDigest(value) {
   return `sha256:${hex.toLowerCase()}`;
 }
 function digestOf(data) {
-  return `sha256:${createHash2("sha256").update(data).digest("hex")}`;
+  return `sha256:${createHash3("sha256").update(data).digest("hex")}`;
+}
+function normalizeName(value) {
+  const raw = String(value ?? "").replace(/\\/g, "/").trim();
+  if (!raw) return null;
+  const name = raw.replace(/[\u0000-\u001f\u007f]/g, "").replace(/^\/+/, "").slice(0, 300);
+  return name || null;
 }
 async function createArtifact(input, instanceId) {
   if (!input.task_id) throw new ApiError(400, "BAD_REQUEST", "task_id is required");
@@ -8305,8 +8820,8 @@ async function createArtifact(input, instanceId) {
   const row = await q1(
     `INSERT INTO artifacts
          (artifact_id, task_id, attempt_id, instance_id, status, declared_sha256,
-          size_bytes, media_type, storage_ref)
-       VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8)
+          size_bytes, media_type, storage_ref, name)
+       VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9)
        RETURNING *`,
     [
       artifactId,
@@ -8316,7 +8831,8 @@ async function createArtifact(input, instanceId) {
       declared,
       input.size_bytes ?? null,
       input.media_type ?? "application/octet-stream",
-      `${artifactId}.bin`
+      `${artifactId}.bin`,
+      normalizeName(input.name)
     ]
   );
   return {
@@ -8391,6 +8907,25 @@ async function getArtifact(artifactId) {
   if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
   return row;
 }
+async function listTaskArtifacts(taskId) {
+  const task = await q1(`SELECT task_id FROM tasks WHERE task_id = $1`, [taskId]);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+  return q(
+    `SELECT artifact_id, task_id, attempt_id, instance_id, status, name, media_type,
+            size_bytes, declared_sha256, actual_sha256, created_at, completed_at
+       FROM artifacts
+      WHERE task_id = $1
+      ORDER BY created_at, artifact_id`,
+    [taskId]
+  );
+}
+function downloadFilename(row) {
+  const base = String(row.name ?? "").split("/").filter(Boolean).pop();
+  if (base) return base;
+  const type = String(row.media_type ?? "").toLowerCase();
+  const ext = type === "application/json" ? ".json" : type === "text/plain" ? ".txt" : type === "text/markdown" ? ".md" : type === "application/pdf" ? ".pdf" : type === "image/png" ? ".png" : type === "image/jpeg" ? ".jpg" : type === "application/zip" ? ".zip" : type === "application/gzip" ? ".gz" : ".bin";
+  return `${row.artifact_id}${ext}`;
+}
 async function readArtifactContent(artifactId, instanceId) {
   const row = await q1(`SELECT * FROM artifacts WHERE artifact_id = $1`, [artifactId]);
   if (!row) throw new ApiError(404, "NOT_FOUND", `artifact not found: ${artifactId}`);
@@ -8420,10 +8955,236 @@ async function readArtifactContent(artifactId, instanceId) {
   if (!fs2.existsSync(file)) throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "artifact content does not exist");
   return {
     artifact_id: row.artifact_id,
+    name: row.name ?? null,
     media_type: row.media_type ?? "application/octet-stream",
     sha256: row.actual_sha256,
     data: fs2.readFileSync(file)
   };
+}
+
+// scheduler/src/repo/tasks.ts
+async function createTask(input) {
+  return tx((c) => insertTask(c, input));
+}
+async function getTask(taskId) {
+  const task = await q1("SELECT * FROM tasks WHERE task_id = $1", [taskId]);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+  const attempts = await q(
+    `SELECT attempt_id, attempt_number, instance_id, status, result_summary, outputs,
+            error, started_at, finished_at
+       FROM task_attempts WHERE task_id = $1 ORDER BY attempt_number`,
+    [taskId]
+  );
+  const lease = await q1(
+    `SELECT lease_token, attempt_id, fencing_token, issued_at, expires_at
+       FROM leases WHERE task_id = $1 AND released_at IS NULL`,
+    [taskId]
+  );
+  const relay = await q1(
+    `SELECT child_node_id, child_url, child_task_id, state, child_state,
+            child_result, sync_failures, last_error, created_at, updated_at
+       FROM task_relays WHERE parent_task_id = $1`,
+    [taskId]
+  );
+  const children = await q(
+    `SELECT task_id, task_type, status, outcome, parent_task_id, fanout_id,
+            requirements->'build'->>'title' AS title,
+            created_at, updated_at
+       FROM tasks WHERE parent_task_id = $1
+      ORDER BY created_at, task_id`,
+    [taskId]
+  );
+  return { ...task, attempts, lease, relay: relay ?? null, children };
+}
+async function listTasks(filter) {
+  const where = [];
+  const params = [];
+  if (filter.status) {
+    params.push(filter.status);
+    where.push(`t.status = $${params.length}`);
+  }
+  if (filter.task_type) {
+    params.push(filter.task_type);
+    where.push(`t.task_type = $${params.length}`);
+  }
+  if (filter.role) {
+    params.push(filter.role);
+    where.push(`td.target_role = $${params.length}`);
+  }
+  params.push(Math.min(filter.limit ?? 100, 500));
+  return q(
+    `SELECT t.*, td.target_role,
+            a.instance_id AS current_instance_id,
+            a.attempt_number AS current_attempt_number
+       FROM tasks t
+       JOIN task_definitions td USING (task_type)
+       LEFT JOIN task_attempts a ON a.attempt_id = t.current_attempt_id
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}
+      ORDER BY t.enqueued_at DESC, t.task_id
+      LIMIT $${params.length}`,
+    params
+  );
+}
+async function listEvents(taskId) {
+  return q(
+    `SELECT event_id::text, event_type, from_status, to_status, actor, payload, created_at
+       FROM task_events WHERE task_id = $1 ORDER BY event_id`,
+    [taskId]
+  );
+}
+async function retryTask(taskId, actor = "operator") {
+  return tx(async (c) => {
+    const row = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
+    if (!row) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+    const from = row.status;
+    if (from !== "FAILED" && from !== "CANCELLED") {
+      throw new ApiError(
+        409,
+        "STATE_CONFLICT",
+        `task is ${from}; only a FAILED or CANCELLED task can be retried`
+      );
+    }
+    const updated = await c.query(
+      `UPDATE tasks
+          SET status = 'QUEUED', attempt_count = 0, dead_letter = FALSE,
+              current_attempt_id = NULL, next_attempt_at = NULL,
+              cancel_requested_at = NULL, resource_block_reason = NULL,
+              resource_evaluated_at = NULL, resource_retry_after = NULL,
+              blocked_attempts = 0, unschedulable = FALSE, result_summary = NULL,
+              outcome = NULL, pending_question = NULL,
+              needs_input_at = NULL, needs_input_expires_at = NULL, resume_rounds = 0,
+              enqueued_at = app_now(), version = version + 1, updated_at = app_now()
+        WHERE task_id = $1 RETURNING *`,
+      [taskId]
+    );
+    await appendEvent(c, {
+      task_id: taskId,
+      event_type: "TASK_REQUEUED",
+      from_status: from,
+      to_status: "QUEUED",
+      actor,
+      payload: { previous_attempts: Number(row.attempt_count ?? 0) }
+    });
+    return updated.rows[0];
+  });
+}
+async function cancelTask(taskId, actor = "operator") {
+  return tx(async (c) => {
+    const row = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
+    if (!row) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+    const from = row.status;
+    if (isTerminal(from)) {
+      throw new ApiError(409, "STATE_CONFLICT", `task is already terminal (${from}); cannot cancel`);
+    }
+    if (from === "RUNNING") {
+      await c.query(
+        `UPDATE tasks SET cancel_requested_at = COALESCE(cancel_requested_at, app_now()),
+                          version = version + 1, updated_at = app_now()
+          WHERE task_id = $1`,
+        [taskId]
+      );
+      await appendEvent(c, {
+        task_id: taskId,
+        event_type: "CANCEL_REQUESTED",
+        from_status: from,
+        to_status: from,
+        actor
+      });
+      return { ...row, cancel_requested_at: /* @__PURE__ */ new Date(), status: from };
+    }
+    assertTransition(from, "CANCELLED", "operator_cancel");
+    await closeActiveLease(c, taskId, "CANCEL_REQUESTED");
+    const updated = await c.query(
+      `UPDATE tasks SET status = 'CANCELLED', outcome = 'cancelled', current_attempt_id = NULL,
+                        pending_question = NULL, needs_input_at = NULL, needs_input_expires_at = NULL,
+                        version = version + 1, updated_at = app_now()
+        WHERE task_id = $1 RETURNING *`,
+      [taskId]
+    );
+    await appendEvent(c, {
+      task_id: taskId,
+      event_type: "TASK_CANCELLED",
+      from_status: from,
+      to_status: "CANCELLED",
+      actor
+    });
+    const cancelledChildren = await cancelFanoutChildren(c, taskId, actor);
+    if (cancelledChildren.length) {
+      await appendEvent(c, {
+        task_id: taskId,
+        event_type: "TASK_CHILDREN_CANCELLED",
+        from_status: "CANCELLED",
+        to_status: "CANCELLED",
+        actor,
+        payload: { child_ids: cancelledChildren }
+      });
+    }
+    await advanceWorkflow(c, row, "CANCELLED");
+    await settleFanout(c, { task_id: taskId, fanout_id: row.fanout_id });
+    return updated.rows[0];
+  });
+}
+async function answerTask(taskId, answer, actor = "operator") {
+  const text = String(answer ?? "").trim();
+  if (!text) throw new ApiError(422, "ANSWER_REQUIRED", "answer must not be empty");
+  return tx(async (c) => {
+    const row = (await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
+    if (!row) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+    if (row.status !== "NEEDS_INPUT") {
+      throw new ApiError(409, "STATE_CONFLICT", `task is ${row.status}; it is not waiting for an answer`);
+    }
+    const cfg = (await c.query(`SELECT max_resume_rounds FROM scheduler_config WHERE id = TRUE`)).rows[0];
+    const maxRounds = Number(cfg?.max_resume_rounds) || 8;
+    if (Number(row.resume_rounds) >= maxRounds) {
+      const failed = await c.query(
+        `UPDATE tasks SET status = 'FAILED', outcome = 'input_exhausted', dead_letter = TRUE,
+                          current_attempt_id = NULL, version = version + 1, updated_at = app_now()
+          WHERE task_id = $1 RETURNING *`,
+        [taskId]
+      );
+      await appendEvent(c, {
+        task_id: taskId,
+        event_type: "TASK_DEAD_LETTERED",
+        from_status: "NEEDS_INPUT",
+        to_status: "FAILED",
+        actor,
+        payload: { outcome: "input_exhausted", resume_rounds: Number(row.resume_rounds) }
+      });
+      return { ...failed.rows[0], answer_rejected: "TOO_MANY_RESUMES" };
+    }
+    const req = row.requirements && typeof row.requirements === "object" ? row.requirements : {};
+    const answers = Array.isArray(req.input_answers) ? req.input_answers : [];
+    const question = row.pending_question?.question ?? null;
+    const requirements = {
+      ...req,
+      input_answers: [
+        ...answers,
+        { question, answer: text.slice(0, 8e3), at: (/* @__PURE__ */ new Date()).toISOString(), actor }
+      ].slice(-20)
+    };
+    const updated = await c.query(
+      `UPDATE tasks
+          SET status = 'QUEUED', current_attempt_id = NULL,
+              requirements = $2,
+              pending_question = NULL, needs_input_at = NULL, needs_input_expires_at = NULL,
+              attempt_count = GREATEST(0, attempt_count - 1),
+              resume_rounds = resume_rounds + 1,
+              next_attempt_at = NULL, enqueued_at = app_now(),
+              version = version + 1, updated_at = app_now()
+        WHERE task_id = $1 RETURNING *`,
+      [taskId, JSON.stringify(requirements)]
+    );
+    await appendEvent(c, {
+      task_id: taskId,
+      event_type: "TASK_ANSWERED",
+      from_status: "NEEDS_INPUT",
+      to_status: "QUEUED",
+      actor,
+      // The answer itself is business content and stays in requirements, not in the event log.
+      payload: { question_chars: question ? String(question).length : 0, answer_chars: text.length }
+    });
+    return updated.rows[0];
+  });
 }
 
 // scheduler/src/repo/outbox.ts
@@ -8901,7 +9662,7 @@ async function register(input) {
        VALUES ($1,$2,$3,'STARTING',$4,$5,$6,$7,$8,COALESCE($9, ARRAY['1.0']),
                $10, NULL, app_now(), app_now(), $11, $12::text[],
                COALESCE($13, 0), COALESCE($14::jsonb, '{}'::jsonb),
-               COALESCE($15, 'static'), COALESCE($16, 0), COALESCE($17, 0),
+               COALESCE($15, 'static'), COALESCE($16, 0), COALESCE($17::bigint, 0),
                COALESCE($18, 0), COALESCE($19, COALESCE($13, 0)), COALESCE($20, COALESCE($13, 0)),
                COALESCE($20, COALESCE($13, 0)), COALESCE($21, COALESCE($19, COALESCE($13, 0))),
                CASE WHEN $13 IS NULL AND $14 IS NULL THEN NULL ELSE app_now() END)
@@ -8920,7 +9681,7 @@ async function register(input) {
          capability_detail = COALESCE($14::jsonb, role_instances.capability_detail),
          scheduling_mode = COALESCE($15, role_instances.scheduling_mode),
          cap_cpu_millicores = COALESCE($16, role_instances.cap_cpu_millicores),
-         cap_mem_bytes = COALESCE($17, role_instances.cap_mem_bytes),
+         cap_mem_bytes = COALESCE($17::bigint, role_instances.cap_mem_bytes),
          capability_static_score = COALESCE($18, role_instances.capability_static_score),
          capability_ceiling_score = COALESCE($19, role_instances.capability_ceiling_score),
          capability_live_score = COALESCE($20, role_instances.capability_live_score),
@@ -9168,6 +9929,33 @@ async function deregister(instanceId, input = {}) {
     };
   });
 }
+async function forget(instanceId) {
+  return tx(async (c) => {
+    const inst = (await c.query(`SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`, [instanceId])).rows[0];
+    if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
+    const active = await c.query(
+      `SELECT count(*)::int AS n FROM leases
+        WHERE instance_id = $1 AND released_at IS NULL AND expires_at > app_now()`,
+      [instanceId]
+    );
+    const activeAttempts = active.rows[0].n;
+    if (activeAttempts > 0) {
+      throw new ApiError(409, "STATE_CONFLICT", "there are still in-flight tasks; cannot forget the instance", {
+        active_attempts: activeAttempts
+      });
+    }
+    if (inst.state !== "OFFLINE" && inst.state !== "FAILED") {
+      throw new ApiError(
+        409,
+        "INSTANCE_ALIVE",
+        `instance is ${inst.state}; remove its deployment, or wait for it to go offline`,
+        { state: inst.state }
+      );
+    }
+    await c.query(`DELETE FROM role_instances WHERE instance_id = $1`, [instanceId]);
+    return { instance_id: instanceId, state: inst.state, forgotten: true };
+  });
+}
 async function syncConfig(instanceId, version) {
   const inst = await q1(`SELECT * FROM role_instances WHERE instance_id = $1`, [instanceId]);
   if (!inst) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${instanceId}`);
@@ -9292,6 +10080,7 @@ route(
   },
   { auth: true, scopes: ["instance:register"] }
 );
+route("DELETE", "/v1/instances/:id", (c) => forget(c.params.id));
 route(
   "GET",
   "/v1/instances/:id/config",
@@ -9384,6 +10173,15 @@ route("POST", "/v1/attempts/:id/result", (c) => submitResult(c.params.id, proof(
   auth: true,
   scopes: ["task:report"]
 });
+route("POST", "/v1/tasks/:id/split", (c) => splitTask(c.params.id, proof(c), c.body?.children), {
+  auth: true,
+  scopes: ["task:report"]
+});
+route(
+  "POST",
+  "/v1/tasks/:id/answer",
+  (c) => answerTask(c.params.id, c.body?.answer, c.body?.actor ?? "operator")
+);
 route("POST", "/v1/tasks", async (c) => {
   const task = await createTask(c.body);
   const relayed = await maybeRelayTask(task, c.body);
@@ -9396,6 +10194,9 @@ route("GET", "/v1/tasks", async (c) => ({
     role: c.query.get("role") ?? void 0,
     limit: c.query.get("limit") ? Number(c.query.get("limit")) : void 0
   })
+}));
+route("GET", "/v1/failure-signatures", async (c) => ({
+  items: await listFailureSignatures(c.query.get("limit") ? Number(c.query.get("limit")) : void 0)
 }));
 route("GET", "/v1/tasks/:id", (c) => getTask(c.params.id));
 route("GET", "/v1/tasks/:id/events", async (c) => ({ items: await listEvents(c.params.id) }));
@@ -9413,6 +10214,11 @@ route("POST", "/v1/tasks/:id/cancel", async (c) => {
   await requestRelayCancel(c.params.id);
   return out;
 });
+route(
+  "POST",
+  "/v1/tasks/:id/retry",
+  (c) => retryTask(c.params.id, c.body?.actor ?? "operator")
+);
 route(
   "POST",
   "/v1/artifacts",
@@ -9435,6 +10241,7 @@ route(
   },
   { auth: true, scopes: ["artifact:read"] }
 );
+route("GET", "/v1/tasks/:id/artifacts", (c) => listTaskArtifacts(c.params.id));
 route("POST", "/v1/workflows", (c) => createWorkflowRun(c.body));
 route("GET", "/v1/workflows", async (c) => ({
   items: await listWorkflowRuns(c.query.get("limit") ? Number(c.query.get("limit")) : void 0)
@@ -9661,6 +10468,22 @@ function createServer() {
         res.end(out2.data);
         return;
       }
+      const downloadMatch = /^\/v1\/artifacts\/([^/]+)\/download$/.exec(url.pathname);
+      if (downloadMatch && req.method === "GET") {
+        const out2 = await readArtifactContent(decodeURIComponent(downloadMatch[1]), void 0);
+        const filename = downloadFilename(out2);
+        const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+        res.writeHead(200, {
+          "content-type": out2.media_type,
+          "content-length": String(out2.data.length),
+          "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          "x-artifact-sha256": out2.sha256 ?? "",
+          "x-artifact-name": encodeURIComponent(filename),
+          "cache-control": "no-store"
+        });
+        res.end(out2.data);
+        return;
+      }
       const matched = routes.find((r) => r.method === req.method && r.re.test(url.pathname));
       if (!matched) throw new ApiError(404, "ROUTE_NOT_FOUND", `${req.method} ${url.pathname}`);
       const m = url.pathname.match(matched.re);
@@ -9719,8 +10542,8 @@ async function sweepLeases(limit = 50) {
     const rows = (await c.query(
       `SELECT l.lease_token, l.task_id, l.attempt_id, l.instance_id, l.issued_at, l.expires_at,
                 (l.expires_at <= app_now()) AS expired,
-                t.status AS task_status, t.attempt_count, t.max_attempts,
-                a.status AS attempt_status
+                t.status AS task_status, t.attempt_count, t.max_attempts, t.fanout_id,
+                a.status AS attempt_status, a.outward_actions
            FROM leases l
            JOIN tasks t ON t.task_id = l.task_id
            JOIN task_attempts a ON a.attempt_id = l.attempt_id
@@ -9749,7 +10572,7 @@ async function sweepLeases(limit = 50) {
           WHERE attempt_id = $1 AND state IN ('HELD','ACTIVE')`,
         [row.attempt_id, cause]
       );
-      if (!["SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT"].includes(row.attempt_status)) {
+      if (!["SUCCEEDED", "FAILED", "CANCELLED", "TIMEOUT", "PARKED"].includes(row.attempt_status)) {
         await c.query(
           `UPDATE task_attempts SET status = 'TIMEOUT', finished_at = app_now(),
                                     error = $2
@@ -9757,9 +10580,11 @@ async function sweepLeases(limit = 50) {
           [row.attempt_id, JSON.stringify({ code: cause })]
         );
       }
-      if (row.attempt_count >= row.max_attempts) {
+      const outward = Array.isArray(row.outward_actions) ? row.outward_actions : [];
+      if (outward.length > 0) {
         await c.query(
-          `UPDATE tasks SET status = 'FAILED', current_attempt_id = NULL, dead_letter = TRUE,
+          `UPDATE tasks SET status = 'FAILED', outcome = 'interrupted_after_outward',
+                            current_attempt_id = NULL, dead_letter = TRUE,
                             version = version + 1, updated_at = app_now()
             WHERE task_id = $1`,
           [row.task_id]
@@ -9770,8 +10595,36 @@ async function sweepLeases(limit = 50) {
           from_status: row.task_status,
           to_status: "FAILED",
           actor: "scheduler",
-          payload: { attempt_id: row.attempt_id, cause, alert: "P1" }
+          payload: {
+            attempt_id: row.attempt_id,
+            cause,
+            error_code: "INTERRUPTED_AFTER_OUTWARD_ACTION",
+            outcome: "interrupted_after_outward",
+            outward_actions: outward,
+            non_retryable: true,
+            alert: "P1"
+          }
         });
+        await settleFanout(c, { task_id: row.task_id, fanout_id: row.fanout_id });
+        out.push({ task_id: row.task_id, cause, to: "FAILED" });
+        continue;
+      }
+      if (row.attempt_count >= row.max_attempts) {
+        await c.query(
+          `UPDATE tasks SET status = 'FAILED', outcome = 'error', current_attempt_id = NULL,
+                            dead_letter = TRUE, version = version + 1, updated_at = app_now()
+            WHERE task_id = $1`,
+          [row.task_id]
+        );
+        await appendEvent(c, {
+          task_id: row.task_id,
+          event_type: "TASK_DEAD_LETTERED",
+          from_status: row.task_status,
+          to_status: "FAILED",
+          actor: "scheduler",
+          payload: { attempt_id: row.attempt_id, cause, outcome: "error", alert: "P1" }
+        });
+        await settleFanout(c, { task_id: row.task_id, fanout_id: row.fanout_id });
         out.push({ task_id: row.task_id, cause, to: "FAILED" });
       } else {
         await c.query(
@@ -9800,6 +10653,45 @@ async function sweepLeases(limit = 50) {
       }
     }
     return { reclaimed: out };
+  });
+}
+async function sweepNeedsInput(limit = 50) {
+  return tx(async (c) => {
+    const rows = (await c.query(
+      `SELECT task_id, fanout_id, pending_question, needs_input_at
+           FROM tasks
+          WHERE status = 'NEEDS_INPUT'
+            AND needs_input_expires_at IS NOT NULL
+            AND needs_input_expires_at <= app_now()
+          ORDER BY needs_input_expires_at
+          FOR UPDATE SKIP LOCKED
+          LIMIT $1`,
+      [limit]
+    )).rows;
+    const expired = [];
+    for (const row of rows) {
+      await c.query(
+        `UPDATE tasks SET status = 'FAILED', outcome = 'input_expired', dead_letter = TRUE,
+                          current_attempt_id = NULL, version = version + 1, updated_at = app_now()
+          WHERE task_id = $1`,
+        [row.task_id]
+      );
+      await appendEvent(c, {
+        task_id: row.task_id,
+        event_type: "TASK_INPUT_EXPIRED",
+        from_status: "NEEDS_INPUT",
+        to_status: "FAILED",
+        actor: "scheduler",
+        payload: {
+          outcome: "input_expired",
+          question_chars: row.pending_question?.question ? String(row.pending_question.question).length : 0,
+          asked_at: row.needs_input_at
+        }
+      });
+      await settleFanout(c, { task_id: row.task_id, fanout_id: row.fanout_id });
+      expired.push(row.task_id);
+    }
+    return { expired };
   });
 }
 
@@ -9837,6 +10729,8 @@ async function tick() {
         r.reclaimed.map((x) => `${x.task_id}:${x.cause}->${x.to}`).join(" ")
       );
     }
+    const ni = await sweepNeedsInput();
+    if (ni.expired.length) console.log("[input] expired questions", ni.expired.join(","));
   } catch (e) {
     console.error("[tick]", e);
   } finally {

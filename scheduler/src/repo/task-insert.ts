@@ -3,6 +3,7 @@ import { ApiError } from "../errors.js";
 import { appendEvent } from "../events.js";
 import { newId } from "../ids.js";
 import { normalizeDifficulty } from "../capability.js";
+import { APPROVAL_MODES, type ApprovalMode } from "../statemachine.js";
 
 /**
  * The smallest unit of task writing.
@@ -28,6 +29,11 @@ export interface CreateTaskInput {
   difficulty?: number;
   workflow_run_id?: string;
   parent_task_id?: string;
+  /** How much the executor may do without asking. Defaults to scheduler_config.default_approval_mode. */
+  approval_mode?: ApprovalMode;
+  /** Fan-out bookkeeping: set by splitTask on every child, never by ordinary submitters. */
+  fanout_id?: string;
+  fanout_depth?: number;
   max_attempts?: number;
   deadline_at?: string;
   trace_id?: string;
@@ -57,6 +63,21 @@ export async function insertTask(c: Client, input: CreateTaskInput) {
   const difficulty = normalizeDifficulty(input.difficulty);
   const relayParent = input.relay?.parent_task_id?.trim() || null;
   const relayDepth = relayParent ? Math.max(0, Math.min(64, Number(input.relay?.depth) || 0)) : 0;
+  // Reject an unknown level here rather than letting the CHECK constraint surface as a 500:
+  // the submitter asked for something the ladder does not define.
+  if (input.approval_mode && !APPROVAL_MODES.includes(input.approval_mode)) {
+    throw new ApiError(
+      422,
+      "APPROVAL_MODE_INVALID",
+      `approval_mode must be one of ${APPROVAL_MODES.join(", ")}`,
+    );
+  }
+  const approvalMode: ApprovalMode =
+    input.approval_mode ??
+    ((await c.query(`SELECT default_approval_mode FROM scheduler_config WHERE id = TRUE`)).rows[0]
+      ?.default_approval_mode as ApprovalMode | undefined) ??
+    "full";
+  const fanoutDepth = Math.max(0, Math.min(32, Number(input.fanout_depth) || 0));
 
   // Upstream retry delivery may arrive twice: one upstream task creates only one local task row.
   if (relayParent) {
@@ -70,8 +91,9 @@ export async function insertTask(c: Client, input: CreateTaskInput) {
     `INSERT INTO tasks (task_id, task_type, task_version, workflow_run_id, parent_task_id,
                         priority_class, status, payload_ref, payload_sha256, payload_schema,
                         requirements, resource_profile_id, max_attempts, difficulty, enqueued_at,
-                        deadline_at, created_at, updated_at, relay_parent_task_id, relay_depth)
-     VALUES ($1,$2,$3,$4,$5,$6,'QUEUED',$7,$8,$9,$10,$11,$12,$13, app_now(), $14, app_now(), app_now(), $15, $16)
+                        deadline_at, created_at, updated_at, relay_parent_task_id, relay_depth,
+                        approval_mode, fanout_id, fanout_depth)
+     VALUES ($1,$2,$3,$4,$5,$6,'QUEUED',$7,$8,$9,$10,$11,$12,$13, app_now(), $14, app_now(), app_now(), $15, $16, $17, $18, $19)
      ON CONFLICT (relay_parent_task_id) WHERE relay_parent_task_id IS NOT NULL DO NOTHING
      RETURNING *`,
     [
@@ -91,6 +113,9 @@ export async function insertTask(c: Client, input: CreateTaskInput) {
       input.deadline_at ? new Date(input.deadline_at) : null,
       relayParent,
       relayDepth,
+      approvalMode,
+      input.fanout_id ?? null,
+      fanoutDepth,
     ],
   );
 
@@ -111,6 +136,7 @@ export async function insertTask(c: Client, input: CreateTaskInput) {
       task_type: input.task_type,
       priority_class: priority,
       difficulty,
+      approval_mode: approvalMode,
       ...(relayParent
         ? { relay_parent_task_id: relayParent, parent_node_id: input.relay?.parent_node_id ?? null }
         : {}),

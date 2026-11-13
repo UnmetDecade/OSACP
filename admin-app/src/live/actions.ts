@@ -50,6 +50,12 @@ export async function updateHost(
     private_key?: string;
     password?: string;
     role_mode?: HostRoleMode;
+    /** Choices for the bare-metal builder created by the role switch. */
+    native_builder?: {
+      display_name?: string;
+      agent_profile_id?: string;
+      api_profile_ids?: string[];
+    };
   },
 ): Promise<{
   host_id: string;
@@ -247,6 +253,20 @@ export async function createScheduler(
   );
 }
 
+/**
+ * Remove a scheduler registration left behind by a deployment that no longer exists.
+ * INSTANCE_UNKNOWN means it is already gone; ROUTE_NOT_FOUND means the scheduler predates this endpoint
+ * and must be upgraded, which is worth surfacing instead of pretending the deletion worked.
+ */
+async function forgetInstance(connection: LiveConnection, instanceId: string): Promise<void> {
+  try {
+    await scheduler(connection, `/v1/instances/${encodeURIComponent(instanceId)}`, { method: "DELETE" });
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "INSTANCE_UNKNOWN") return;
+    throw e;
+  }
+}
+
 export async function instanceAction(
   connection: LiveConnection,
   instanceId: string,
@@ -264,7 +284,14 @@ export async function instanceAction(
         (!hostId || d.host_id === hostId),
     )
     .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
-  if (!dep) throw new Error(t("实例 {id} 没有可操作的部署记录", { id: instanceId }));
+  if (!dep) {
+    // The deployment is already gone; only a stale scheduler registration remains (common for builders deleted
+    // before this app version, and for native builders whose deployment record was lost). Deleting the
+    // registration is the removal in that case; other actions have nothing to act on.
+    if (action !== "remove") throw new Error(t("实例 {id} 没有可操作的部署记录", { id: instanceId }));
+    await forgetInstance(connection, instanceId);
+    return;
+  }
   const verb = action === "drain" ? "stop" : action;
   await pcs(
     connection,
@@ -295,7 +322,11 @@ export async function removeInstanceAndWait(
       )
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
   const first = pick(((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[]);
-  if (!first) return; // No deployment record remains; treat it as deleted.
+  if (!first) {
+    // No deployment record remains; treat it as deleted, but clear the stale scheduler registration too.
+    await forgetInstance(connection, instanceId);
+    return;
+  }
   try {
     await pcs(
       connection,
@@ -312,7 +343,12 @@ export async function removeInstanceAndWait(
     await new Promise((r) => setTimeout(r, 1000));
     const rows = ((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[];
     const dep = rows.find((d) => d.deployment_id === first.deployment_id);
-    if (!dep || dep.status === "REMOVED") return;
+    if (!dep || dep.status === "REMOVED") {
+      // The host acknowledged; drop the registration as well, but never fail the deletion if the
+      // instance is still finishing its own shutdown.
+      await forgetInstance(connection, instanceId).catch(() => undefined);
+      return;
+    }
     if (dep.status === "FAILED") {
       const reason = dep.observed?.error?.message ?? dep.observed?.error ?? dep.status;
       throw new Error(t("移除实例 {id} 失败：{reason}", { id: instanceId, reason: String(reason) }));
@@ -388,6 +424,8 @@ export interface SubmitBuildInput {
   schedulerDeploymentId?: string | null;
   /** References to uploaded attachments; the builder writes them to disk and passes the paths to the Agent. */
   attachments?: TaskAttachmentRef[];
+  /** Autonomy level: ask / edits / auto / full; omitted means the scheduler's configured default. */
+  approval_mode?: string;
 }
 
 export async function submitBuild(
@@ -403,6 +441,7 @@ export async function submitBuild(
         ? { difficulty: Math.max(1, Math.min(1000, Math.round(input.difficulty))) }
         : {}),
       max_attempts: 2,
+      ...(input.approval_mode ? { approval_mode: input.approval_mode } : {}),
       deadline_at: new Date(Date.now() + 60 * 60_000).toISOString(),
       trace_id: `build_${Date.now()}`,
       payload_ref: `admin://builds/${Date.now()}`,
@@ -439,6 +478,22 @@ export async function retryTask(
   await schedulerFor(connection, schedulerDeploymentId, `/v1/tasks/${encodeURIComponent(taskId)}/retry`, {
     method: "POST",
     body: { actor: connection.operator },
+  });
+}
+
+/**
+ * Answer a parked question. The scheduler appends the answer to the task and requeues it, so the
+ * next attempt sees both the question and the answer instead of guessing again.
+ */
+export async function answerTask(
+  connection: LiveConnection,
+  taskId: string,
+  answer: string,
+  schedulerDeploymentId?: string | null,
+): Promise<void> {
+  await schedulerFor(connection, schedulerDeploymentId, `/v1/tasks/${encodeURIComponent(taskId)}/answer`, {
+    method: "POST",
+    body: { answer, actor: connection.operator },
   });
 }
 

@@ -45,6 +45,19 @@ export interface CreateArtifactInput {
   sha256: string;
   size_bytes?: number;
   media_type?: string;
+  /** Original file name (workspace-relative for collected files); metadata only, never used as a storage path. */
+  name?: string;
+}
+
+/** Keep file names readable but inert: metadata only, so this does not need to reject every odd character. */
+function normalizeName(value: unknown): string | null {
+  const raw = String(value ?? "").replace(/\\/g, "/").trim();
+  if (!raw) return null;
+  const name = raw
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/^\/+/, "")
+    .slice(0, 300);
+  return name || null;
 }
 
 export async function createArtifact(input: CreateArtifactInput, instanceId?: string) {
@@ -76,8 +89,8 @@ export async function createArtifact(input: CreateArtifactInput, instanceId?: st
     await q1(
       `INSERT INTO artifacts
          (artifact_id, task_id, attempt_id, instance_id, status, declared_sha256,
-          size_bytes, media_type, storage_ref)
-       VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8)
+          size_bytes, media_type, storage_ref, name)
+       VALUES ($1,$2,$3,$4,'PENDING',$5,$6,$7,$8,$9)
        RETURNING *`,
       [
         artifactId,
@@ -88,6 +101,7 @@ export async function createArtifact(input: CreateArtifactInput, instanceId?: st
         input.size_bytes ?? null,
         input.media_type ?? "application/octet-stream",
         `${artifactId}.bin`,
+        normalizeName(input.name),
       ],
     )
   )!;
@@ -178,6 +192,50 @@ export async function getArtifact(artifactId: string) {
 }
 
 /**
+ * Files produced by one task.
+ *
+ * This is the operator-facing side of the file channel: task detail pages and sideload clients list a
+ * task's files here, then fetch bytes from the download route. Only COMPLETE artifacts are downloadable;
+ * PENDING and FAILED rows still appear so a client can tell "not uploaded yet" from "never declared".
+ */
+export async function listTaskArtifacts(taskId: string) {
+  const task = await q1(`SELECT task_id FROM tasks WHERE task_id = $1`, [taskId]);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+  return q(
+    `SELECT artifact_id, task_id, attempt_id, instance_id, status, name, media_type,
+            size_bytes, declared_sha256, actual_sha256, created_at, completed_at
+       FROM artifacts
+      WHERE task_id = $1
+      ORDER BY created_at, artifact_id`,
+    [taskId],
+  );
+}
+
+/** A human file name for Content-Disposition: the recorded name's basename, else the artifact id plus a media-type extension. */
+export function downloadFilename(row: {
+  artifact_id: string;
+  name?: string | null;
+  media_type?: string | null;
+}): string {
+  const base = String(row.name ?? "")
+    .split("/")
+    .filter(Boolean)
+    .pop();
+  if (base) return base;
+  const type = String(row.media_type ?? "").toLowerCase();
+  const ext = type === "application/json" ? ".json"
+    : type === "text/plain" ? ".txt"
+    : type === "text/markdown" ? ".md"
+    : type === "application/pdf" ? ".pdf"
+    : type === "image/png" ? ".png"
+    : type === "image/jpeg" ? ".jpg"
+    : type === "application/zip" ? ".zip"
+    : type === "application/gzip" ? ".gz"
+    : ".bin";
+  return `${row.artifact_id}${ext}`;
+}
+
+/**
  * Read artifact contents.
  *
  * There are only two authorization paths:
@@ -218,6 +276,7 @@ export async function readArtifactContent(artifactId: string, instanceId?: strin
   if (!fs.existsSync(file)) throw new ApiError(409, "ARTIFACT_NOT_UPLOADED", "artifact content does not exist");
   return {
     artifact_id: row.artifact_id,
+    name: row.name ?? null,
     media_type: row.media_type ?? "application/octet-stream",
     sha256: row.actual_sha256,
     data: fs.readFileSync(file),

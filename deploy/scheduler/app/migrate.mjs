@@ -5492,6 +5492,10 @@ if (config.mtls && (!config.tlsCertFile || !config.tlsCaFile)) {
 var { Client: Client2 } = esm_default;
 var here = path.dirname(fileURLToPath(import.meta.url));
 var sqlDir = [path.join(here, "sql"), path.join(here, "..", "sql")].find((d) => fs.existsSync(d)) ?? path.join(here, "..", "sql");
+var sqlBundleFile = [path.join(here, "sql.json"), path.join(here, "..", "sql.json")].find(
+  (f) => fs.existsSync(f)
+);
+var sqlBundle = sqlBundleFile ? JSON.parse(fs.readFileSync(sqlBundleFile, "utf8")) : null;
 async function ensureDatabase() {
   const url = new URL(config.databaseUrl);
   const dbName = decodeURIComponent(url.pathname.replace(/^\//, ""));
@@ -5510,7 +5514,7 @@ async function ensureDatabase() {
   }
 }
 async function runFile(file) {
-  const sql = fs.readFileSync(path.join(sqlDir, file), "utf8");
+  const sql = sqlBundle?.[file] ?? fs.readFileSync(path.join(sqlDir, file), "utf8");
   const client = new Client2({ connectionString: config.databaseUrl });
   await client.connect();
   try {
@@ -5530,4 +5534,7 @@ await runFile("005_essentials.sql");
 await runFile("006_capability.sql");
 await runFile("007_relay.sql");
 await runFile("008_dynamic_scheduling.sql");
+await runFile("009_agent_control.sql");
+await runFile("010_failure_recovery.sql");
+await runFile("011_artifact_names.sql");
 process.exit(0);

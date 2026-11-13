@@ -1,5 +1,18 @@
+import fs from "node:fs";
+import path from "node:path";
 import { baseEnv, runShell, tail } from "./shell.js";
-import { TaskAborted, TaskFailed, type Executor } from "../exec-types.js";
+import {
+  TaskAborted,
+  TaskFailed,
+  type ExecContext,
+  type Executor,
+} from "../exec-types.js";
+import {
+  materializeAttachmentList,
+  mediaFor,
+  resolveInsideWorkspace,
+  type MaterializedAttachment,
+} from "../agent-runtime/files.js";
 
 /**
  * Role chat and builder Shell.
@@ -104,6 +117,127 @@ export function chatExecutorFor(role: string): Executor {
 /* Builder Shell (full permissions)                                    */
 /* ------------------------------------------------------------------ */
 
+const MAX_COLLECT_PATHS = 32;
+const MAX_COLLECT_FILES = 128;
+const MAX_COLLECT_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_COLLECT_TOTAL_BYTES = 256 * 1024 * 1024;
+
+/** `console.collect` is a list of workspace-relative paths; a single string is accepted as a shortcut. */
+function collectPaths(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    const value = item.trim();
+    if (!value) continue;
+    out.push(value);
+    if (out.length >= MAX_COLLECT_PATHS) break;
+  }
+  return out;
+}
+
+interface CollectWalk {
+  files: Array<{ rel: string; abs: string; size: number }>;
+  skipped: Array<{ path: string; reason: string }>;
+}
+
+/** Expand collect paths into regular files. Directories are walked depth-first; symlinks are not followed. */
+function expandCollectPaths(workspaceDir: string, paths: string[]): CollectWalk {
+  const files: CollectWalk["files"] = [];
+  const skipped: CollectWalk["skipped"] = [];
+
+  const visit = (rel: string, abs: string, depth: number): void => {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(abs);
+    } catch {
+      skipped.push({ path: rel, reason: "missing" });
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      skipped.push({ path: rel, reason: "symlink" });
+      return;
+    }
+    if (stat.isDirectory()) {
+      if (depth >= 12) {
+        skipped.push({ path: rel, reason: "directory too deep" });
+        return;
+      }
+      for (const entry of fs.readdirSync(abs)) {
+        visit(rel ? `${rel}/${entry}` : entry, path.join(abs, entry), depth + 1);
+      }
+      return;
+    }
+    if (!stat.isFile()) {
+      skipped.push({ path: rel, reason: "not a regular file" });
+      return;
+    }
+    files.push({ rel, abs, size: stat.size });
+  };
+
+  for (const raw of paths) {
+    let rel: string;
+    try {
+      rel = raw.replace(/^\.\/+/, "").replace(/\/+$/, "");
+      if (rel === ".") rel = "";
+      if (!rel) {
+        // A bare "." means the whole workspace.
+        for (const entry of fs.readdirSync(workspaceDir)) {
+          visit(entry, path.join(workspaceDir, entry), 1);
+        }
+        continue;
+      }
+      visit(rel, resolveInsideWorkspace(rel, workspaceDir), 0);
+    } catch (e) {
+      skipped.push({ path: raw, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { files, skipped };
+}
+
+interface CollectedFile {
+  name: string;
+  artifact_id: string;
+  sha256: string;
+  size_bytes: number;
+  media_type: string;
+}
+
+/** Upload collected files through the artifact channel; the scheduler verifies every digest. */
+async function collectArtifacts(
+  ctx: ExecContext,
+  paths: string[],
+): Promise<{ artifacts: CollectedFile[]; skipped: Array<{ path: string; reason: string }> }> {
+  const artifacts: CollectedFile[] = [];
+  if (!paths.length) return { artifacts, skipped: [] };
+  const { files, skipped } = expandCollectPaths(ctx.workspaceDir, paths);
+  let total = 0;
+  for (const file of files) {
+    if (artifacts.length >= MAX_COLLECT_FILES) {
+      skipped.push({ path: file.rel, reason: `more than ${MAX_COLLECT_FILES} files` });
+      break;
+    }
+    if (file.size > MAX_COLLECT_FILE_BYTES) {
+      skipped.push({ path: file.rel, reason: "larger than 64MiB" });
+      continue;
+    }
+    total += file.size;
+    if (total > MAX_COLLECT_TOTAL_BYTES) {
+      skipped.push({ path: file.rel, reason: "collection exceeds 256MiB in total" });
+      break;
+    }
+    try {
+      const mediaType = mediaFor(file.rel);
+      const uploaded = await ctx.uploadArtifact(fs.readFileSync(file.abs), mediaType, file.rel);
+      artifacts.push({ name: file.rel, ...uploaded, media_type: mediaType });
+      ctx.log(`collected ${file.rel} (${file.size} B) as ${uploaded.artifact_id}`);
+    } catch (e) {
+      skipped.push({ path: file.rel, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { artifacts, skipped };
+}
+
 export function consoleExecutorFor(role: string): Executor {
   return async (task, ctx) => {
     const raw = (task.requirements?.console ?? {}) as Record<string, unknown>;
@@ -117,6 +251,20 @@ export function consoleExecutorFor(role: string): Executor {
         ? Math.min(Math.max(requestedSeconds * 1000, 5_000), 15 * 60_000)
         : 60_000;
 
+    // Input files: attachments arrive as references (a one-time URL or base64) and are materialized
+    // into the workspace before the command runs, the same way agent tasks receive them. Both the
+    // console-native shape and the PCS build shape are accepted.
+    const build = task.requirements?.build as Record<string, unknown> | undefined;
+    const attachmentRefs = [
+      ...(Array.isArray(raw.attachments) ? raw.attachments : []),
+      ...(Array.isArray(build?.attachments) ? build!.attachments : []),
+    ];
+    let attachments: MaterializedAttachment[] = [];
+    if (attachmentRefs.length) {
+      attachments = await materializeAttachmentList(attachmentRefs, ctx.workspaceDir);
+      ctx.log(`Wrote ${attachments.length} attachments to workspace attachments/`);
+    }
+
     ctx.progress(20, "Executing command in the builder");
     const result = await runShell({
       command,
@@ -126,6 +274,7 @@ export function consoleExecutorFor(role: string): Executor {
         PLATFORM_TASK_ID: task.task_id,
         PLATFORM_TASK_TYPE: task.task_type,
         PLATFORM_WORKSPACE: ctx.workspaceDir,
+        ...(attachments.length ? { PLATFORM_ATTACHMENTS: JSON.stringify(attachments) } : {}),
       }),
       signal: ctx.signal,
       timeoutMs,
@@ -140,10 +289,21 @@ export function consoleExecutorFor(role: string): Executor {
     ctx.log(
       `console ${task.task_id}: role=${role} operator=${operator} command=${command.slice(0, 120)} exit=${result.exitCode} duration_ms=${result.durationMs}`,
     );
+
+    // Output files: anything the command wrote can be collected by listing workspace-relative paths.
+    // The file channel accepts every format; the scheduler stores raw bytes and verifies each digest.
+    const collect = collectPaths(raw.collect);
+    if (collect.length) ctx.progress(90, "Collecting output files");
+    const collected = await collectArtifacts(ctx, collect);
+    if (collected.skipped.length) {
+      ctx.log(`collect skipped ${collected.skipped.length} path(s): ${collected.skipped.slice(0, 5).map((s) => s.path).join(", ")}`);
+    }
     ctx.progress(100, "Command execution completed");
 
     return {
-      summary: `${command.slice(0, 60)} completed (exit ${result.exitCode})`,
+      summary: `${command.slice(0, 60)} completed (exit ${result.exitCode}${
+        collected.artifacts.length ? `, ${collected.artifacts.length} file(s) collected` : ""
+      })`,
       outputs: {
         stdout: tail(result.stdout, 64 * 1024),
         stderr: tail(result.stderr, 64 * 1024),
@@ -152,6 +312,9 @@ export function consoleExecutorFor(role: string): Executor {
         command,
         operator,
         role,
+        attachments,
+        artifacts: collected.artifacts,
+        ...(collected.skipped.length ? { collect_skipped: collected.skipped } : {}),
       },
     };
   };
