@@ -1602,6 +1602,7 @@ describe("dynamic scheduling (v0.3)", () => {
 
   it("new claims stop when the quota is below committed amounts (OVERCOMMITTED)", async () => {
     await dynamicHost();
+    await newTask();
     await claimOrFail("worker-a");
     await q(
       `UPDATE resource_grants SET cpu_millicores = 1000, memory_bytes = $1
