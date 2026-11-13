@@ -553,7 +553,7 @@ export async function recomputeHostGrants(
     `UPDATE host_resource_pools
         SET cpu_granted_millicores = $2,
             mem_granted_bytes = $3,
-            available_commitment_bytes = GREATEST(0, $4 - $3),
+            available_commitment_bytes = GREATEST(0::bigint, $4::bigint - $3::bigint),
             pressure_state = $5,
             updated_at = app_now()
       WHERE host_id = $1`,
