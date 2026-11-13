@@ -505,8 +505,9 @@ describe("ordering and admission", () => {
     assert.equal(task.resource_block_reason, "INSUFFICIENT_MEMORY");
     assert.ok(task.resource_evaluated_at);
 
-    // Claimable once resources recover
+    // Claimable once resources recover; the block backoff (1s, 2s, 4s…) has to elapse first.
     await q(`UPDATE hosts SET mem_available_bytes = 12884901888 WHERE host_id = 'host-a'`);
+    await advance(2);
     await claimOrFail("worker-a");
   });
 });

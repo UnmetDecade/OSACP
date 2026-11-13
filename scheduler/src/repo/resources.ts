@@ -302,7 +302,9 @@ async function demandRows(c: Client, hostId: string): Promise<InstanceDemandRow[
          LEFT JOIN leases l ON l.instance_id = r.instance_id
          LEFT JOIN tasks t ON t.task_id = l.task_id
          LEFT JOIN resource_profiles p ON p.profile_id = t.resource_profile_id
-        WHERE r.host_id = $1 AND r.role_id = 'builder'
+        -- Any instance explicitly switched to dynamic mode is grant-managed, even when it keeps a
+        -- legacy role id (the role name is historical; scheduling_mode is what selects the ledger).
+        WHERE r.host_id = $1 AND (r.role_id = 'builder' OR r.scheduling_mode = 'dynamic')
           AND r.state NOT IN ('OFFLINE','FAILED')
         GROUP BY r.instance_id
         ORDER BY r.instance_id`,
