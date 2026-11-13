@@ -486,6 +486,135 @@ test("an instance with the same name on different hosts has separate bindings th
   );
 });
 
+test("removing an instance releases its Agent and API bindings", async () => {
+  const host = await enrolledHost("release-host");
+  const agent = await svc.createAgentProfile(
+    {
+      agent_profile_id: "agp_release",
+      role_id: "builder",
+      name: "release-agent",
+      version: "1.0.0",
+      adapter: "stdio-jsonrpc",
+      artifact_image: AGENT_IMAGE,
+      allowed_tools: ["demo.echo"],
+      task_types: ["task.agent.probe"],
+    },
+    "alice",
+  );
+  await svc.createApiProfile(
+    {
+      api_profile_id: "api_release",
+      name: "release-api",
+      kind: "tool",
+      base_url: "https://api.example",
+      auth_type: "bearer",
+      secret_ref: "secret://apis/release",
+    },
+    "alice",
+  );
+  const { deployment } = await svc.createDeployment({
+    host_id: host.host_id,
+    instance_id: "release-builder",
+    role_id: "builder",
+    image: PINNED,
+    resource_profile: { cpu_limit: 0.5, memory_limit_bytes: 128 * 1024 ** 2, pids_limit: 64 },
+    created_by: "operator:tester",
+  });
+  const deployCmd = await svc.nextCommand(host.host_id, 0);
+  await svc.ackCommand(host.host_id, deployCmd!.command_id, true, {});
+  await svc.bindAgent(host.host_id, "release-builder", agent.agent_profile_id, "builder", "alice");
+  await svc.bindApi(host.host_id, "release-builder", "api_release", "alice");
+
+  await svc.enqueueAction(deployment.deployment_id, "remove", "alice");
+  const removeCmd = await svc.nextCommand(host.host_id, 0);
+  assert.equal(removeCmd?.command_type, "REMOVE");
+  await svc.ackCommand(host.host_id, removeCmd!.command_id, true, {});
+
+  const left = (await svc.listBindings()).filter(
+    (b) => b.host_id === host.host_id && b.instance_id === "release-builder",
+  );
+  assert.equal(left.length, 0);
+  // No instance can use them any more, so the profiles are deletable without manual cleanup.
+  assert.equal((await svc.deleteAgentProfile(agent.agent_profile_id, "alice")).deleted, true);
+  assert.equal((await svc.deleteApiProfile("api_release", "alice")).deleted, true);
+});
+
+test("profile deletion prunes stale bindings but still refuses live instances", async () => {
+  const host = await enrolledHost("prune-host");
+  const agent = await svc.createAgentProfile(
+    {
+      agent_profile_id: "agp_prune",
+      role_id: "builder",
+      name: "prune-agent",
+      version: "1.0.0",
+      adapter: "stdio-jsonrpc",
+      artifact_image: AGENT_IMAGE,
+      allowed_tools: ["demo.echo"],
+      task_types: ["task.agent.probe"],
+    },
+    "alice",
+  );
+
+  // Legacy row whose host no longer exists, plus a binding left behind by an already-removed deployment.
+  await query(
+    `INSERT INTO role_agent_bindings (host_id, instance_id, role_id, agent_profile_id, bound_by)
+     VALUES ($1,$2,$3,$4,$5)`,
+    ["hst_missing", "builder-ghost", "builder", agent.agent_profile_id, "legacy"],
+  );
+  const { deployment } = await svc.createDeployment({
+    host_id: host.host_id,
+    instance_id: "removed-builder",
+    role_id: "builder",
+    image: PINNED,
+    resource_profile: { cpu_limit: 0.5, memory_limit_bytes: 128 * 1024 ** 2, pids_limit: 64 },
+    created_by: "operator:tester",
+  });
+  const deployCmd = await svc.nextCommand(host.host_id, 0);
+  await svc.ackCommand(host.host_id, deployCmd!.command_id, true, {});
+  await svc.enqueueAction(deployment.deployment_id, "remove", "alice");
+  const removeCmd = await svc.nextCommand(host.host_id, 0);
+  await svc.ackCommand(host.host_id, removeCmd!.command_id, true, {});
+  await svc.bindAgent(host.host_id, "removed-builder", agent.agent_profile_id, "builder", "alice");
+
+  assert.equal((await svc.deleteAgentProfile(agent.agent_profile_id, "alice")).deleted, true);
+  const rows = await query(`SELECT 1 FROM role_agent_bindings WHERE agent_profile_id=$1`, [
+    agent.agent_profile_id,
+  ]);
+  assert.equal(rows.rowCount, 0);
+
+  // A binding owned by a live deployment still blocks deletion until it is unbound.
+  const liveAgent = await svc.createAgentProfile(
+    {
+      agent_profile_id: "agp_live",
+      role_id: "builder",
+      name: "live-agent",
+      version: "1.0.0",
+      adapter: "stdio-jsonrpc",
+      artifact_image: AGENT_IMAGE,
+      allowed_tools: ["demo.echo"],
+      task_types: ["task.agent.probe"],
+    },
+    "alice",
+  );
+  await svc.createDeployment({
+    host_id: host.host_id,
+    instance_id: "live-builder",
+    role_id: "builder",
+    image: PINNED,
+    resource_profile: { cpu_limit: 0.5, memory_limit_bytes: 128 * 1024 ** 2, pids_limit: 64 },
+    created_by: "operator:tester",
+  });
+  const liveCmd = await svc.nextCommand(host.host_id, 0);
+  await svc.ackCommand(host.host_id, liveCmd!.command_id, true, {});
+  await svc.bindAgent(host.host_id, "live-builder", liveAgent.agent_profile_id, "builder", "alice");
+  await assert.rejects(
+    () => svc.deleteAgentProfile(liveAgent.agent_profile_id, "alice"),
+    (e: any) => e.code === "PROFILE_IN_USE",
+  );
+  assert.equal((await svc.unbindAgent(host.host_id, "live-builder", "alice")).ok, true);
+  assert.equal((await svc.deleteAgentProfile(liveAgent.agent_profile_id, "alice")).deleted, true);
+});
+
 test("the deployment plan digest is verifiable; insufficient resources, digest mismatch, and expiry are all rejected", async () => {
   const host = await enrolledHost("plan-host");
   await query(

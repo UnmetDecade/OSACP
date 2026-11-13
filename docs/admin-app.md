@@ -113,7 +113,7 @@ Two **cute robots** replace the original cartoon characters. Hand-drawn SVG, no 
   Preset providers pre-fill the address, authentication method, and `secret://` reference; only "Custom" shows type, authentication, egress, and reference.
 - The API Key is submitted only once, at save time: the control plane forwards it to the Secret Store, and PCS never persists or echoes it; lists, logs, and audits contain only the reference.
   Leaving it empty while editing means no change; when the Secret Store is not configured the control plane returns 503, and you can fill in only a `secret://` reference.
-- The delete button to the right of "Enabled" in a list row opens a confirmation dialog first; if the profile is still referenced by an instance or Agent, the control plane rejects the deletion—unbind it first.
+- The delete button to the right of "Enabled" in a list row opens a confirmation dialog first; if the profile is still referenced by a live instance or Agent, the control plane rejects the deletion—unbind it in "Configure Agent" on the builder / scheduler detail page (choose "No Agent", or remove the API chip). Bindings left behind by removed deployments or deleted hosts are pruned automatically on the next deletion attempt.
 - Which API an instance uses is chosen via "Configure" on the builder / scheduler, and is not specified again in the Agent Profile.
 - The database stores only `secret://` references and image digests; secret values exist only in Secret Store files (0600).
 

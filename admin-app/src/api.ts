@@ -38,6 +38,7 @@ import {
   setApiProfileSecret as liveSetApiProfileSecret,
   submitBuild as liveSubmitBuild,
   uploadTaskAttachment as liveUploadTaskAttachment,
+  unbindAgentProfile,
   unbindApiProfile,
   updateAgentProfile as liveUpdateAgentProfile,
   updateApiProfile as liveUpdateApiProfile,
@@ -482,7 +483,7 @@ export async function setProfileEnabled(
 
 /**
  * Set an instance's Agent and API bindings in one shot.
- * Only the diff is sent: added ones use bind-api, removed ones unbind-api; takes effect after the container restarts.
+ * An empty Agent unbinds it; added APIs use bind-api, removed ones unbind-api. Takes effect after the container restarts.
  */
 export async function setInstanceProfiles(
   hostId: string,
@@ -495,6 +496,7 @@ export async function setInstanceProfiles(
 ): Promise<void> {
   const live = getLiveConnection();
   if (agentProfileId) await bindAgentProfile(live, hostId, instanceId, agentProfileId, role);
+  else await unbindAgentProfile(live, hostId, instanceId);
   const wanted = new Set(apiProfileIds);
   const current = new Set(currentApiProfileIds);
   for (const id of apiProfileIds) {

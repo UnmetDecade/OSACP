@@ -7,6 +7,7 @@ import { tasksForHost } from "../host-tasks";
 import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { Character } from "../components/Character";
+import { InstanceProfilesModal } from "../components/InstanceProfiles";
 import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
 import { builderAction, sshCommand } from "../api";
@@ -21,6 +22,7 @@ export function SchedulerShow() {
   const scheduler = db.instances.find((i) => i.id === id && i.role === "scheduler");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [profilesOpen, setProfilesOpen] = useState(false);
 
   if (!scheduler) {
     return (
@@ -148,6 +150,10 @@ export function SchedulerShow() {
               <Icon name="chat" size={14} />
               {t("问派令")}
             </Link>
+            <Button onClick={() => setProfilesOpen(true)}>
+              <Icon name="agent" size={14} />
+              {t("配置 Agent")}
+            </Button>
             <Button onClick={() => act("restart")} disabled={busy !== ""}>
               <Icon name="refresh" size={13} />
               {t("重启")}
@@ -259,6 +265,14 @@ export function SchedulerShow() {
           </div>
         </Card>
       </div>
+
+      {profilesOpen && (
+        <InstanceProfilesModal
+          instance={s}
+          role="scheduler"
+          onClose={() => setProfilesOpen(false)}
+        />
+      )}
     </div>
   );
 }

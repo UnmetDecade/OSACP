@@ -38,10 +38,6 @@ export function InstanceProfilesModal({
   }
 
   async function submit() {
-    if (!agent) {
-      setError(t("先选择一个 Agent Profile"));
-      return;
-    }
     setBusy(true);
     setError("");
     try {
@@ -80,6 +76,14 @@ export function InstanceProfilesModal({
       <div className="stack">
         <Field label="Agent">
           <div className="role-grid">
+            <button
+              className={`select-card${agent === "" ? " selected" : ""}`}
+              onClick={() => setAgent("")}
+            >
+              <span className="select-head"><b>{t("不使用 Agent")}</b></span>
+              <code>shell</code>
+              <small className="footnote">{t("只运行确定性 Shell 任务；解绑在实例重启后生效")}</small>
+            </button>
             {agents.map((a) => (
               <button
                 key={a.id}

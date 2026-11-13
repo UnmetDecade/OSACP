@@ -637,6 +637,19 @@ export async function bindAgentProfile(
   });
 }
 
+/** Drop the Agent binding; the instance keeps running the current Agent until it restarts, then only runs shell tasks. */
+export async function unbindAgentProfile(
+  connection: LiveConnection,
+  hostId: string,
+  instanceId: string,
+): Promise<void> {
+  await pcs(
+    connection,
+    `/api/v1/platform/instances/${encodeURIComponent(instanceId)}/bind-agent?host_id=${encodeURIComponent(hostId)}`,
+    { method: "DELETE" },
+  );
+}
+
 const ROLE_TASKS: Record<Role, string[]> = {
   builder: ["task.build", "task.chat.builder", "task.console.builder"],
   scheduler: ["task.chat.scheduler", "task.console.scheduler"],

@@ -6,6 +6,7 @@ import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { characterState } from "../characters";
 import { Character } from "../components/Character";
+import { InstanceProfilesModal } from "../components/InstanceProfiles";
 import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead } from "../components/ui";
 import { Icon } from "../components/Icon";
 import { builderAction, osLabel, sshCommand } from "../api";
@@ -18,6 +19,7 @@ export function BuilderShow() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [profilesOpen, setProfilesOpen] = useState(false);
 
   if (!builder) {
     return (
@@ -87,6 +89,10 @@ export function BuilderShow() {
               <Icon name="chat" size={14} />
               {t("对话")}
             </Link>
+            <Button onClick={() => setProfilesOpen(true)}>
+              <Icon name="agent" size={14} />
+              {t("配置 Agent")}
+            </Button>
             <Button onClick={() => act("restart")} disabled={busy === "restart"}>
               <Icon name="refresh" size={14} />
               {t("重启")}
@@ -173,6 +179,13 @@ export function BuilderShow() {
         </Card>
       </div>
 
+      {profilesOpen && (
+        <InstanceProfilesModal
+          instance={builder}
+          role="builder"
+          onClose={() => setProfilesOpen(false)}
+        />
+      )}
     </div>
   );
 }

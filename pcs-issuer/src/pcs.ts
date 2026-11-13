@@ -18,7 +18,8 @@
  *        --image registry/repo@sha256:... --allowed-tools demo.echo --task-types task.agent.probe
  *   npm run pcs -- api-profile-add --name mock --kind tool --base-url https://... \
  *        --secret-ref secret://apis/mock --quota '{"rpm":5}'
- *   npm run pcs -- bind-agent --instance builder-a --agent agp_xxx --role builder
+ *   npm run pcs -- bind-agent --instance builder-a --host hst_xxx --agent agp_xxx --role builder
+ *   npm run pcs -- unbind-agent --instance builder-a --host hst_xxx
  *   npm run pcs -- bind-api --instance builder-a --api api_xxx
  *   npm run pcs -- resolve --instance builder-a
  *   npm run pcs -- audit --limit 50
@@ -243,6 +244,16 @@ async function main(): Promise<void> {
           agent_profile_id: need(opts, "agent"),
           role_id: need(opts, "role"),
         },
+      ),
+    );
+    return;
+  }
+
+  if (command === "unbind-agent") {
+    print(
+      await call(
+        "DELETE",
+        `/api/v1/platform/instances/${encodeURIComponent(need(opts, "instance"))}/bind-agent?host_id=${encodeURIComponent(need(opts, "host"))}`,
       ),
     );
     return;

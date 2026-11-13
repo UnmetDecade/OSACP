@@ -38,7 +38,7 @@ import {
 import { buildBootstrapScript, buildEnvSetupScript, runLocalBootstrap } from "./bootstrap.js";
 import { ensureRuntimeBundle } from "./runtime-bundle.js";
 import { resolveCapability, type CapabilityDetail } from "./capability.js";
-import { query, tx } from "./db.js";
+import { query, tx, type Client } from "./db.js";
 import {
   ADMIN_AUDIENCE,
   ADMIN_SCOPES,
@@ -3670,11 +3670,32 @@ export class PcsService {
               : cmd.command_type === "REMOVE"
                 ? `status='REMOVED', actual_state='REMOVED', desired_state='REMOVED'`
                 : `status='STARTING', actual_state='STARTING'`;
-          await c.query(
+          const applied = await c.query(
             `UPDATE pcs_deployments SET ${update}, observed=$2, updated_at=now()
               WHERE deployment_id=$1 AND generation <= $3`,
             [cmd.deployment_id, JSON.stringify({ ack: result }), cmd.generation],
           );
+          // A removed instance cannot use its profiles any more. Keeping the bindings would silently
+          // reconfigure a later deployment with the same name and would block profile deletion forever.
+          // Skip when another live deployment still owns the instance name on this host (superseded remove).
+          if (cmd.command_type === "REMOVE" && cmd.instance_id && applied.rowCount) {
+            const live = await c.query(
+              `SELECT 1 FROM pcs_deployments
+                WHERE host_id=$1 AND instance_id=$2 AND status <> 'REMOVED'
+                LIMIT 1`,
+              [cmd.host_id, cmd.instance_id],
+            );
+            if (!live.rowCount) {
+              await c.query(`DELETE FROM role_agent_bindings WHERE host_id=$1 AND instance_id=$2`, [
+                cmd.host_id,
+                cmd.instance_id,
+              ]);
+              await c.query(`DELETE FROM role_api_bindings WHERE host_id=$1 AND instance_id=$2`, [
+                cmd.host_id,
+                cmd.instance_id,
+              ]);
+            }
+          }
         }
       }
 
@@ -4093,18 +4114,47 @@ export class PcsService {
     return normalizeAgentProfile(r.rows[0]);
   }
 
-  /** Delete an Agent Profile not used by any instance; reject if it has bindings, so an instance does not lose its executor. */
+  /**
+   * Drop bindings of a profile that no live deployment can use: the host record is gone or every
+   * deployment with that instance name has been removed. No instance can observe these rows, but
+   * they would otherwise keep blocking profile deletion forever.
+   */
+  private async pruneStaleBindings(
+    c: Client,
+    table: "role_agent_bindings" | "role_api_bindings",
+    profileColumn: "agent_profile_id" | "api_profile_id",
+    profileId: string,
+  ): Promise<void> {
+    await c.query(
+      `DELETE FROM ${table} b
+        WHERE b.${profileColumn} = $1
+          AND NOT EXISTS (
+            SELECT 1
+              FROM pcs_hosts h
+              JOIN pcs_deployments d ON d.host_id = h.host_id
+             WHERE h.host_id = b.host_id
+               AND d.instance_id = b.instance_id
+               AND d.status <> 'REMOVED'
+          )`,
+      [profileId],
+    );
+  }
+
+  /** Delete an Agent Profile not used by any live instance; bindings left behind by removed deployments or hosts are pruned first. */
   async deleteAgentProfile(profileId: string, operator: string): Promise<{ deleted: boolean }> {
     const current = await this.getAgentProfile(profileId);
     if (!current) notFound("AGENT_PROFILE_NOT_FOUND", `Agent Profile not found: ${profileId}`);
-    const used = await query(
-      `SELECT b.instance_id, COALESCE(h.hostname, b.host_id) AS host_name
-         FROM role_agent_bindings b
-         LEFT JOIN pcs_hosts h ON h.host_id = b.host_id
-        WHERE b.agent_profile_id = $1
-        ORDER BY b.host_id, b.instance_id`,
-      [profileId],
-    );
+    const used = await tx(async (c) => {
+      await this.pruneStaleBindings(c, "role_agent_bindings", "agent_profile_id", profileId);
+      return c.query(
+        `SELECT b.instance_id, COALESCE(h.hostname, b.host_id) AS host_name
+           FROM role_agent_bindings b
+           LEFT JOIN pcs_hosts h ON h.host_id = b.host_id
+          WHERE b.agent_profile_id = $1
+          ORDER BY b.host_id, b.instance_id`,
+        [profileId],
+      );
+    });
     if (used.rowCount) {
       throw conflict(
         "PROFILE_IN_USE",
@@ -4268,15 +4318,18 @@ export class PcsService {
   async deleteApiProfile(apiId: string, operator: string): Promise<{ deleted: boolean }> {
     const current = await this.getApiProfile(apiId);
     if (!current) notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
-    const [used, agents, fallbacks] = await Promise.all([
-      query(
+    const used = await tx(async (c) => {
+      await this.pruneStaleBindings(c, "role_api_bindings", "api_profile_id", apiId);
+      return c.query(
         `SELECT b.instance_id, COALESCE(h.hostname, b.host_id) AS host_name
            FROM role_api_bindings b
            LEFT JOIN pcs_hosts h ON h.host_id = b.host_id
           WHERE b.api_profile_id = $1
           ORDER BY b.host_id, b.instance_id`,
         [apiId],
-      ),
+      );
+    });
+    const [agents, fallbacks] = await Promise.all([
       query(
         `SELECT agent_profile_id FROM agent_profiles
           WHERE model_api_profile_id = $1 OR $1 = ANY(tool_api_profile_ids)
@@ -4448,6 +4501,26 @@ export class PcsService {
       host_id: hostId,
     });
     return { host_id: hostId, instance_id: instanceId, agent_profile_id: agentProfileId, role_id: roleId };
+  }
+
+  /** Remove an instance's Agent binding; after the next restart the instance runs without an Agent (deterministic shell tasks only). */
+  async unbindAgent(hostId: string, instanceId: string, operator: string): Promise<{ ok: boolean }> {
+    const removed = await query<{ agent_profile_id: string }>(
+      `DELETE FROM role_agent_bindings
+        WHERE host_id = $1 AND instance_id = $2
+        RETURNING agent_profile_id`,
+      [hostId, instanceId],
+    );
+    if (removed.rowCount) {
+      await this.audit(
+        operator,
+        "role_agent_binding.remove",
+        removed.rows[0].agent_profile_id,
+        instanceId,
+        { host_id: hostId, removed: removed.rowCount },
+      );
+    }
+    return { ok: Boolean(removed.rowCount) };
   }
 
   async bindApi(

@@ -513,6 +513,18 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           ),
         );
       }
+      if (method === "DELETE" && bindAgent) {
+        const claims = admin("profile:write");
+        return send(
+          res,
+          200,
+          await service.unbindAgent(
+            requireHostId(url.searchParams.get("host_id")),
+            decodeURIComponent(bindAgent[1]),
+            String(claims.operator_id ?? claims.sub),
+          ),
+        );
+      }
 
       const bindApi = /^\/api\/v1\/platform\/instances\/([^/]+)\/bind-api$/.exec(path);
       if (method === "POST" && bindApi) {
