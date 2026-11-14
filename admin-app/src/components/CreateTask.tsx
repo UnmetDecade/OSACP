@@ -40,6 +40,20 @@ const SKIP_DIRS = new Set([
 const SKIP_FILE = /^(\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
 const SKIP_EXT = /\.(pyc|pyo|class|o|obj|so|dylib|dll|exe)$/i;
 
+/** Image types safe to render from a data URL; everything else keeps the generic file chip. */
+const PREVIEW_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/**
+ * Build an `img` source only for allow-listed raster types and valid base64.
+ * Media types come from the attachment payload, so never interpolate an
+ * arbitrary `image/*` (or `image/svg+xml`) value into a data URL.
+ */
+export function attachmentPreviewSrc(mediaType: string, dataBase64: string): string | null {
+  if (!PREVIEW_IMAGE_TYPES.has(mediaType)) return null;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(dataBase64)) return null;
+  return `data:${mediaType};base64,${dataBase64}`;
+}
+
 interface PickedEntry {
   /** Path relative to the folder root. */
   path: string;
@@ -457,29 +471,28 @@ export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () 
           </div>
           {attachments.length > 0 && (
             <div className="attach-list">
-              {attachments.map((a, i) => (
-                <div className="attach-row" key={`${a.name}-${i}`}>
-                  {a.media_type.startsWith("image/") ? (
-                    <img
-                      className="attach-thumb"
-                      src={`data:${a.media_type};base64,${a.data_base64}`}
-                      alt={a.name}
-                    />
-                  ) : (
-                    <Tag tone="accent">{t("文件")}</Tag>
-                  )}
-                  <span className="attach-name" title={a.name}>{a.name}</span>
-                  <span className="attach-size">{sizeLabel(a.size)}</span>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={t("移除")}
-                    onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+              {attachments.map((a, i) => {
+                const preview = attachmentPreviewSrc(a.media_type, a.data_base64);
+                return (
+                  <div className="attach-row" key={`${a.name}-${i}`}>
+                    {preview ? (
+                      <img className="attach-thumb" src={preview} alt={a.name} />
+                    ) : (
+                      <Tag tone="accent">{t("文件")}</Tag>
+                    )}
+                    <span className="attach-name" title={a.name}>{a.name}</span>
+                    <span className="attach-size">{sizeLabel(a.size)}</span>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title={t("移除")}
+                      onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

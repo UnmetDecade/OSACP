@@ -76,11 +76,20 @@ async function readJson(req: http.IncomingMessage): Promise<Record<string, unkno
   }
 }
 
+/** Parse `Bearer <token>` without a regular expression: a linear scan cannot be made to backtrack. */
+function bearerToken(header: string | undefined): string | null {
+  if (!header) return null;
+  const prefix = "bearer ";
+  if (header.length <= prefix.length) return null;
+  if (header.slice(0, prefix.length).toLowerCase() !== prefix) return null;
+  const token = header.slice(prefix.length).trim();
+  return token.length ? token : null;
+}
+
 function bearer(req: http.IncomingMessage): string {
-  const value = req.headers.authorization ?? "";
-  const m = /^Bearer\s+(.+)$/i.exec(value);
-  if (!m) throw new PcsError(401, "TOKEN_REQUIRED", "Bearer token is required");
-  return m[1];
+  const token = bearerToken(req.headers.authorization);
+  if (!token) throw new PcsError(401, "TOKEN_REQUIRED", "Bearer token is required");
+  return token;
 }
 
 function intParam(value: string | null, fallback: number): number {
@@ -936,8 +945,9 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         });
       } else {
         console.error("[pcs]", e);
+        // Return a constant message: internal error text can leak stack frames and file paths.
         send(res, 500, {
-          error: { code: "INTERNAL", message: e instanceof Error ? e.message : String(e) },
+          error: { code: "INTERNAL", message: "Internal error" },
         });
       }
     }

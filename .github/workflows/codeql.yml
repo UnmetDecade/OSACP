@@ -28,5 +28,11 @@ jobs:
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
+          # deploy/** holds esbuild output committed for deployment; it duplicates
+          # source files that CodeQL already analyzes, so scanning it only adds noise.
+          config: |
+            paths-ignore:
+              - deploy/**
+              - "**/dist/**"
       - uses: github/codeql-action/autobuild@v4
       - uses: github/codeql-action/analyze@v4

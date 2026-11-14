@@ -334,7 +334,8 @@ export function startAdmissionServer(
         send(res, e.status, { error: { code: e.code, message: e.message } });
       } else {
         console.error("[admission]", e);
-        send(res, 500, { error: { code: "INTERNAL", message: String(e) } });
+        // Return a constant message: internal error text can leak stack frames and file paths.
+        send(res, 500, { error: { code: "INTERNAL", message: "Internal error" } });
       }
     }
   });
