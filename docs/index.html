@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSACP · Multi-Node AI Agent Compute &amp; Scheduling Platform</title>
+<meta name="description" content="Self-hosted compute floor for AI coding agents: deterministic scheduling, recursive schedulers and full-root builders across any number of hosts.">
+<style>
+  :root{
+    color-scheme: light;
+    --page:#f9f9f7;
+    --surface:#fcfcfb;
+    --ink:#0b0b0b;
+    --ink2:#52514e;
+    --muted:#898781;
+    --border:rgba(11,11,11,.10);
+    --accent:#6250d6;
+    --accent-soft:rgba(98,80,214,.10);
+    --green:#1baf7a;
+    --pink:#d55181;
+    --code:#f1f0ea;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:#0d0d0d;
+      --surface:#1a1a19;
+      --ink:#f0efec;
+      --ink2:#c3c2b7;
+      --muted:#898781;
+      --border:rgba(255,255,255,.10);
+      --accent:#9085e9;
+      --accent-soft:rgba(144,133,233,.12);
+      --green:#25c08a;
+      --pink:#e0699a;
+      --code:#151514;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0d0d;
+    --surface:#1a1a19;
+    --ink:#f0efec;
+    --ink2:#c3c2b7;
+    --muted:#898781;
+    --border:rgba(255,255,255,.10);
+    --accent:#9085e9;
+    --accent-soft:rgba(144,133,233,.12);
+    --green:#25c08a;
+    --pink:#e0699a;
+    --code:#151514;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  html,body{margin:0}
+  body{
+    background:var(--page);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.6;
+  }
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 24px 64px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.02em}
+  .brand-mark{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--pink));display:grid;place-items:center;color:#fff;font-size:13px}
+  nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pill{
+    color:var(--ink2);font-size:13px;padding:7px 13px;border:1px solid var(--border);
+    border-radius:999px;background:var(--surface);
+  }
+  .pill:hover{color:var(--ink);border-color:var(--muted);text-decoration:none}
+  button.pill{cursor:pointer;font:inherit}
+  .hero{padding:72px 0 48px;max-width:860px}
+  .eyebrow{margin:0 0 14px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  h1{margin:0;font-size:clamp(34px,6vw,62px);line-height:1.05;letter-spacing:-.035em;font-weight:720}
+  h1 span{color:var(--muted)}
+  .lede{margin:22px 0 0;font-size:clamp(16px,2.2vw,19px);color:var(--ink2);max-width:720px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:28px}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:10px;
+    font-size:14px;font-weight:600;border:1px solid var(--border);
+  }
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{filter:brightness(1.08);text-decoration:none}
+  .btn.ghost{background:var(--surface);color:var(--ink)}
+  .btn.ghost:hover{border-color:var(--muted);text-decoration:none}
+  section{padding:44px 0;border-top:1px solid var(--border)}
+  .section-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  h2{margin:0;font-size:22px;letter-spacing:-.02em}
+  .section-head p{margin:0;color:var(--muted);font-size:13.5px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+  .card{
+    display:block;background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    padding:20px;color:var(--ink);transition:border-color .15s ease, transform .15s ease;
+  }
+  .card:hover{border-color:var(--muted);text-decoration:none;transform:translateY(-2px)}
+  .card .kicker{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .card h3{margin:8px 0 6px;font-size:16.5px;letter-spacing:-.01em}
+  .card p{margin:0;color:var(--ink2);font-size:13.5px}
+  .card .links{margin-top:14px;display:flex;gap:12px;font-size:12.5px;color:var(--muted)}
+  .card .links a{color:var(--accent)}
+  .parts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .part{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px}
+  .part b{display:block;font-size:14px;margin-bottom:4px}
+  .part span{font-size:13px;color:var(--ink2)}
+  .part i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}
+  .quick{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start}
+  pre{
+    margin:0;background:var(--code);border:1px solid var(--border);border-radius:14px;
+    padding:18px;overflow:auto;font-size:12.8px;line-height:1.7;
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  .note{background:var(--accent-soft);border:1px solid var(--border);border-radius:14px;padding:18px;font-size:13.5px;color:var(--ink2)}
+  .note b{color:var(--ink)}
+  footer{padding-top:32px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12.5px}
+  @media (max-width:760px){
+    .wrap{padding:20px 16px 48px}
+    .hero{padding:48px 0 34px}
+    .quick{grid-template-columns:1fr}
+    pre{font-size:12px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="brand-mark">O</span> OSACP</div>
+    <nav>
+      <a class="pill" href="#diagrams">Diagrams</a>
+      <a class="pill" href="#build">What it is</a>
+      <a class="pill" href="#quickstart">Quick start</a>
+      <a class="pill" href="https://github.com/UnmetDecade/OSACP">GitHub</a>
+      <a class="pill" href="index.zh-CN.html" lang="zh-CN">简体中文</a>
+      <button class="pill" id="theme" type="button">Dark</button>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <p class="eyebrow">Self-hosted · deterministic · agent-agnostic</p>
+      <h1>A compute floor for <span>AI coding agents.</span></h1>
+      <p class="lede">
+        Run Claude Code, Codex, DeepSeek or a plain shell on any number of hosts.
+        A scheduler decides, a builder executes, and the Agent only explains.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/UnmetDecade/OSACP">View on GitHub</a>
+        <a class="btn ghost" href="#diagrams">Open the diagrams</a>
+        <a class="btn ghost" href="https://github.com/UnmetDecade/OSACP/releases">Releases</a>
+      </div>
+    </div>
+
+    <section id="diagrams">
+      <div class="section-head">
+        <h2>Architecture diagrams</h2>
+        <p>Interactive HTML · light and dark · English and Chinese</p>
+      </div>
+      <div class="grid">
+        <a class="card" href="Open-Source-Agent-Compute-Platform-Architecture.html">
+          <span class="kicker">Platform</span>
+          <h3>PCS, host-runtime, schedulers, builders</h3>
+          <p>The full control plane and execution plane, including federation, relay, sideload access and resource admission.</p>
+          <div class="links"><a href="Open-Source-Agent-Compute-Platform-Architecture.html">English</a><a href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html" lang="zh-CN">简体中文</a></div>
+        </a>
+        <a class="card" href="sideload-architecture.html">
+          <span class="kicker">Access model</span>
+          <h3>Sideload tokens</h3>
+          <p>How one LAN device drives one host's builders with a scoped <code>sdl_…</code> token, without learning the scheduler address.</p>
+          <div class="links"><a href="sideload-architecture.html">English</a><a href="sideload-architecture.zh-CN.html" lang="zh-CN">简体中文</a></div>
+        </a>
+        <a class="card" href="example-project-architecture.html">
+          <span class="kicker">Deployment</span>
+          <h3>One scheduler, N development machines</h3>
+          <p>A concrete shape you can run today: only the scheduler and development machines are built in; everyone else enters through sideload.</p>
+          <div class="links"><a href="example-project-architecture.html">English</a><a href="example-project-architecture.zh-CN.html" lang="zh-CN">简体中文</a></div>
+        </a>
+      </div>
+    </section>
+
+    <section id="build">
+      <div class="section-head">
+        <h2>Four moving parts</h2>
+        <p>Nothing else decides who runs what</p>
+      </div>
+      <div class="parts">
+        <div class="part"><b><i style="background:var(--accent)"></i>PCS</b><span>Owns hosts, deployment plans, profiles, secret references and audit. Writes desired state; never calls Docker directly.</span></div>
+        <div class="part"><b><i style="background:var(--green)"></i>host-runtime</b><span>Runs on every host. Verifies signed commands, creates containers and reports resources. Outbound only.</span></div>
+        <div class="part"><b><i style="background:var(--pink)"></i>Scheduler</b><span>The state authority. Queues, admits, leases, fences, dispatches and records across a recursive tree.</span></div>
+        <div class="part"><b><i style="background:var(--muted)"></i>Builder</b><span>The only worker role. Claims tasks, runs an Agent adapter or a deterministic shell, streams progress and uploads artifacts.</span></div>
+      </div>
+    </section>
+
+    <section id="quickstart">
+      <div class="section-head">
+        <h2>Quick start</h2>
+        <p>Single-machine Compose · Node 22+ · PostgreSQL 16 · Docker 24+</p>
+      </div>
+      <div class="quick">
+        <pre><code>cd deploy
+cp .env.example .env
+mkdir -p keys tokens data/postgres data/artifacts
+
+ssh-keygen -t ed25519 -N "" -f keys/scheduler
+ssh-keygen -t ed25519 -N "" -f keys/builder
+for os in 20 22 24 26; do cp keys/builder.pub "keys/builder$os.pub"; done
+
+docker compose -f compose.yaml --env-file .env up -d --build</code></pre>
+        <div class="note">
+          <p style="margin:0 0 10px"><b>Then open the admin app.</b></p>
+          <p style="margin:0 0 10px">Add a host, deploy a scheduler, add builders, and submit the first task. Sideload a device when it should call the host with <code>curl</code>.</p>
+          <p style="margin:0"><a href="https://github.com/UnmetDecade/OSACP/blob/main/docs/deployment.md">Deployment guide</a> · <a href="https://github.com/UnmetDecade/OSACP/blob/main/docs/sideload.md">Sideload guide</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Read more</h2>
+        <p>Every design document has an English default and a Chinese counterpart</p>
+      </div>
+      <div class="grid">
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/README.md"><span class="kicker">Start here</span><h3>README</h3><p>Why the platform exists, how it is put together and how to run it.</p></a>
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/docs/scheduling-algorithm.md"><span class="kicker">Core</span><h3>Scheduling algorithm</h3><p>Capability scoring, weighted max-min water filling, pressure handling and relay.</p></a>
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/docs/architecture.md"><span class="kicker">Design</span><h3>Architecture</h3><p>Control plane, host runtime, recursive schedulers and the task state machine.</p></a>
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/docs/federation.md"><span class="kicker">Scale</span><h3>Host federation</h3><p>Merge hosts into a tree, aggregate ΣW and relay work without copying it.</p></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>OSACP · MIT License</span>
+    <span><a href="https://github.com/UnmetDecade/OSACP">github.com/UnmetDecade/OSACP</a></span>
+  </footer>
+</div>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var button = document.getElementById("theme");
+    var saved = null;
+    try { saved = localStorage.getItem("osacp-theme"); } catch (e) {}
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+    function label() {
+      var dark = root.getAttribute("data-theme") === "dark" ||
+        (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      button.textContent = dark ? "Light" : "Dark";
+    }
+    button.addEventListener("click", function () {
+      var dark = root.getAttribute("data-theme") === "dark" ||
+        (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      var next = dark ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("osacp-theme", next); } catch (e) {}
+      label();
+    });
+    label();
+  })();
+</script>
+</body>
+</html>

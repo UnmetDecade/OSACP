@@ -41,7 +41,7 @@ It is built for a small R&D team that wants a real compute floor — not a multi
 
 ## Architecture
 
-<a href="docs/Open-Source-Agent-Compute-Platform-Architecture.html">
+<a href="https://unmetdecade.github.io/OSACP/Open-Source-Agent-Compute-Platform-Architecture.html">
   <img src="docs/assets/architecture-en.png" alt="Platform architecture — PCS control plane, host-runtime, recursive schedulers, sideload channel and cross-scheduler relay" width="100%">
 </a>
 
@@ -56,11 +56,11 @@ Four moving parts:
 
 A sideload is not a fifth moving part: it is a scoped token that enters through PCS and lands on the host's root scheduler, so a LAN device uses the same task path as the console. Files travel with the task — attachments in, collected artifacts out.
 
-The full model — including `W` (capability score), `D` (task difficulty), `ΣW` aggregation and relay depth — is in the [architecture diagram](docs/Open-Source-Agent-Compute-Platform-Architecture.html) and [docs/architecture.md](docs/architecture.md).
+The full model — including `W` (capability score), `D` (task difficulty), `ΣW` aggregation and relay depth — is in the [architecture diagram](https://unmetdecade.github.io/OSACP/Open-Source-Agent-Compute-Platform-Architecture.html) and [docs/architecture.md](docs/architecture.md).
 
 ## Example project architecture
 
-<a href="docs/example-project-architecture.html">
+<a href="https://unmetdecade.github.io/OSACP/example-project-architecture.html">
   <img src="docs/assets/example-architecture-en.png" alt="Example project architecture — one scheduler and N development machines built in, with developers, testers, CI and other systems connected through sideload tokens" width="100%">
 </a>
 
@@ -281,7 +281,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, checks, code style an
 
 ## Documentation
 
-Every design doc exists in English and 简体中文; each page links to its counterpart.
+Every design doc exists in English and 简体中文; each page links to its counterpart. The [documentation site](https://unmetdecade.github.io/OSACP/) hosts the interactive diagrams.
 
 - [Architecture](docs/architecture.md)
 - [Scheduling algorithm](docs/scheduling-algorithm.md) — capability scoring, water filling, pressure handling, relay
@@ -291,7 +291,7 @@ Every design doc exists in English and 简体中文; each page links to its coun
 - [Admin app](docs/admin-app.md)
 - [Agent control](docs/agent-control.md) — task parks, autonomy levels, typed outcomes, failure classes
 - [Sideloads](docs/sideload.md) — curl tokens, permissions, files in and out
-- [Example project architecture](docs/example-project-architecture.html) — a concrete scheduler + N development machines deployment
+- [Example project architecture](https://unmetdecade.github.io/OSACP/example-project-architecture.html) — a concrete scheduler + N development machines deployment
 - [Deployment](docs/deployment.md)
 - [中文 README](README.zh-CN.md)
 
