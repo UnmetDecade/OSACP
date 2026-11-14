@@ -145,6 +145,43 @@ PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CO
 Codex 走 `CODEX_HOME=/opt/platform/codex/config.toml` 里的 DeepSeek Responses API。
 换回官方 Anthropic 时覆盖 `ANTHROPIC_BASE_URL` 即可。
 
+### 用 LiteLLM 统一模型流量
+
+目前 Agent Profile 不能引用 API Profile（部署时会以 `AGENT_REQUIRES_SECRET_STORE` 拒绝），
+所以按构建机限流、记账只能放在模型端点前面。[LiteLLM](https://github.com/BerriAI/litellm)
+正好可以不动平台做到这一点：它提供 Anthropic 兼容的 `/v1/messages`，也就是 Claude Code 本来就在调的接口。
+
+1. 把代理跑在构建机能访问到的地方（单独一个 Compose 服务或主机，给个内部域名）。
+2. 上游密钥放在代理里，不要放到构建机主机上。最小 `config.yaml`：
+
+   ```yaml
+   model_list:
+     - model_name: claude-sonnet-4-5
+       litellm_params:
+         model: anthropic/claude-sonnet-4-5
+         api_key: os.environ/ANTHROPIC_UPSTREAM_KEY
+     - model_name: claude-haiku-4-5
+       litellm_params:
+         model: deepseek/deepseek-chat
+         api_key: os.environ/DEEPSEEK_API_KEY
+   general_settings:
+     master_key: os.environ/LITELLM_MASTER_KEY
+   ```
+
+3. 按构建机池（或按 Agent）发虚拟 Key，然后让容器指向代理：
+
+   ```dotenv
+   ANTHROPIC_BASE_URL=http://litellm.internal:4000
+   ANTHROPIC_API_KEY=sk-<virtual-key>
+   # 固定 CLI 发出的模型名，确保和 config.yaml 的 model_name 对上。
+   ANTHROPIC_MODEL=claude-sonnet-4-5
+   PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,DEEPSEEK_API_KEY,CODEX_HOME
+   ```
+
+到达构建机的模型凭据只有这个虚拟 Key，额度与消费记录都在 LiteLLM 里按 Key 设置。
+代理放在可信网络内，不要把 master key 发给构建机。Codex 也可以走 LiteLLM 的 OpenAI 兼容端点，
+改 `CODEX_HOME` 里 `base_url` 和 `env_key` 即可。
+
 ### 交互时延
 
 终端和对话里的每条命令都是一个独立任务，等待时间主要来自「任务入队 → 实例来领」。

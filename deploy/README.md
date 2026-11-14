@@ -145,6 +145,44 @@ Default endpoints: Claude Code uses `ANTHROPIC_BASE_URL=https://api.deepseek.com
 Codex uses the DeepSeek Responses API configured in `CODEX_HOME=/opt/platform/codex/config.toml`.
 To switch back to the official Anthropic endpoint, override `ANTHROPIC_BASE_URL`.
 
+### Routing model traffic through LiteLLM
+
+Agent Profiles cannot reference API Profiles today (the deployment rejects them with `AGENT_REQUIRES_SECRET_STORE`),
+so per-builder quotas and spend tracking have to live in front of the model endpoint. [LiteLLM](https://github.com/BerriAI/litellm)
+does this without touching the platform: it exposes an Anthropic-compatible `/v1/messages`, which is exactly what
+Claude Code already calls.
+
+1. Run the proxy where builders can reach it (its own Compose service or host; give it an internal DNS name).
+2. Put the upstream keys in the proxy, not on builder hosts. A minimal `config.yaml`:
+
+   ```yaml
+   model_list:
+     - model_name: claude-sonnet-4-5
+       litellm_params:
+         model: anthropic/claude-sonnet-4-5
+         api_key: os.environ/ANTHROPIC_UPSTREAM_KEY
+     - model_name: claude-haiku-4-5
+       litellm_params:
+         model: deepseek/deepseek-chat
+         api_key: os.environ/DEEPSEEK_API_KEY
+   general_settings:
+     master_key: os.environ/LITELLM_MASTER_KEY
+   ```
+
+3. Issue one virtual key per builder pool (or per Agent) and point the container at the proxy:
+
+   ```dotenv
+   ANTHROPIC_BASE_URL=http://litellm.internal:4000
+   ANTHROPIC_API_KEY=sk-<virtual-key>
+   # Pin the name the CLI sends, so it matches model_name in config.yaml.
+   ANTHROPIC_MODEL=claude-sonnet-4-5
+   PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,DEEPSEEK_API_KEY,CODEX_HOME
+   ```
+
+The virtual key is the only model credential that reaches a builder; budgets and spend logs are set on it in LiteLLM.
+Keep the proxy on the trusted network, and do not give builders the master key. Codex can go through LiteLLM's
+OpenAI-compatible endpoint in the same way by changing `CODEX_HOME`'s `base_url` and `env_key`.
+
 ### Interaction latency
 
 Every command in the terminal and chat is an independent task, and the wait is dominated by "task enqueued → instance claims it".
