@@ -338,9 +338,11 @@ async function grantLoop(): Promise<void> {
           { signal: AbortSignal.timeout(5000) },
         );
         if (res.ok) {
-          const body = (await res.json()) as { items?: any[] };
-          for (const grant of body.items ?? []) {
-            if (!grant?.instance_id) continue;
+          const body = (await res.json()) as { items?: unknown[] };
+          for (const raw of body.items ?? []) {
+            if (raw === null || typeof raw !== "object") continue;
+            const grant = raw as Record<string, unknown>;
+            if (!grant.instance_id) continue;
             const applied: AppliedGrant = cgroup.applyGrant({
               instance_id: String(grant.instance_id),
               generation: Number(grant.generation) || 1,

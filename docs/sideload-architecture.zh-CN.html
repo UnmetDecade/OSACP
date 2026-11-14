@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>侧载接入架构 · OSACP</title>
+<style>
+  :root{
+    color-scheme: light;
+    --page:#f9f9f7;
+    --surface:#fcfcfb;
+    --ink:#0b0b0b;
+    --ink2:#52514e;
+    --muted:#898781;
+    --grid:#e1e0d9;
+    --border:rgba(11,11,11,.10);
+    --c-control:#6250d6;
+    --c-dev:#1baf7a;
+    --c-side:#d55181;
+    --c-res:#0e7c86;
+    --c-people:#6b6a64;
+    --edge:#6b6a64;
+    --edge-data:#2a78d6;
+    --edge-cmd:#6250d6;
+    --edge-side:#c2417a;
+    --edge-res:#0e7c86;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:#0d0d0d;
+      --surface:#1a1a19;
+      --ink:#f0efec;
+      --ink2:#c3c2b7;
+      --muted:#898781;
+      --grid:#2c2c2a;
+      --border:rgba(255,255,255,.10);
+      --c-control:#9085e9;
+      --c-dev:#199e70;
+      --c-side:#d55181;
+      --c-res:#57c3cf;
+      --c-people:#a3a29a;
+      --edge:#8f8e86;
+      --edge-data:#3987e5;
+      --edge-cmd:#9085e9;
+      --edge-side:#e0699a;
+      --edge-res:#57c3cf;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0d0d;
+    --surface:#1a1a19;
+    --ink:#f0efec;
+    --ink2:#c3c2b7;
+    --muted:#898781;
+    --grid:#2c2c2a;
+    --border:rgba(255,255,255,.10);
+    --c-control:#9085e9;
+    --c-dev:#199e70;
+    --c-side:#d55181;
+    --c-res:#57c3cf;
+    --c-people:#a3a29a;
+    --edge:#8f8e86;
+    --edge-data:#3987e5;
+    --edge-cmd:#9085e9;
+    --edge-side:#e0699a;
+    --edge-res:#57c3cf;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--page);
+    color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:1500px;margin:0 auto;padding:36px 32px 56px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:22px}
+  .eyebrow{margin:0 0 6px;font-size:12.5px;letter-spacing:.08em;color:var(--muted)}
+  h1{margin:0;font-size:27px;line-height:1.2;letter-spacing:-.015em;font-weight:650}
+  .lede{margin:10px 0 0;max-width:780px;font-size:14.5px;line-height:1.75;color:var(--ink2)}
+  .head-actions{display:flex;align-items:center;gap:10px;flex:none}
+  .lang{
+    color:var(--ink2);text-decoration:none;font-size:13px;padding:8px 14px;
+    border:1px solid var(--border);border-radius:999px;background:var(--surface);
+  }
+  .lang:hover{color:var(--ink);border-color:var(--muted)}
+  #theme{
+    border:1px solid var(--border);background:var(--surface);color:var(--ink2);
+    border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer;
+  }
+  #theme:hover{color:var(--ink);border-color:var(--muted)}
+  .canvas{
+    background:var(--surface);border:1px solid var(--border);border-radius:18px;
+    padding:6px;overflow:hidden;
+  }
+  svg{display:block;width:100%;height:auto}
+  svg text{font-family:inherit}
+  .z-title{font-size:15.5px;font-weight:650;fill:var(--ink)}
+  .z-sub{font-size:11.5px;fill:var(--muted)}
+  .tile-t{font-size:12.5px;font-weight:600;fill:var(--ink)}
+  .tile-s{font-size:11px;fill:var(--muted)}
+  .li{font-size:11.5px;fill:var(--ink2)}
+  .tag-text{font-size:11px;fill:var(--ink2)}
+  .label{font-size:11.5px;fill:var(--ink2);paint-order:stroke;stroke:var(--surface);stroke-width:4.5;stroke-linejoin:round}
+  .label-cmd{fill:var(--edge-cmd);font-weight:600}
+  .label-data{fill:var(--edge-data)}
+  .label-side{fill:var(--edge-side);font-weight:600}
+  .label-muted{fill:var(--muted)}
+  .people-cap{font-size:11.5px;fill:var(--muted)}
+
+  .legend{
+    display:flex;flex-wrap:wrap;gap:10px 26px;align-items:center;
+    margin:18px 2px 0;padding:14px 16px;border:1px solid var(--border);border-radius:12px;
+    background:var(--surface);font-size:12.5px;color:var(--ink2)
+  }
+  .legend b{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.04em;margin-right:2px}
+  .lg{display:inline-flex;align-items:center;gap:8px}
+  .sw{width:34px;height:0;border-top:2px solid var(--edge);flex:none}
+  .sw.thick{border-top:4px solid var(--edge-cmd)}
+  .sw.dash{border-top:2px dashed var(--edge-data)}
+  .sw.side{border-top:2px dashed var(--edge-side)}
+  .box-sw{width:26px;height:14px;border:1.5px dashed color-mix(in srgb, var(--c-side) 55%, var(--surface));border-radius:4px;flex:none}
+
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 2px 0;font-size:12.5px;color:var(--ink2)}
+  .flow .step{padding:5px 11px;border:1px solid var(--border);border-radius:999px;background:var(--surface)}
+  .flow .arr{color:var(--muted)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 18px 16px}
+  .card h2{margin:0 0 8px;font-size:14px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .card h2::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--dot)}
+  .card p{margin:0;font-size:12.5px;line-height:1.8;color:var(--ink2)}
+  .card code{font-size:11.5px;padding:1px 5px;border-radius:4px;background:color-mix(in srgb, var(--ink) 6%, transparent)}
+  .c-cmd{--dot:var(--c-control)} .c-dev{--dot:var(--c-dev)} .c-side{--dot:var(--c-side)} .c-res{--dot:var(--c-res)}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  @media (max-width:900px){
+    .page{padding:24px 16px 40px}
+    .cards{grid-template-columns:1fr}
+    h1{font-size:22px}
+    header{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div>
+      <p class="eyebrow">架构总览 · 侧载接入模型</p>
+      <h1>AI Agent 算力平台 · 侧载接入</h1>
+      <p class="lede">平台内建的角色只有两个：<b>调度机</b>（控制面）和<b>开发机</b>（执行面）。开发人员、测试人员以及其他任何系统都不是容器、也不注册为实例——它们持有一枚<b>侧载令牌</b>（<code>sdl_…</code>），调用路径固定为<b>设备 → 控制面 → 该主机的根调度机 → 开发机</b>。设备只与控制面通信：既不知道调度机地址，也不持有实例凭据；侧载不发心跳、不占租约，权限是一个封闭的 scope 集合。</p>
+    </div>
+    <div class="head-actions">
+      <a class="lang" href="sideload-architecture.html" hreflang="en">English</a>
+      <button id="theme" type="button">深色模式</button>
+    </div>
+  </header>
+
+  <div class="canvas">
+    <svg viewBox="0 0 1480 690" role="img" aria-label="OSACP 侧载接入架构图">
+      <defs>
+        <marker id="ar-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/>
+        </marker>
+        <marker id="ar-cmd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-cmd)"/>
+        </marker>
+        <marker id="ar-data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-data)"/>
+        </marker>
+        <marker id="ar-side" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-side)"/>
+        </marker>
+      </defs>
+
+      <!-- ============ 接入侧 ============ -->
+      <g>
+        <text x="740" y="20" text-anchor="middle" class="people-cap">接入侧：一台设备 + 一枚侧载令牌 —— 无容器、不注册实例</text>
+
+        <g>
+          <rect x="180" y="38" width="270" height="58" rx="16" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="204" cy="60" r="5" fill="var(--c-people)"/>
+          <text x="220" y="65" class="tile-t">开发人员</text>
+          <text x="200" y="84" class="tile-s">sdl_… · tasks:write · console:run</text>
+        </g>
+        <g>
+          <rect x="470" y="38" width="270" height="58" rx="16" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="494" cy="60" r="5" fill="var(--c-people)"/>
+          <text x="510" y="65" class="tile-t">测试人员</text>
+          <text x="490" y="84" class="tile-s">sdl_… · tasks:write · tasks:read</text>
+        </g>
+        <g>
+          <rect x="760" y="38" width="270" height="58" rx="16" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="784" cy="60" r="5" fill="var(--c-people)"/>
+          <text x="800" y="65" class="tile-t">其他系统</text>
+          <text x="780" y="84" class="tile-s">CI · 脚本 · 客户端 · 按需授权</text>
+        </g>
+
+        <line x1="620" y1="98" x2="620" y2="128" stroke="var(--edge-cmd)" stroke-width="4"
+              marker-start="url(#ar-cmd)" marker-end="url(#ar-cmd)" vector-effect="non-scaling-stroke"/>
+        <text x="634" y="118" class="label label-cmd">HTTPS · Authorization: Bearer sdl_…</text>
+      </g>
+
+      <!-- ============ 调度机 / 控制面 ============ -->
+      <g>
+        <rect x="120" y="132" width="1010" height="260" rx="16"
+              style="fill:color-mix(in srgb, var(--c-control) 4%, var(--surface));stroke:color-mix(in srgb, var(--c-control) 38%, var(--surface))" stroke-width="1.5"/>
+        <text x="144" y="160" class="z-title">调度机 · 控制面（内建）</text>
+        <text x="1106" y="160" text-anchor="end" class="z-sub">任务状态的唯一来源 · 令牌到此为止</text>
+
+        <g>
+          <rect x="144" y="172" width="296" height="86" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="160" y="196" class="tile-t">侧载入口（PCS）</text>
+          <text x="160" y="218" class="tile-s">校验 Bearer sdl_ · 检查 scope</text>
+          <text x="160" y="238" class="tile-s">解析该主机的根调度机</text>
+        </g>
+        <g>
+          <rect x="468" y="172" width="296" height="86" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="484" y="196" class="tile-t">任务 API</text>
+          <text x="484" y="218" class="tile-s">提交 · 查询 · 取消 · 重试</text>
+          <text x="484" y="238" class="tile-s">幂等键 · trace_id</text>
+        </g>
+        <g>
+          <rect x="792" y="172" width="296" height="86" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="808" y="196" class="tile-t">队列与派发</text>
+          <text x="808" y="218" class="tile-s">Pull + 心跳 · 能力匹配</text>
+          <text x="808" y="238" class="tile-s">优先级 · 老化 · 重试</text>
+        </g>
+        <g>
+          <rect x="144" y="272" width="296" height="90" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="160" y="296" class="tile-t">状态机 · 租约</text>
+          <text x="160" y="318" class="tile-s">QUEUED → ASSIGNED → DONE</text>
+          <text x="160" y="338" class="tile-s">租约 · fencing token</text>
+        </g>
+        <g>
+          <rect x="468" y="272" width="296" height="90" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="484" y="296" class="tile-t">文件通道</text>
+          <text x="484" y="318" class="tile-s">附件进 · 产物出</text>
+          <text x="484" y="338" class="tile-s">SHA-256 · 逐字节一致</text>
+        </g>
+        <g>
+          <rect x="792" y="272" width="296" height="90" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="808" y="296" class="tile-t">PostgreSQL · 审计</text>
+          <text x="808" y="318" class="tile-s">任务状态的唯一来源</text>
+          <text x="808" y="338" class="tile-s">令牌创建 / 删除留痕</text>
+        </g>
+      </g>
+
+      <!-- ============ 控制面 ↔ 执行面 ============ -->
+      <g>
+        <line x1="520" y1="394" x2="520" y2="426" stroke="var(--edge)" stroke-width="1.8"
+              marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <text x="506" y="414" text-anchor="end" class="label label-muted">任务派发 · Pull</text>
+        <line x1="700" y1="426" x2="700" y2="394" stroke="var(--edge)" stroke-width="1.8"
+              marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <text x="714" y="414" class="label label-muted">心跳 · 事件 · 产物</text>
+      </g>
+
+      <!-- ============ 开发机 / 执行面 ============ -->
+      <g>
+        <rect x="120" y="430" width="1010" height="230" rx="16"
+              style="fill:color-mix(in srgb, var(--c-dev) 4%, var(--surface));stroke:color-mix(in srgb, var(--c-dev) 38%, var(--surface))" stroke-width="1.5"/>
+        <text x="144" y="456" class="z-title">开发机 · 执行面（内建 ×N）</text>
+        <text x="1106" y="456" text-anchor="end" class="z-sub">只有本主机的调度机会向它派发任务</text>
+
+        <g>
+          <rect x="144" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="158" y="494" class="tile-t">任务工作区</text>
+          <text x="158" y="518" class="tile-s">每个任务独立目录</text>
+          <text x="158" y="540" class="tile-s">源码树 · 输入附件</text>
+        </g>
+        <g>
+          <rect x="392" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="406" y="494" class="tile-t">Agent 执行</text>
+          <text x="406" y="518" class="tile-s">运行绑定的 Agent Profile</text>
+          <text x="406" y="540" class="tile-s">或确定性 Shell</text>
+        </g>
+        <g>
+          <rect x="640" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="654" y="494" class="tile-t">控制台命令</text>
+          <text x="654" y="518" class="tile-s"><tspan font-family="ui-monospace, monospace">task.console.*</tspan></text>
+          <text x="654" y="540" class="tile-s">需要 console:run</text>
+        </g>
+        <g>
+          <rect x="888" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="902" y="494" class="tile-t">资源准入</text>
+          <text x="902" y="518" class="tile-s">启动前检查预算</text>
+          <text x="902" y="540" class="tile-s">超限则继续排队</text>
+        </g>
+
+        <text x="144" y="626" class="li">扩容即增加开发机 —— 其他所有参与者都走侧载路径。</text>
+      </g>
+
+      <!-- ============ 侧载边界 ============ -->
+      <g>
+        <rect x="1150" y="38" width="300" height="622" rx="16"
+              style="fill:color-mix(in srgb, var(--c-side) 3.5%, var(--surface));stroke:color-mix(in srgb, var(--c-side) 50%, var(--surface))"
+              stroke-width="1.5" stroke-dasharray="7 5"/>
+        <text x="1170" y="64" class="z-title">侧载边界</text>
+        <text x="1170" y="86" class="z-sub">不是内建角色</text>
+
+        <text x="1170" y="112" class="li">· 无容器 · 无实例记录</text>
+        <text x="1170" y="136" class="li">· 不发心跳 · 不占租约</text>
+        <text x="1170" y="160" class="li">· 不知道调度机地址</text>
+        <text x="1170" y="184" class="li">· 不持有实例凭据</text>
+        <text x="1170" y="208" class="li">· 令牌以哈希形式保存</text>
+        <text x="1170" y="232" class="li">  （明文只显示一次）</text>
+
+        <line x1="1170" y1="250" x2="1430" y2="250" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+
+        <text x="1170" y="276" class="li" style="font-weight:600">权限 scope（封闭集合）</text>
+        <g>
+          <rect x="1170" y="288" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1182" y="305" class="tag-text">tasks:read</text>
+          <rect x="1306" y="288" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1318" y="305" class="tag-text">tasks:write</text>
+          <rect x="1170" y="322" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1182" y="339" class="tag-text">builders:read</text>
+          <rect x="1306" y="322" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1318" y="339" class="tag-text">queue:read</text>
+          <rect x="1170" y="356" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1182" y="373" class="tag-text">console:run</text>
+        </g>
+        <text x="1170" y="402" class="li">console:run 需在 tasks:write 之上额外授予</text>
+
+        <line x1="1170" y1="420" x2="1430" y2="420" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+
+        <text x="1170" y="446" class="li" style="font-weight:600">生命周期与审计</text>
+        <text x="1170" y="472" class="li">· 最近调用 ≤ 120 s 视为在线</text>
+        <text x="1170" y="496" class="li">· 过期或删除 → 下次请求 403</text>
+        <text x="1170" y="520" class="li">· 创建 / 删除均记入审计</text>
+        <text x="1170" y="544" class="li">· 令牌与哈希不写日志</text>
+
+        <text x="1170" y="586" class="li" style="fill:var(--muted)">与后台管理端走同一条</text>
+        <text x="1170" y="610" class="li" style="fill:var(--muted)">任务 / 租约 / fencing 路径。</text>
+      </g>
+
+    </svg>
+  </div>
+
+  <div class="legend">
+    <b>图例</b>
+    <span class="lg"><span class="sw thick"></span>侧载接入（设备 → 控制面）</span>
+    <span class="lg"><span class="sw"></span>任务派发 / 心跳（Pull）</span>
+    <span class="lg"><span class="sw dash"></span>文件通道（附件 / 产物）</span>
+    <span class="lg"><span class="box-sw"></span>侧载边界（外部系统）</span>
+  </div>
+
+  <div class="flow">
+    <span class="step">① 持有侧载令牌</span><span class="arr">→</span>
+    <span class="step">② 提交任务</span><span class="arr">→</span>
+    <span class="step">③ 校验 scope</span><span class="arr">→</span>
+    <span class="step">④ 调度机排队 / 派发</span><span class="arr">→</span>
+    <span class="step">⑤ 开发机执行</span><span class="arr">→</span>
+    <span class="step">⑥ 收集文件</span><span class="arr">→</span>
+    <span class="step">⑦ 客户端下载产物</span>
+  </div>
+
+  <section class="cards">
+    <article class="card c-cmd">
+      <h2>只有两个内建角色</h2>
+      <p>平台内部只有调度机和至少一台开发机。开发人员、测试人员、CI 任务、脚本和其他任何系统都通过侧载令牌进入，因此不需要为它们新增角色、容器或派发规则。</p>
+    </article>
+    <article class="card c-cmd">
+      <h2>固定的调用链</h2>
+      <p>设备只调用控制面；控制面校验令牌、解析主机及其根调度机，再转发请求。设备看不到调度机地址，也不持有实例凭据——与后台管理端走的是同一条路径。</p>
+    </article>
+    <article class="card c-side">
+      <h2>侧载不是 Agent</h2>
+      <p>它没有容器、不注册、不发心跳、不占租约。由于复用常规的任务 / 租约 / fencing 路径，它无法绕过调度、准入和审计。</p>
+    </article>
+    <article class="card c-dev">
+      <h2>权限天生最小</h2>
+      <p>scope 是封闭集合：<code>tasks:read</code>、<code>tasks:write</code>、<code>builders:read</code>、<code>queue:read</code>、<code>console:run</code>。其中 <code>console:run</code> 需在 <code>tasks:write</code> 之上单独授予；未知 scope 会被拒绝而不是忽略。</p>
+    </article>
+    <article class="card c-side">
+      <h2>文件双向流动</h2>
+      <p>输入以附件形式上传，落到 <code>&lt;workspace&gt;/attachments/</code>。输出通过调度机的产物通道收集：任意格式，校验 SHA-256，逐字节返回，而不是塞进标准输出。</p>
+    </article>
+    <article class="card c-res">
+      <h2>生命周期与审计</h2>
+      <p><code>last_seen_at</code> 最多每 30 秒更新一次，令牌在 120 秒内视为在线。删除或过期在下次请求时以 <code>403</code> 生效。令牌的创建与删除进入审计；令牌及其哈希永不写日志。</p>
+    </article>
+  </section>
+
+  <footer>
+    <span>依据 docs/sideload.md · 通用架构，不含具体项目组件</span>
+    <span>静态 SVG · 可缩放 · 支持深色模式</span>
+  </footer>
+</div>
+
+<script>
+  (function(){
+    var root = document.documentElement;
+    var btn = document.getElementById('theme');
+    function effective(){
+      return root.getAttribute('data-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    }
+    function sync(){
+      btn.textContent = effective() === 'dark' ? '浅色模式' : '深色模式';
+    }
+    btn.addEventListener('click', function(){
+      root.setAttribute('data-theme', effective() === 'dark' ? 'light' : 'dark');
+      sync();
+    });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', sync);
+    sync();
+  })();
+</script>
+</body>
+</html>

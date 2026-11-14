@@ -1,7 +1,7 @@
 import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from "react";
 
 /**
- * Minimal Chinese/English toggle.
+ * Chinese/English UI: the browser language picks the initial language, and a saved choice wins.
  *
  * The Chinese original is the dictionary key: t("构建机") looks up "Builders" in English mode and falls back to Chinese when missing.
  * This keeps copy in the source readable in Chinese, and untranslated additions never become blank.
@@ -11,12 +11,26 @@ export type Lang = "zh" | "en";
 
 const STORAGE_KEY = "app-lang";
 
-function storedLang(): Lang {
+/**
+ * The browser language decides the first render: any Chinese variant uses Chinese,
+ * anything else (including a missing navigator in SSR/tests) uses English.
+ * A user's saved choice always wins over the browser default.
+ */
+export function detectLang(nav?: Pick<Navigator, "language" | "languages">): Lang {
+  const source = nav ?? (typeof navigator === "undefined" ? undefined : navigator);
+  if (!source) return "en";
+  const candidates = [source.language, ...(source.languages ?? [])].filter(Boolean);
+  return candidates.some((value) => value.toLowerCase().startsWith("zh")) ? "zh" : "en";
+}
+
+export function storedLang(): Lang {
   try {
-    return localStorage.getItem(STORAGE_KEY) === "en" ? "en" : "zh";
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved === "en" || saved === "zh") return saved;
   } catch {
-    return "zh";
+    // localStorage can be unavailable in private mode; fall back to the browser language.
   }
+  return detectLang();
 }
 
 let current: Lang = storedLang();

@@ -5,6 +5,12 @@
  * Credentials are bound to instance identity: the Secret Store authorizes using the sub of the instance JWT here.
  */
 
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 export class SecretDenied extends Error {
   constructor(
     readonly code: string,
@@ -64,9 +70,9 @@ export class SecretClient {
         `Secret Store is unreachable: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-    const data = (await res.json().catch(() => ({}))) as any;
+    const data = recordOf(await res.json().catch(() => ({}))) ?? {};
     if (!res.ok) {
-      const err = data?.error ?? {};
+      const err = recordOf(data.error) ?? {};
       throw new SecretDenied(
         String(err.code ?? `SECRET_HTTP_${res.status}`),
         String(err.message ?? `Secret Store returned ${res.status}`),

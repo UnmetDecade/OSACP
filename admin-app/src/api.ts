@@ -14,6 +14,7 @@ import {
 } from "./types";
 import { getLiveConnection } from "./live/config";
 import { pcs } from "./live/client";
+import type { DeploymentsResponse, ObservationRow } from "./live/rows";
 import { useLive } from "./live/context";
 import {
   addLocalHost as liveAddLocalHost,
@@ -122,17 +123,22 @@ export async function editHost(
  * Deploy dialogs poll this so "deployed" is backed by an acknowledgement instead of an assumption.
  */
 export async function fetchHostDeployments(hostId: string): Promise<
-  Array<{ deployment_id: string; instance_id: string; status: string; observed?: any }>
+  Array<{
+    deployment_id: string;
+    instance_id: string;
+    status: string;
+    observed?: ObservationRow | null;
+  }>
 > {
-  const out = await pcs(
+  const out = await pcs<DeploymentsResponse>(
     getLiveConnection(),
     `/api/v1/platform/deployments?host_id=${encodeURIComponent(hostId)}`,
   );
-  return ((out?.deployments ?? []) as any[]).map((d) => ({
+  return (out?.deployments ?? []).map((d) => ({
     deployment_id: String(d.deployment_id),
     instance_id: String(d.instance_id ?? ""),
     status: String(d.status ?? ""),
-    observed: d.observed ?? null,
+    observed: d.observed && typeof d.observed === "object" ? d.observed : null,
   }));
 }
 

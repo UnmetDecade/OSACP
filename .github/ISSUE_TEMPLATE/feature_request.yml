@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a capability or improvement.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution. The project favours small, deterministic components and keeps the trusted-network security model explicit.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - scheduler
+        - pcs-issuer
+        - host-runtime
+        - secret-store
+        - admin-app
+        - agents
+        - deploy
+        - docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you unable to do today? Who is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and compatibility impact
+      description: Does this change the trust model, auth, resource accounting, wire protocol or database schema?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true

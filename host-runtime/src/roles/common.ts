@@ -64,7 +64,7 @@ export function upstreamRefs(task: Assignment): UpstreamRef[] {
   if (!Array.isArray(list)) return [];
   return list.filter(
     (v): v is UpstreamRef =>
-      !!v && typeof v === "object" && typeof (v as any).artifact_id === "string",
+      !!v && typeof v === "object" && typeof (v as { artifact_id?: unknown }).artifact_id === "string",
   );
 }
 
@@ -99,7 +99,7 @@ export async function fetchVerified(ctx: ExecContext, ref: UpstreamRef): Promise
 }
 
 /** Strict JSON parsing: artifacts are external input, so bad format is treated as a non-retryable artifact error */
-export function parseJson<T = any>(buf: Buffer, what: string): T {
+export function parseJson<T = unknown>(buf: Buffer, what: string): T {
   try {
     return JSON.parse(buf.toString("utf8")) as T;
   } catch {

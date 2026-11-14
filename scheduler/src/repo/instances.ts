@@ -571,5 +571,5 @@ export async function sweepDrainTimeouts(): Promise<string[]> {
         AND drain_deadline_at <= app_now()
       RETURNING instance_id`,
   );
-  return rows.map((r: any) => r.instance_id);
+  return rows.map((r) => String((r as { instance_id: unknown }).instance_id));
 }

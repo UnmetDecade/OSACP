@@ -51,6 +51,17 @@ var LocalAdmission = class {
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+function errorEnvelope(data) {
+  if (data === null || typeof data !== "object") return {};
+  const err = data.error;
+  if (err === null || typeof err !== "object") return {};
+  const e = err;
+  return {
+    code: typeof e.code === "string" ? e.code : void 0,
+    message: typeof e.message === "string" ? e.message : void 0,
+    detail: e.detail
+  };
+}
 var SchedulerError = class extends Error {
   constructor(status, code, message, detail) {
     super(message);
@@ -260,7 +271,7 @@ var SchedulerClient = class {
     );
     if (res.status < 200 || res.status >= 300) {
       const data = res.data.length ? JSON.parse(res.data.toString("utf8")) : {};
-      const err = data?.error ?? {};
+      const err = errorEnvelope(data);
       throw new SchedulerError(res.status, err.code ?? "UNKNOWN", err.message ?? `HTTP ${res.status}`);
     }
   }
@@ -285,7 +296,7 @@ var SchedulerClient = class {
     );
     if (res.status < 200 || res.status >= 300) {
       const data = res.data.length ? JSON.parse(res.data.toString("utf8")) : {};
-      const err = data?.error ?? {};
+      const err = errorEnvelope(data);
       throw new SchedulerError(
         res.status,
         err.code ?? "UNKNOWN",
@@ -757,7 +768,7 @@ async function loadAttachment(rec) {
   } catch (err) {
     throw new TaskFailed(
       "ATTACHMENT_FETCH_FAILED",
-      `Failed to fetch attachment: ${String(err?.message ?? err)}`
+      `Failed to fetch attachment: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   if (!res.ok) {
@@ -1227,6 +1238,9 @@ async function assertEgressAllowed(url, policyName, opts) {
 }
 
 // host-runtime/src/agent-runtime/secret-client.ts
+function recordOf(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
 var SecretDenied = class extends Error {
   constructor(code, message) {
     super(message);
@@ -1270,9 +1284,9 @@ var SecretClient = class {
         `Secret Store is unreachable: ${e instanceof Error ? e.message : String(e)}`
       );
     }
-    const data = await res.json().catch(() => ({}));
+    const data = recordOf(await res.json().catch(() => ({}))) ?? {};
     if (!res.ok) {
-      const err = data?.error ?? {};
+      const err = recordOf(data.error) ?? {};
       throw new SecretDenied(
         String(err.code ?? `SECRET_HTTP_${res.status}`),
         String(err.message ?? `Secret Store returned ${res.status}`)
@@ -1622,6 +1636,9 @@ function redact(line) {
 }
 
 // host-runtime/src/agent-runtime/stdio-adapter.ts
+function recordOf2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
 var AdapterCrash = class extends Error {
   constructor(code, message) {
     super(message);
@@ -1684,10 +1701,15 @@ var StdioAdapter = class {
   onLine(line) {
     const text = line.trim();
     if (!text) return;
-    let msg;
+    let parsed;
     try {
-      msg = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
+      this.hooks.onLog(`[adapter-stdout] ${redact(text).slice(0, 2e3)}`);
+      return;
+    }
+    const msg = recordOf2(parsed);
+    if (!msg) {
       this.hooks.onLog(`[adapter-stdout] ${redact(text).slice(0, 2e3)}`);
       return;
     }
@@ -1710,11 +1732,12 @@ var StdioAdapter = class {
       if (!p) return;
       this.pending.delete(Number(msg.id));
       clearTimeout(p.timer);
-      if (msg.error) {
+      const error = recordOf2(msg.error);
+      if (error) {
         p.reject(
           new AdapterCrash(
-            String(msg.error.code ?? "AGENT_RPC_ERROR"),
-            String(msg.error.message ?? "Adapter returned an error")
+            String(error.code ?? "AGENT_RPC_ERROR"),
+            String(error.message ?? "Adapter returned an error")
           )
         );
       } else {
@@ -1722,23 +1745,25 @@ var StdioAdapter = class {
       }
     }
   }
-  handleEvent(params) {
+  handleEvent(raw) {
+    const params = recordOf2(raw) ?? {};
+    const text = (key) => typeof params[key] === "string" ? params[key] : void 0;
     const type = String(params.type ?? "");
     if (type === "progress") {
       let percent = Number(params.percent);
       if (!Number.isFinite(percent)) percent = 0;
       percent = Math.max(this.lastProgress, Math.min(100, Math.max(0, percent)));
       this.lastProgress = percent;
-      this.events.push({ type, percent, phase: params.phase });
-      this.hooks.onEvent({ type, percent, phase: params.phase });
+      this.events.push({ type, percent, phase: text("phase") });
+      this.hooks.onEvent({ type, percent, phase: text("phase") });
       return;
     }
     if (type === "log") {
-      this.hooks.onEvent({ type, level: params.level, message: params.message });
+      this.hooks.onEvent({ type, level: text("level"), message: text("message") });
       return;
     }
     if (type === "artifact") {
-      this.hooks.onEvent({ type, name: params.name, path: params.path });
+      this.hooks.onEvent({ type, name: text("name"), path: text("path") });
       return;
     }
     if (type === "outward") {
@@ -1752,13 +1777,14 @@ var StdioAdapter = class {
       const result = await this.hooks.onToolCall(msg.params);
       this.write({ jsonrpc: "2.0", id: msg.id, result });
     } catch (e) {
+      const err = recordOf2(e) ?? {};
       this.write({
         jsonrpc: "2.0",
         id: msg.id,
         error: {
           code: -32001,
-          message: String(e?.code ?? "TOOL_DENIED"),
-          data: { code: e?.code, step: e?.step, message: e?.message }
+          message: String(err.code ?? "TOOL_DENIED"),
+          data: { code: err.code, step: err.step, message: err.message }
         }
       });
     }
@@ -1778,7 +1804,7 @@ var StdioAdapter = class {
     });
   }
   async prepare(params, timeoutMs) {
-    return this.request("agent.prepare", params, timeoutMs);
+    return recordOf2(await this.request("agent.prepare", params, timeoutMs)) ?? {};
   }
   async execute(params, timeoutMs) {
     this.resultNotify = null;
@@ -1860,20 +1886,22 @@ var HttpLocalAdapter = class {
     } catch (e) {
       throw new AdapterCrash("AGENT_CRASHED", `Adapter unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const data = await res.json().catch(() => ({}));
+    const data = recordOf3(await res.json().catch(() => ({}))) ?? {};
     if (!res.ok) throw new AdapterCrash("AGENT_CRASHED", `Adapter HTTP ${res.status}`);
-    for (const ev of data.events ?? []) this.hooks.onEvent(ev);
-    if (data.error) {
-      throw new AdapterCrash(String(data.error.code ?? "AGENT_RPC_ERROR"), String(data.error.message ?? "Adapter error"));
+    const events = Array.isArray(data.events) ? data.events : [];
+    for (const ev of events) this.hooks.onEvent(ev);
+    if (data.error !== void 0 && data.error !== null) {
+      const error = recordOf3(data.error) ?? {};
+      throw new AdapterCrash(String(error.code ?? "AGENT_RPC_ERROR"), String(error.message ?? "Adapter error"));
     }
     return data.result;
   }
-  prepare(params, timeoutMs) {
-    return this.request("agent.prepare", params, timeoutMs);
+  async prepare(params, timeoutMs) {
+    return recordOf3(await this.request("agent.prepare", params, timeoutMs)) ?? {};
   }
   async execute(params, timeoutMs) {
     const out = await this.request("agent.execute", params, timeoutMs);
-    return out;
+    return recordOf3(out) ?? { status: "FAILED" };
   }
   async cancel(reason) {
     if (this.closed) return;
@@ -1887,6 +1915,9 @@ var HttpLocalAdapter = class {
     this.closed = true;
   }
 };
+function recordOf3(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
 
 // host-runtime/src/agent-runtime/tool-policy.ts
 import { createHash as createHash2, timingSafeEqual } from "node:crypto";
@@ -2216,7 +2247,7 @@ async function materializeUpstreamArtifacts(task, ctx) {
       if (e instanceof TaskFailed) throw e;
       throw new TaskFailed(
         "UPSTREAM_ARTIFACT_FETCH_FAILED",
-        `Failed to download upstream artifact ${id}: ${String(e?.message ?? e)}`,
+        `Failed to download upstream artifact ${id}: ${e instanceof Error ? e.message : String(e)}`,
         { artifact_id: id }
       );
     }
@@ -2323,7 +2354,7 @@ async function runAgentTask(task, ctx, opts) {
         } catch (err) {
           artifactError = new TaskFailed(
             "ARTIFACT_PATH_DENIED",
-            String(err?.message ?? "Artifact path is outside the workspace")
+            err instanceof Error ? err.message : "Artifact path is outside the workspace"
           );
         }
       }

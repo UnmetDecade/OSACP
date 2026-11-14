@@ -4,6 +4,18 @@ import http from "node:http";
 import https from "node:https";
 import type { InstanceConfig } from "./config.js";
 
+function errorEnvelope(data: unknown): { code?: string; message?: string; detail?: unknown } {
+  if (data === null || typeof data !== "object") return {};
+  const err = (data as Record<string, unknown>).error;
+  if (err === null || typeof err !== "object") return {};
+  const e = err as Record<string, unknown>;
+  return {
+    code: typeof e.code === "string" ? e.code : undefined,
+    message: typeof e.message === "string" ? e.message : undefined,
+    detail: e.detail,
+  };
+}
+
 export class SchedulerError extends Error {
   constructor(
     readonly status: number,
@@ -352,8 +364,8 @@ export class SchedulerClient {
       content,
     );
     if (res.status < 200 || res.status >= 300) {
-      const data = res.data.length ? JSON.parse(res.data.toString("utf8")) : {};
-      const err = (data as any)?.error ?? {};
+      const data: unknown = res.data.length ? JSON.parse(res.data.toString("utf8")) : {};
+      const err = errorEnvelope(data);
       throw new SchedulerError(res.status, err.code ?? "UNKNOWN", err.message ?? `HTTP ${res.status}`);
     }
   }
@@ -381,8 +393,8 @@ export class SchedulerClient {
       undefined,
     );
     if (res.status < 200 || res.status >= 300) {
-      const data = res.data.length ? JSON.parse(res.data.toString("utf8")) : {};
-      const err = (data as any)?.error ?? {};
+      const data: unknown = res.data.length ? JSON.parse(res.data.toString("utf8")) : {};
+      const err = errorEnvelope(data);
       throw new SchedulerError(
         res.status,
         err.code ?? "UNKNOWN",

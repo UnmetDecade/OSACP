@@ -41,10 +41,16 @@ export interface AdapterHooks {
 }
 
 type Pending = {
-  resolve: (v: any) => void;
+  resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
 };
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
 
 export class AdapterCrash extends Error {
   constructor(
@@ -118,10 +124,15 @@ export class StdioAdapter {
   private onLine(line: string): void {
     const text = line.trim();
     if (!text) return;
-    let msg: any;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
+      this.hooks.onLog(`[adapter-stdout] ${redact(text).slice(0, 2000)}`);
+      return;
+    }
+    const msg = recordOf(parsed);
+    if (!msg) {
       this.hooks.onLog(`[adapter-stdout] ${redact(text).slice(0, 2000)}`);
       return;
     }
@@ -144,11 +155,12 @@ export class StdioAdapter {
       if (!p) return;
       this.pending.delete(Number(msg.id));
       clearTimeout(p.timer);
-      if (msg.error) {
+      const error = recordOf(msg.error);
+      if (error) {
         p.reject(
           new AdapterCrash(
-            String(msg.error.code ?? "AGENT_RPC_ERROR"),
-            String(msg.error.message ?? "Adapter returned an error"),
+            String(error.code ?? "AGENT_RPC_ERROR"),
+            String(error.message ?? "Adapter returned an error"),
           ),
         );
       } else {
@@ -157,23 +169,26 @@ export class StdioAdapter {
     }
   }
 
-  private handleEvent(params: any): void {
+  private handleEvent(raw: unknown): void {
+    const params = recordOf(raw) ?? {};
+    const text = (key: string): string | undefined =>
+      typeof params[key] === "string" ? (params[key] as string) : undefined;
     const type = String(params.type ?? "");
     if (type === "progress") {
       let percent = Number(params.percent);
       if (!Number.isFinite(percent)) percent = 0;
       percent = Math.max(this.lastProgress, Math.min(100, Math.max(0, percent)));
       this.lastProgress = percent;
-      this.events.push({ type, percent, phase: params.phase });
-      this.hooks.onEvent({ type, percent, phase: params.phase });
+      this.events.push({ type, percent, phase: text("phase") });
+      this.hooks.onEvent({ type, percent, phase: text("phase") });
       return;
     }
     if (type === "log") {
-      this.hooks.onEvent({ type, level: params.level, message: params.message });
+      this.hooks.onEvent({ type, level: text("level"), message: text("message") });
       return;
     }
     if (type === "artifact") {
-      this.hooks.onEvent({ type, name: params.name, path: params.path });
+      this.hooks.onEvent({ type, name: text("name"), path: text("path") });
       return;
     }
     if (type === "outward") {
@@ -183,24 +198,25 @@ export class StdioAdapter {
     this.hooks.onLog(`Unknown agent.event type: ${type}`);
   }
 
-  private async handleToolRequest(msg: any): Promise<void> {
+  private async handleToolRequest(msg: Record<string, unknown>): Promise<void> {
     try {
       const result = await this.hooks.onToolCall(msg.params);
       this.write({ jsonrpc: "2.0", id: msg.id, result });
-    } catch (e: any) {
+    } catch (e) {
+      const err = recordOf(e) ?? {};
       this.write({
         jsonrpc: "2.0",
         id: msg.id,
         error: {
           code: -32001,
-          message: String(e?.code ?? "TOOL_DENIED"),
-          data: { code: e?.code, step: e?.step, message: e?.message },
+          message: String(err.code ?? "TOOL_DENIED"),
+          data: { code: err.code, step: err.step, message: err.message },
         },
       });
     }
   }
 
-  request(method: string, params: unknown, timeoutMs: number): Promise<any> {
+  request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new AdapterCrash("AGENT_CRASHED", "Adapter has exited"));
     }
@@ -215,8 +231,8 @@ export class StdioAdapter {
     });
   }
 
-  async prepare(params: unknown, timeoutMs: number): Promise<any> {
-    return this.request("agent.prepare", params, timeoutMs);
+  async prepare(params: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
+    return recordOf(await this.request("agent.prepare", params, timeoutMs)) ?? {};
   }
 
   async execute(params: unknown, timeoutMs: number): Promise<AdapterResult> {

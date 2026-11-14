@@ -131,9 +131,10 @@ export async function getGrants(hostId: string): Promise<ResourceGrantRow[]> {
   return grantsWith(pool, hostId);
 }
 
-function mapGrant(r: any): ResourceGrantRow {
+function mapGrant(r: Record<string, unknown>): ResourceGrantRow {
   return {
-    ...r,
+    host_id: String(r.host_id),
+    instance_id: String(r.instance_id),
     generation: n(r.generation),
     cpu_millicores: n(r.cpu_millicores),
     memory_bytes: n(r.memory_bytes),
@@ -142,11 +143,17 @@ function mapGrant(r: any): ResourceGrantRow {
     cpu_weight: n(r.cpu_weight),
     cap_cpu_millicores: r.cap_cpu_millicores === undefined ? undefined : n(r.cap_cpu_millicores),
     cap_mem_bytes: r.cap_mem_bytes === undefined ? undefined : n(r.cap_mem_bytes),
+    state: String(r.state),
     applied_generation: r.applied_generation === null ? null : n(r.applied_generation),
-  } as ResourceGrantRow;
+    applied_at: (r.applied_at as string | null | undefined) ?? null,
+    last_error: (r.last_error as string | null | undefined) ?? null,
+    updated_at: String(r.updated_at),
+  };
 }
 
-type Queryable = { query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> };
+type Queryable = {
+  query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+};
 
 async function grantsWith(c: Queryable, hostId: string): Promise<ResourceGrantRow[]> {
   const rows = (
@@ -170,29 +177,29 @@ export async function getInstanceGrantState(instanceId: string): Promise<{
   grant: ResourceGrantRow | null;
   pool: PoolRow | null;
 } | null> {
-  const owner = await q1<any>(
+  const owner = await q1<Record<string, unknown>>(
     `SELECT instance_id, host_id, scheduling_mode FROM role_instances WHERE instance_id = $1`,
     [instanceId],
   );
   if (!owner) return null;
-  const grant = await q1<any>(
+  const grant = await q1<Record<string, unknown>>(
     `SELECT g.*, r.cap_cpu_millicores, r.cap_mem_bytes
        FROM resource_grants g
        JOIN role_instances r USING (instance_id)
       WHERE g.instance_id = $1`,
     [instanceId],
   );
-  const pool = await q1<any>(
+  const pool = await q1<Record<string, unknown>>(
     `SELECT * FROM host_resource_pools WHERE host_id = $1`,
     [owner.host_id],
   );
   return {
-    instance_id: owner.instance_id,
-    host_id: owner.host_id,
-    scheduling_mode: owner.scheduling_mode ?? "static",
+    instance_id: String(owner.instance_id),
+    host_id: String(owner.host_id),
+    scheduling_mode: typeof owner.scheduling_mode === "string" ? owner.scheduling_mode : "static",
     grant: grant ? mapGrant(grant) : null,
     pool: pool
-      ? {
+      ? ({
           ...pool,
           cpu_total_millicores: n(pool.cpu_total_millicores),
           mem_total_bytes: n(pool.mem_total_bytes),
@@ -202,7 +209,7 @@ export async function getInstanceGrantState(instanceId: string): Promise<{
           mem_used_bytes: n(pool.mem_used_bytes),
           mem_working_set_bytes: n(pool.mem_working_set_bytes),
           available_commitment_bytes: n(pool.available_commitment_bytes),
-        }
+        } as unknown as PoolRow)
       : null,
   };
 }
@@ -311,7 +318,7 @@ async function demandRows(c: Client, hostId: string): Promise<InstanceDemandRow[
       [hostId],
     )
   ).rows;
-  return rows.map((r: any) => ({
+  return rows.map((r) => ({
     ...r,
     capability_score: n(r.capability_score),
     cap_cpu_millicores: n(r.cap_cpu_millicores),

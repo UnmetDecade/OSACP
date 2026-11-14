@@ -1,5 +1,5 @@
 import type { AgentProfile } from "./types.js";
-import type { AdapterHooks, AdapterResult } from "./stdio-adapter.js";
+import type { AdapterEvent, AdapterHooks, AdapterResult } from "./stdio-adapter.js";
 import { AdapterCrash } from "./stdio-adapter.js";
 
 /**
@@ -29,7 +29,7 @@ export class HttpLocalAdapter {
     await this.request("agent.health", {}, 5000);
   }
 
-  private async request(method: string, params: unknown, timeoutMs: number): Promise<any> {
+  private async request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
     if (this.closed) throw new AdapterCrash("AGENT_CRASHED", "Adapter has exited");
     const id = ++this.seq;
     let res: Response;
@@ -43,22 +43,24 @@ export class HttpLocalAdapter {
     } catch (e) {
       throw new AdapterCrash("AGENT_CRASHED", `Adapter unreachable: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const data = (await res.json().catch(() => ({}))) as any;
+    const data = recordOf(await res.json().catch(() => ({}))) ?? {};
     if (!res.ok) throw new AdapterCrash("AGENT_CRASHED", `Adapter HTTP ${res.status}`);
-    for (const ev of data.events ?? []) this.hooks.onEvent(ev);
-    if (data.error) {
-      throw new AdapterCrash(String(data.error.code ?? "AGENT_RPC_ERROR"), String(data.error.message ?? "Adapter error"));
+    const events = Array.isArray(data.events) ? data.events : [];
+    for (const ev of events) this.hooks.onEvent(ev as AdapterEvent);
+    if (data.error !== undefined && data.error !== null) {
+      const error = recordOf(data.error) ?? {};
+      throw new AdapterCrash(String(error.code ?? "AGENT_RPC_ERROR"), String(error.message ?? "Adapter error"));
     }
     return data.result;
   }
 
-  prepare(params: unknown, timeoutMs: number): Promise<any> {
-    return this.request("agent.prepare", params, timeoutMs);
+  async prepare(params: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
+    return recordOf(await this.request("agent.prepare", params, timeoutMs)) ?? {};
   }
 
   async execute(params: unknown, timeoutMs: number): Promise<AdapterResult> {
     const out = await this.request("agent.execute", params, timeoutMs);
-    return out as AdapterResult;
+    return (recordOf(out) ?? { status: "FAILED" }) as unknown as AdapterResult;
   }
 
   async cancel(reason: string): Promise<void> {
@@ -74,6 +76,12 @@ export class HttpLocalAdapter {
   kill(): void {
     this.closed = true;
   }
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 export type AnyAdapter = import("./stdio-adapter.js").StdioAdapter | HttpLocalAdapter;

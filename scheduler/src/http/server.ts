@@ -8,7 +8,14 @@ import { assertSelf, requireInstanceAuth, type AuthContext } from "../auth.js";
 import { requireScope } from "../jwt.js";
 import { claim } from "../core/claim.js";
 import { maybeRelayTask, requestRelayCancel } from "../core/relay.js";
-import { progress, renew, startAck, submitResult } from "../core/attempts.js";
+import {
+  progress,
+  renew,
+  startAck,
+  submitResult,
+  type LeaseProof,
+  type ResultInput,
+} from "../core/attempts.js";
 import {
   completeArtifact,
   createArtifact,
@@ -51,9 +58,14 @@ import {
   markGrantFailed,
 } from "../repo/resources.js";
 
+/** Request bodies are untrusted JSON; handlers cast to their input type at this boundary. */
+function bodyAs<T>(body: Record<string, unknown>): T {
+  return body as unknown as T;
+}
+
 type Ctx = {
   params: Record<string, string>;
-  body: any;
+  body: Record<string, unknown>;
   query: URLSearchParams;
   auth: AuthContext | null;
   headers: http.IncomingHttpHeaders;
@@ -96,8 +108,8 @@ route(
   "POST",
   "/v1/instances/register",
   (c) => {
-    assertSelf(c.auth, c.body?.instance_id);
-    return register(c.body);
+    assertSelf(c.auth, String(c.body.instance_id ?? ""));
+    return register(bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] },
 );
@@ -105,8 +117,8 @@ route(
   "POST",
   "/v1/instances/heartbeat",
   (c) => {
-    assertSelf(c.auth, c.body?.instance_id);
-    return heartbeat(c.body);
+    assertSelf(c.auth, String(c.body.instance_id ?? ""));
+    return heartbeat(bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:claim"] },
 );
@@ -114,7 +126,7 @@ route("GET", "/v1/instances", async () => ({ items: await listInstances() }));
 
 // ---------------- Host roster (periodically synced from the control plane)
 // Instance registration requires the host to be in the roster; PCS pushes the roster when a host reports in, and the scheduler never pulls from PCS itself.
-route("POST", "/v1/hosts", (c) => upsertHost(c.body ?? {}));
+route("POST", "/v1/hosts", (c) => upsertHost(bodyAs(c.body)));
 
 // ---------------- Instance lifecycle (§7.3 / §7.10–7.12)
 route(
@@ -122,7 +134,7 @@ route(
   "/v1/instances/:id/capabilities",
   (c) => {
     assertSelf(c.auth, c.params.id);
-    return setCapabilities(c.params.id, c.body);
+    return setCapabilities(c.params.id, bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] },
 );
@@ -131,7 +143,7 @@ route(
   "/v1/instances/:id/drain",
   (c) => {
     assertSelf(c.auth, c.params.id);
-    return drain(c.params.id, c.body);
+    return drain(c.params.id, bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] },
 );
@@ -149,7 +161,7 @@ route(
   "/v1/instances/:id/deregister",
   (c) => {
     assertSelf(c.auth, c.params.id);
-    return deregister(c.params.id, c.body);
+    return deregister(c.params.id, bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] },
 );
@@ -206,15 +218,22 @@ route(
       });
       return { ok: false, state: "FAILED" };
     }
+    const applied = bodyAs<{
+      cpu_millicores?: number;
+      memory_bytes?: number;
+      memory_low_bytes?: number;
+      memory_high_bytes?: number;
+      cpu_weight?: number;
+    }>(c.body);
     return markGrantApplied({
       host_id: state.host_id,
       instance_id: c.params.id,
       generation,
-      cpu_millicores: c.body?.cpu_millicores,
-      memory_bytes: c.body?.memory_bytes,
-      memory_low_bytes: c.body?.memory_low_bytes,
-      memory_high_bytes: c.body?.memory_high_bytes,
-      cpu_weight: c.body?.cpu_weight,
+      cpu_millicores: applied.cpu_millicores,
+      memory_bytes: applied.memory_bytes,
+      memory_low_bytes: applied.memory_low_bytes,
+      memory_high_bytes: applied.memory_high_bytes,
+      cpu_weight: applied.cpu_weight,
     });
   },
   { auth: true, scopes: ["instance:claim"] },
@@ -230,14 +249,15 @@ route(
   "POST",
   "/v1/claim",
   async (c) => {
-    assertSelf(c.auth, c.body?.instance_id);
-    const a = await claim({ instance_id: c.body.instance_id, trace_id: c.body.trace_id });
+    assertSelf(c.auth, String(c.body.instance_id ?? ""));
+    const a = await claim(bodyAs(c.body));
     if (!a) return { noop: true };
     return a;
   },
   { auth: true, scopes: ["instance:claim"] },
 );
-const proof = (c: Ctx) => ({ ...c.body, auth_instance_id: c.auth?.instance_id ?? undefined });
+const proof = (c: Ctx): LeaseProof =>
+  bodyAs<LeaseProof>({ ...c.body, auth_instance_id: c.auth?.instance_id ?? undefined });
 route("POST", "/v1/attempts/:id/start-ack", (c) => startAck(c.params.id, proof(c)), {
   auth: true,
   scopes: ["task:report"],
@@ -250,19 +270,36 @@ route("POST", "/v1/attempts/:id/progress", (c) => progress(c.params.id, proof(c)
   auth: true,
   scopes: ["task:report"],
 });
-route("POST", "/v1/attempts/:id/result", (c) => submitResult(c.params.id, proof(c)), {
+route("POST", "/v1/attempts/:id/result", (c) =>
+  submitResult(
+    c.params.id,
+    bodyAs<ResultInput>({ ...c.body, auth_instance_id: c.auth?.instance_id ?? undefined }),
+  ), {
   auth: true,
   scopes: ["task:report"],
 });
 
 // The lease holder declares children; the scheduler parks the parent and releases the lease.
 // Operators answer a parked question through the unauthenticated admin path, like retry/cancel.
-route("POST", "/v1/tasks/:id/split", (c) => splitTask(c.params.id, proof(c), c.body?.children), {
+route(
+  "POST",
+  "/v1/tasks/:id/split",
+  (c) =>
+    splitTask(
+      c.params.id,
+      proof(c),
+      bodyAs<{ children?: Parameters<typeof splitTask>[2] }>(c.body).children ?? [],
+    ),
+  {
   auth: true,
   scopes: ["task:report"],
 });
 route("POST", "/v1/tasks/:id/answer", (c) =>
-  answerTask(c.params.id, c.body?.answer, c.body?.actor ?? "operator"),
+  answerTask(
+    c.params.id,
+    String(bodyAs<{ answer?: string }>(c.body).answer ?? ""),
+    String(c.body.actor ?? "operator"),
+  ),
 );
 
 // ---------------- Tasks
@@ -271,8 +308,9 @@ route("POST", "/v1/tasks/:id/answer", (c) =>
 // of the instance may be a deeper scheduler, so the task must continue down the tree.
 // Push-down failure is only logged; the task stays in the local queue and the submission itself does not fail.
 route("POST", "/v1/tasks", async (c) => {
-  const task = await createTask(c.body);
-  const relayed = await maybeRelayTask(task, c.body);
+  const input = bodyAs<Parameters<typeof createTask>[0]>(c.body);
+  const task = await createTask(input);
+  const relayed = await maybeRelayTask(task, input);
   return relayed ? { ...task, relay: relayed } : task;
 });
 route("GET", "/v1/tasks", async (c) => ({
@@ -301,20 +339,21 @@ route("GET", "/v1/events", async (c) => {
   return { items, next_after: items.length ? Number(items[items.length - 1].event_id) : after };
 });
 route("POST", "/v1/tasks/:id/cancel", async (c) => {
-  const out = await cancelTask(c.params.id, c.body?.actor ?? "operator");
+  const out = await cancelTask(c.params.id, String(c.body.actor ?? "operator"));
   // When a task was pushed down to a child, cancellation must be pushed down too, or the child keeps running.
   await requestRelayCancel(c.params.id);
   return out;
 });
 route("POST", "/v1/tasks/:id/retry", (c) =>
-  retryTask(c.params.id, c.body?.actor ?? "operator"),
+  retryTask(c.params.id, String(c.body.actor ?? "operator")),
 );
 
 // ---------------- Artifacts (§7.8)
 route(
   "POST",
   "/v1/artifacts",
-  (c) => createArtifact(c.body, c.auth?.instance_id ?? c.body?.instance_id),
+  (c) =>
+    createArtifact(bodyAs(c.body), c.auth?.instance_id ?? String(c.body.instance_id ?? "")),
   { auth: true, scopes: ["artifact:write"] },
 );
 route(
@@ -338,7 +377,7 @@ route(
 route("GET", "/v1/tasks/:id/artifacts", (c) => listTaskArtifacts(c.params.id));
 
 // ---------------- Workflows (§7)
-route("POST", "/v1/workflows", (c) => createWorkflowRun(c.body));
+route("POST", "/v1/workflows", (c) => createWorkflowRun(bodyAs(c.body)));
 route("GET", "/v1/workflows", async (c) => ({
   items: await listWorkflowRuns(c.query.get("limit") ? Number(c.query.get("limit")) : undefined),
 }));
@@ -358,7 +397,9 @@ route("GET", "/v1/workflows/:id", (c) => getWorkflowRun(c.params.id));
 // Approval decision: the credential is a PCS-issued approval JWT (body.approval_token), verified inside decideApproval.
 // No PCS public key → 503; never downgrade to a shared token.
 route("POST", "/v1/tasks/:id/approve", (c) =>
-  decideApproval({ ...c.body, task_id: c.params.id }),
+  decideApproval(
+    bodyAs<Parameters<typeof decideApproval>[0]>({ ...c.body, task_id: c.params.id }),
+  ),
 );
 
 // ---------------- Capability and federation tree (architecture rules 2/3)
@@ -378,7 +419,9 @@ route("POST", "/v1/nodes/report", (c) => {
   if (token !== config.federationToken) {
     throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "node report token is invalid");
   }
-  return upsertNodeReport({ ...c.body, parent_node_id: selfNodeId(), role: "node" });
+  return upsertNodeReport(
+    bodyAs<Parameters<typeof upsertNodeReport>[0]>({ ...c.body, parent_node_id: selfNodeId(), role: "node" }),
+  );
 });
 // Host join / leave: PCS only changes the parent URL; the scheduler is not restarted.
 // The root scheduler has no parent by default; once set here, it starts reporting the whole subtree's ΣW upward on the federation period.
@@ -497,7 +540,7 @@ function readRawBody(req: http.IncomingMessage, limit: number): Promise<Buffer> 
   });
 }
 
-function readBody(req: http.IncomingMessage): Promise<any> {
+function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -514,7 +557,7 @@ function readBody(req: http.IncomingMessage): Promise<any> {
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) return resolve({});
       try {
-        resolve(JSON.parse(raw));
+        resolve(JSON.parse(raw) as Record<string, unknown>);
       } catch {
         reject(new ApiError(400, "BAD_JSON", "request body is not valid JSON"));
       }
@@ -640,7 +683,7 @@ export function createServer(): http.Server | https.Server {
       if (out === NOT_MODIFIED) {
         res.writeHead(304);
         res.end();
-      } else if (out && typeof out === "object" && (out as any).noop) {
+      } else if (out && typeof out === "object" && (out as { noop?: unknown }).noop) {
         // No claim candidates → 204, letting the Worker back off at its own pace
         send(res, 204, null, true);
       } else {

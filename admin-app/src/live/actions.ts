@@ -1,7 +1,21 @@
 import { t } from "../i18n";
-import type { BuilderOs, CapabilityDetail, HostRoleMode, Role, TaskAttachment, TaskAttachmentRef } from "../types";
+import type {
+  BuilderOs,
+  CapabilityDetail,
+  HostRoleMode,
+  Role,
+  TaskAttachment,
+  TaskAttachmentRef,
+  TaskEvent,
+} from "../types";
 import { ApiError, pcs, scheduler, schedulerFor } from "./client";
 import type { LiveConnection } from "./config";
+import type {
+  DeploymentRow,
+  DeploymentsResponse,
+  TaskDetailResponse,
+  TaskEventsResponse,
+} from "./rows";
 
 const MIB = 1024 ** 2;
 
@@ -273,8 +287,8 @@ export async function instanceAction(
   action: "start" | "stop" | "restart" | "drain" | "remove",
   hostId?: string,
 ): Promise<void> {
-  const out = await pcs(connection, "/api/v1/platform/deployments");
-  const deployments = (out?.deployments ?? []) as any[];
+  const out = await pcs<DeploymentsResponse>(connection, "/api/v1/platform/deployments");
+  const deployments = out?.deployments ?? [];
   // Instance names are unique only within a host; including the host prevents acting on a same-named instance on another host.
   const dep = deployments
     .filter(
@@ -295,7 +309,7 @@ export async function instanceAction(
   const verb = action === "drain" ? "stop" : action;
   await pcs(
     connection,
-    `/api/v1/platform/deployments/${encodeURIComponent(dep.deployment_id)}/${verb}`,
+    `/api/v1/platform/deployments/${encodeURIComponent(String(dep.deployment_id))}/${verb}`,
     { method: "POST" },
   );
 }
@@ -312,7 +326,7 @@ export async function removeInstanceAndWait(
   hostId: string | undefined,
   timeoutMs = 60_000,
 ): Promise<void> {
-  const pick = (rows: any[]) =>
+  const pick = (rows: DeploymentRow[]) =>
     rows
       .filter(
         (d) =>
@@ -321,7 +335,9 @@ export async function removeInstanceAndWait(
           (!hostId || d.host_id === hostId),
       )
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
-  const first = pick(((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[]);
+  const first = pick(
+    (await pcs<DeploymentsResponse>(connection, "/api/v1/platform/deployments"))?.deployments ?? [],
+  );
   if (!first) {
     // No deployment record remains; treat it as deleted, but clear the stale scheduler registration too.
     await forgetInstance(connection, instanceId);
@@ -330,7 +346,7 @@ export async function removeInstanceAndWait(
   try {
     await pcs(
       connection,
-      `/api/v1/platform/deployments/${encodeURIComponent(first.deployment_id)}/remove`,
+      `/api/v1/platform/deployments/${encodeURIComponent(String(first.deployment_id))}/remove`,
       { method: "POST" },
     );
   } catch (e) {
@@ -341,7 +357,8 @@ export async function removeInstanceAndWait(
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
     await new Promise((r) => setTimeout(r, 1000));
-    const rows = ((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[];
+    const rows =
+      (await pcs<DeploymentsResponse>(connection, "/api/v1/platform/deployments"))?.deployments ?? [];
     const dep = rows.find((d) => d.deployment_id === first.deployment_id);
     if (!dep || dep.status === "REMOVED") {
       // The host acknowledged; drop the registration as well, but never fail the deletion if the
@@ -350,8 +367,12 @@ export async function removeInstanceAndWait(
       return;
     }
     if (dep.status === "FAILED") {
-      const reason = dep.observed?.error?.message ?? dep.observed?.error ?? dep.status;
-      throw new Error(t("移除实例 {id} 失败：{reason}", { id: instanceId, reason: String(reason) }));
+      const observedError = dep.observed?.error;
+      const reason =
+        observedError !== null && typeof observedError === "object"
+          ? String((observedError as { message?: unknown }).message ?? "")
+          : String(observedError ?? dep.status ?? "");
+      throw new Error(t("移除实例 {id} 失败：{reason}", { id: instanceId, reason }));
     }
   }
   throw new Error(t("实例 {id} 在 {sec} 秒内没有移除完成", { id: instanceId, sec: Math.round(timeoutMs / 1000) }));
@@ -362,7 +383,8 @@ export async function activeHostInstances(
   connection: LiveConnection,
   hostId: string,
 ): Promise<string[]> {
-  const rows = ((await pcs(connection, "/api/v1/platform/deployments"))?.deployments ?? []) as any[];
+  const rows =
+    (await pcs<DeploymentsResponse>(connection, "/api/v1/platform/deployments"))?.deployments ?? [];
   return [
     ...new Set(
       rows
@@ -506,7 +528,7 @@ export interface TaskOutput {
 
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"]);
 
-function attemptOutputs(detail: any): Record<string, unknown> {
+function attemptOutputs(detail: TaskDetailResponse | null | undefined): Record<string, unknown> {
   const list = Array.isArray(detail?.attempts) ? detail.attempts : [];
   for (let i = list.length - 1; i >= 0; i--) {
     const raw = list[i]?.outputs;
@@ -535,10 +557,14 @@ async function waitTaskResult(
 ): Promise<TaskOutput> {
   const deadline = Date.now() + timeoutMs;
   const started = Date.now();
-  let last: any = null;
+  let last: TaskDetailResponse | null = null;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new DOMException(t("已停止"), "AbortError");
-    last = await schedulerFor(connection, schedulerDeploymentId, `/v1/tasks/${encodeURIComponent(taskId)}`);
+    last = await schedulerFor<TaskDetailResponse>(
+      connection,
+      schedulerDeploymentId,
+      `/v1/tasks/${encodeURIComponent(taskId)}`,
+    );
     const state = String(last?.status ?? last?.state ?? "");
     if (TERMINAL.has(state)) {
       const attempts = Array.isArray(last?.attempts) ? last.attempts.length : 0;
@@ -551,14 +577,23 @@ async function waitTaskResult(
           : (relayed as Record<string, unknown>);
       return {
         state,
-        summary: String(last?.result_summary ?? last?.attempts?.[attempts - 1]?.result_summary ?? ""),
+        summary: String(
+          last?.result_summary ?? last?.attempts?.[attempts - 1]?.result_summary ?? "",
+        ),
         outputs,
         attempts,
       };
     }
     await new Promise((r) => setTimeout(r, pollDelay(Date.now() - started)));
   }
-  throw new Error(t("任务 {id} 在 {sec} 秒内没有完成（当前 {status}）", { id: taskId, sec: Math.round(timeoutMs / 1000), status: last?.status ?? t("未知") }));
+  const status = last?.status ? String(last.status) : t("未知");
+  throw new Error(
+    t("任务 {id} 在 {sec} 秒内没有完成（当前 {status}）", {
+      id: taskId,
+      sec: Math.round(timeoutMs / 1000),
+      status,
+    }),
+  );
 }
 
 export interface ChatTurnResult {
@@ -735,7 +770,7 @@ export interface AgentProfileInput {
 export async function createAgentProfile(
   connection: LiveConnection,
   input: AgentProfileInput,
-): Promise<any> {
+): Promise<{ agent_profile_id?: string }> {
   return pcs(connection, "/api/v1/platform/agent-profiles", {
     method: "POST",
     body: {
@@ -765,7 +800,7 @@ export async function updateAgentProfile(
   connection: LiveConnection,
   profileId: string,
   input: Partial<Omit<AgentProfileInput, "role_id">> & { enabled?: boolean },
-): Promise<any> {
+): Promise<{ agent_profile_id?: string }> {
   return pcs(connection, `/api/v1/platform/agent-profiles/${encodeURIComponent(profileId)}`, {
     method: "PATCH",
     body: input,
@@ -786,7 +821,7 @@ export interface ApiProfileInput {
 export async function createApiProfile(
   connection: LiveConnection,
   input: ApiProfileInput,
-): Promise<any> {
+): Promise<{ api_profile_id?: string }> {
   return pcs(connection, "/api/v1/platform/api-profiles", {
     method: "POST",
     body: {
@@ -806,7 +841,7 @@ export async function updateApiProfile(
   connection: LiveConnection,
   profileId: string,
   input: Partial<ApiProfileInput> & { enabled?: boolean },
-): Promise<any> {
+): Promise<{ api_profile_id?: string }> {
   return pcs(connection, `/api/v1/platform/api-profiles/${encodeURIComponent(profileId)}`, {
     method: "PATCH",
     body: input,
@@ -872,7 +907,21 @@ export async function fetchTaskEvents(
   connection: LiveConnection,
   taskId: string,
   schedulerDeploymentId?: string | null,
-): Promise<any[]> {
-  const out = await schedulerFor(connection, schedulerDeploymentId, `/v1/tasks/${encodeURIComponent(taskId)}/events`);
-  return out?.items ?? [];
+): Promise<TaskEvent[]> {
+  const out = await schedulerFor<TaskEventsResponse>(
+    connection,
+    schedulerDeploymentId,
+    `/v1/tasks/${encodeURIComponent(taskId)}/events`,
+  );
+  return (out?.items ?? []).map((e) => {
+    const payload =
+      e.payload !== null && typeof e.payload === "object" ? e.payload : undefined;
+    return {
+      at: e.created_at ? String(e.created_at) : "",
+      type: e.event_type ? String(e.event_type) : "",
+      message: payload && Object.keys(payload).length
+        ? JSON.stringify(payload)
+        : `${String(e.from_status ?? "-")} → ${String(e.to_status ?? "-")}`,
+    };
+  });
 }

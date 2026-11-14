@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>示例工程架构 · 侧载接入 · OSACP</title>
+<style>
+  :root{
+    color-scheme: light;
+    --page:#f9f9f7;
+    --surface:#fcfcfb;
+    --ink:#0b0b0b;
+    --ink2:#52514e;
+    --muted:#898781;
+    --grid:#e1e0d9;
+    --border:rgba(11,11,11,.10);
+    --c-control:#6250d6;
+    --c-dev:#1baf7a;
+    --c-after:#d55181;
+    --c-res:#0e7c86;
+    --c-support:#2a78d6;
+    --c-people:#6b6a64;
+    --edge:#6b6a64;
+    --edge-data:#2a78d6;
+    --edge-cmd:#6250d6;
+    --edge-after:#c2417a;
+    --edge-net:#1baf7a;
+    --edge-res:#0e7c86;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:#0d0d0d;
+      --surface:#1a1a19;
+      --ink:#f0efec;
+      --ink2:#c3c2b7;
+      --muted:#898781;
+      --grid:#2c2c2a;
+      --border:rgba(255,255,255,.10);
+      --c-control:#9085e9;
+      --c-dev:#199e70;
+      --c-after:#d55181;
+      --c-res:#57c3cf;
+      --c-support:#3987e5;
+      --c-people:#a3a29a;
+      --edge:#8f8e86;
+      --edge-data:#3987e5;
+      --edge-cmd:#9085e9;
+      --edge-after:#e0699a;
+      --edge-net:#25c08a;
+      --edge-res:#57c3cf;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0d0d;
+    --surface:#1a1a19;
+    --ink:#f0efec;
+    --ink2:#c3c2b7;
+    --muted:#898781;
+    --grid:#2c2c2a;
+    --border:rgba(255,255,255,.10);
+    --c-control:#9085e9;
+    --c-dev:#199e70;
+    --c-after:#d55181;
+    --c-res:#57c3cf;
+    --c-support:#3987e5;
+    --c-people:#a3a29a;
+    --edge:#8f8e86;
+    --edge-data:#3987e5;
+    --edge-cmd:#9085e9;
+    --edge-after:#e0699a;
+    --edge-net:#25c08a;
+    --edge-res:#57c3cf;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--page);
+    color:var(--ink);
+    font-family:system-ui,-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:1500px;margin:0 auto;padding:36px 32px 56px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:22px}
+  .eyebrow{margin:0 0 6px;font-size:12.5px;letter-spacing:.08em;color:var(--muted)}
+  h1{margin:0;font-size:27px;line-height:1.2;letter-spacing:-.015em;font-weight:650}
+  .lede{margin:10px 0 0;max-width:760px;font-size:14.5px;line-height:1.75;color:var(--ink2)}
+  .head-actions{display:flex;align-items:center;gap:10px;flex:none}
+  .lang{
+    color:var(--ink2);text-decoration:none;font-size:13px;padding:8px 14px;
+    border:1px solid var(--border);border-radius:999px;background:var(--surface);
+  }
+  .lang:hover{color:var(--ink);border-color:var(--muted)}
+  #theme{
+    flex:none;border:1px solid var(--border);background:var(--surface);color:var(--ink2);
+    border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer;
+  }
+  #theme:hover{color:var(--ink);border-color:var(--muted)}
+  .canvas{
+    background:var(--surface);border:1px solid var(--border);border-radius:18px;
+    padding:6px;overflow:hidden;
+  }
+  svg{display:block;width:100%;height:auto}
+  svg text{font-family:inherit}
+  .z-title{font-size:15.5px;font-weight:650;fill:var(--ink)}
+  .z-sub{font-size:11.5px;fill:var(--muted)}
+  .box-title{font-size:14.5px;font-weight:650;fill:var(--ink)}
+  .box-sub{font-size:11.5px;fill:var(--muted);font-variant-numeric:tabular-nums}
+  .li{font-size:11.5px;fill:var(--ink2)}
+  .tag-text{font-size:11px;fill:var(--ink2)}
+  .label{font-size:11.5px;fill:var(--ink2);paint-order:stroke;stroke:var(--surface);stroke-width:4.5;stroke-linejoin:round}
+  .label-data{fill:var(--edge-data)}
+  .label-cmd{fill:var(--edge-cmd);font-weight:600}
+  .label-after{fill:var(--edge-after);font-weight:600}
+  .label-net{fill:var(--edge-net);font-weight:600}
+  .label-res{fill:var(--edge-res);font-weight:600}
+  .label-muted{fill:var(--muted)}
+  .tile-t{font-size:12.5px;font-weight:600;fill:var(--ink)}
+  .tile-s{font-size:11px;fill:var(--muted)}
+  .people-cap{font-size:11.5px;fill:var(--muted)}
+
+  .legend{
+    display:flex;flex-wrap:wrap;gap:10px 26px;align-items:center;
+    margin:18px 2px 0;padding:14px 16px;border:1px solid var(--border);border-radius:12px;
+    background:var(--surface);font-size:12.5px;color:var(--ink2)
+  }
+  .legend b{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.04em;margin-right:2px}
+  .lg{display:inline-flex;align-items:center;gap:8px}
+  .sw{width:34px;height:0;border-top:2px solid var(--edge);flex:none}
+  .sw.thick{border-top:4px solid var(--edge-cmd)}
+  .sw.dash{border-top:2px dashed var(--edge-data)}
+  .sw.net{border-top:2px dashed var(--edge-net)}
+  .sw.res{border-top:2px dashed var(--edge-res)}
+  .box-sw{width:26px;height:14px;border:1.5px dashed color-mix(in srgb, var(--c-after) 55%, var(--surface));border-radius:4px;flex:none}
+
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 2px 0;font-size:12.5px;color:var(--ink2)}
+  .flow .step{padding:5px 11px;border:1px solid var(--border);border-radius:999px;background:var(--surface)}
+  .flow .arr{color:var(--muted)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 18px 16px}
+  .card h2{margin:0 0 8px;font-size:14px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .card h2::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--dot)}
+  .card p{margin:0;font-size:12.5px;line-height:1.8;color:var(--ink2)}
+  .card code{font-size:11.5px;padding:1px 5px;border-radius:4px;background:color-mix(in srgb, var(--ink) 6%, transparent)}
+  .c-dev{--dot:var(--c-dev)} .c-cmd{--dot:var(--c-control)} .c-after{--dot:var(--c-after)} .c-res{--dot:var(--c-res)}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  @media (max-width:900px){
+    .page{padding:24px 16px 40px}
+    .cards{grid-template-columns:1fr}
+    h1{font-size:22px}
+    header{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div>
+      <p class="eyebrow">架构示例 · 侧载接入 · v1.0 · 2026-11-14</p>
+      <h1>示例工程架构 · 侧载接入</h1>
+      <p class="lede">平台内建的角色只有两个：<b>调度机</b>（控制面）和<b>开发机</b>（执行面）。开发人员、测试人员、售后人员、CI 任务、脚本和外部系统都不是容器、也不注册为实例——各自持有一枚<b>侧载令牌</b>（<code>sdl_…</code>），调用路径为<b>设备 → 控制面 → 该主机的根调度机 → 开发机</b>。设备既不知道调度机地址，也不持有实例凭据。主机侧只保留通用能力——工作区、Agent 运行时、控制台命令和资源准入——不展示具体项目操作。</p>
+    </div>
+    <div class="head-actions">
+      <a class="lang" href="example-project-architecture.html" hreflang="en">English</a>
+      <button id="theme" type="button">深色模式</button>
+    </div>
+  </header>
+
+  <div class="canvas">
+    <svg viewBox="0 0 1480 1470" role="img" aria-label="示例工程架构 · 侧载接入">
+      <defs>
+        <marker id="ar-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/>
+        </marker>
+        <marker id="ar-cmd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-cmd)"/>
+        </marker>
+        <marker id="ar-data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-data)"/>
+        </marker>
+        <marker id="ar-after" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-after)"/>
+        </marker>
+        <marker id="ar-net" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-net)"/>
+        </marker>
+        <marker id="ar-res" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-res)"/>
+        </marker>
+      </defs>
+
+      <!-- ============ 接入侧 ============ -->
+      <g>
+        <text x="735" y="22" text-anchor="middle" class="people-cap">接入侧：一台设备 + 一枚侧载令牌 —— 无容器、不注册实例</text>
+
+        <g>
+          <rect x="280" y="38" width="220" height="50" rx="18" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="296" cy="57" r="5" fill="var(--c-people)"/>
+          <text x="310" y="61" class="tile-t">开发人员</text>
+          <text x="298" y="79" class="tile-s">sdl_… · tasks:write · console:run</text>
+        </g>
+        <g>
+          <rect x="510" y="38" width="220" height="50" rx="18" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="526" cy="57" r="5" fill="var(--c-people)"/>
+          <text x="540" y="61" class="tile-t">测试人员</text>
+          <text x="528" y="79" class="tile-s">sdl_… · tasks:write · tasks:read</text>
+        </g>
+        <g>
+          <rect x="740" y="38" width="220" height="50" rx="18" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="756" cy="57" r="5" fill="var(--c-people)"/>
+          <text x="770" y="61" class="tile-t">CI / 其他系统</text>
+          <text x="758" y="79" class="tile-s">sdl_… · 按需调用 API</text>
+        </g>
+        <g>
+          <rect x="970" y="38" width="220" height="50" rx="18" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="986" cy="57" r="5" fill="var(--c-people)"/>
+          <text x="1000" y="61" class="tile-t">售后 / 客户</text>
+          <text x="988" y="79" class="tile-s">sdl_… · tasks:read/write</text>
+        </g>
+
+        <line x1="735" y1="88" x2="735" y2="126" stroke="var(--edge-cmd)" stroke-width="4"
+              marker-start="url(#ar-cmd)" marker-end="url(#ar-cmd)" vector-effect="non-scaling-stroke"/>
+        <text x="749" y="112" class="label label-cmd">HTTPS · Authorization: Bearer sdl_…</text>
+      </g>
+
+      <!-- ============ 调度机 / 控制面 ============ -->
+      <g>
+        <rect x="360" y="132" width="720" height="190" rx="16"
+              style="fill:color-mix(in srgb, var(--c-control) 4%, var(--surface));stroke:color-mix(in srgb, var(--c-control) 38%, var(--surface))" stroke-width="1.5"/>
+        <text x="384" y="158" class="z-title">任务调度机（控制面）</text>
+        <text x="1056" y="158" text-anchor="end" class="z-sub">内建 · 唯一状态权威 · 令牌到此为止</text>
+
+        <g>
+          <rect x="384" y="168" width="204" height="68" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="398" y="190" class="tile-t">侧载入口（PCS）</text>
+          <text x="398" y="208" class="tile-s">校验 Bearer sdl_ · scope</text>
+          <text x="398" y="224" class="tile-s">解析该主机的根调度机</text>
+        </g>
+        <g>
+          <rect x="606" y="168" width="204" height="68" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="620" y="190" class="tile-t">任务 API</text>
+          <text x="620" y="208" class="tile-s">POST /api/v1/tasks</text>
+          <text x="620" y="224" class="tile-s">状态 + 幂等键</text>
+        </g>
+        <g>
+          <rect x="828" y="168" width="204" height="68" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="842" y="190" class="tile-t">状态机</text>
+          <text x="842" y="208" class="tile-s">QUEUED → ASSIGNED → RUNNING</text>
+          <text x="842" y="224" class="tile-s">trace_id 全链路</text>
+        </g>
+        <g>
+          <rect x="384" y="244" width="204" height="68" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="398" y="266" class="tile-t">队列与派发</text>
+          <text x="398" y="284" class="tile-s">Pull + 心跳 · 能力匹配</text>
+          <text x="398" y="300" class="tile-s">租约 · 超时 · 重试</text>
+        </g>
+        <g>
+          <rect x="606" y="244" width="204" height="68" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="620" y="266" class="tile-t">文件通道</text>
+          <text x="620" y="284" class="tile-s">附件进 · 产物出</text>
+          <text x="620" y="300" class="tile-s">SHA-256 · 逐字节一致</text>
+        </g>
+        <g>
+          <rect x="828" y="244" width="204" height="68" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="842" y="266" class="tile-t">PostgreSQL · 审计</text>
+          <text x="842" y="284" class="tile-s">任务状态的唯一来源</text>
+          <text x="842" y="300" class="tile-s">令牌创建 / 删除留痕</text>
+        </g>
+      </g>
+
+      <!-- ============ 派发总线 ============ -->
+      <g>
+        <path d="M720 322 V352 M170 352 H674" fill="none" stroke="var(--edge)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+        <line x1="170" y1="352" x2="170" y2="432" stroke="var(--edge)" stroke-width="1.6" marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <line x1="422" y1="352" x2="422" y2="432" stroke="var(--edge)" stroke-width="1.6" marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <line x1="674" y1="352" x2="674" y2="432" stroke="var(--edge)" stroke-width="1.6" marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <text x="482" y="344" class="label label-muted">任务派发 · 心跳（Pull）</text>
+      </g>
+
+      <!-- ============ 执行面 ============ -->
+      <g>
+        <rect x="30" y="396" width="1050" height="396" rx="16"
+              style="fill:color-mix(in srgb, var(--ink) 2.5%, var(--surface));stroke:var(--border)" stroke-width="1.2"/>
+        <text x="54" y="422" class="z-title">执行面 · 内建开发机</text>
+        <text x="64" y="770" class="z-sub">每台主机暴露相同的通用能力 —— 不展示具体项目操作。</text>
+
+        <!-- 开发机 01 -->
+        <g>
+          <rect x="54" y="440" width="232" height="172" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-dev) 45%, var(--surface))" stroke-width="1.6"/>
+          <circle cx="76" cy="462" r="4.5" fill="var(--c-dev)"/>
+          <text x="90" y="468" class="box-title">开发机 01</text>
+          <text x="72" y="490" class="box-sub">host-runtime · 工作区</text>
+          <line x1="72" y1="502" x2="268" y2="502" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+          <text x="72" y="524" class="li">· 独立任务工作区</text>
+          <text x="72" y="542" class="li">· Agent Profile / Shell</text>
+          <text x="72" y="560" class="li">· 控制台命令（按 scope）</text>
+          <rect x="72" y="576" width="196" height="22" rx="6" style="fill:color-mix(in srgb, var(--c-dev) 10%, var(--surface))"/>
+          <text x="82" y="591" class="tag-text">内建 · 通用主机</text>
+        </g>
+
+        <!-- 开发机 02 -->
+        <g>
+          <rect x="306" y="440" width="232" height="172" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-dev) 45%, var(--surface))" stroke-width="1.6"/>
+          <circle cx="328" cy="462" r="4.5" fill="var(--c-dev)"/>
+          <text x="342" y="468" class="box-title">开发机 02</text>
+          <text x="324" y="490" class="box-sub">host-runtime · 工作区</text>
+          <line x1="324" y1="502" x2="520" y2="502" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+          <text x="324" y="524" class="li">· 独立任务工作区</text>
+          <text x="324" y="542" class="li">· Agent Profile / Shell</text>
+          <text x="324" y="560" class="li">· 控制台命令（按 scope）</text>
+          <rect x="324" y="576" width="196" height="22" rx="6" style="fill:color-mix(in srgb, var(--c-dev) 10%, var(--surface))"/>
+          <text x="334" y="591" class="tag-text">内建 · 通用主机</text>
+        </g>
+
+        <!-- 开发机 03 -->
+        <g>
+          <rect x="558" y="440" width="232" height="172" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-dev) 45%, var(--surface))" stroke-width="1.6"/>
+          <circle cx="580" cy="462" r="4.5" fill="var(--c-dev)"/>
+          <text x="594" y="468" class="box-title">开发机 03</text>
+          <text x="576" y="490" class="box-sub">host-runtime · 工作区</text>
+          <line x1="576" y1="502" x2="772" y2="502" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+          <text x="576" y="524" class="li">· 独立任务工作区</text>
+          <text x="576" y="542" class="li">· Agent Profile / Shell</text>
+          <text x="576" y="560" class="li">· 控制台命令（按 scope）</text>
+          <rect x="576" y="576" width="196" height="22" rx="6" style="fill:color-mix(in srgb, var(--c-dev) 10%, var(--surface))"/>
+          <text x="586" y="591" class="tag-text">内建 · 通用主机</text>
+        </g>
+
+        <!-- 横向扩容 -->
+        <g>
+          <rect x="810" y="440" width="246" height="172" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-dev) 60%, var(--surface))" stroke-width="2"/>
+          <circle cx="832" cy="462" r="4.5" fill="var(--c-dev)"/>
+          <text x="846" y="468" class="box-title">横向扩容 · ×N</text>
+          <text x="828" y="490" class="box-sub">增加开发机</text>
+          <line x1="828" y1="502" x2="1038" y2="502" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+          <text x="828" y="524" class="li">· 同一任务 / 租约路径</text>
+          <text x="828" y="542" class="li">· 同一准入规则</text>
+          <text x="828" y="560" class="li">· 同一产物通道</text>
+          <rect x="828" y="576" width="210" height="22" rx="6" style="fill:color-mix(in srgb, var(--c-dev) 12%, var(--surface))"/>
+          <text x="838" y="591" class="tag-text">唯一的内建执行角色</text>
+        </g>
+
+        <!-- 文件通道说明 -->
+        <g>
+          <line x1="170" y1="614" x2="170" y2="632" stroke="var(--edge-data)" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ar-data)" vector-effect="non-scaling-stroke"/>
+          <line x1="422" y1="614" x2="422" y2="632" stroke="var(--edge-data)" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ar-data)" vector-effect="non-scaling-stroke"/>
+          <line x1="674" y1="614" x2="674" y2="632" stroke="var(--edge-data)" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ar-data)" vector-effect="non-scaling-stroke"/>
+          <line x1="933" y1="614" x2="933" y2="632" stroke="var(--edge-data)" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ar-data)" vector-effect="non-scaling-stroke"/>
+          <rect x="54" y="636" width="1002" height="118" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--edge-data) 50%, var(--surface))" stroke-width="1.5" stroke-dasharray="6 4"/>
+          <text x="78" y="662" class="box-title">文件通道 · 附件与产物</text>
+          <text x="78" y="690" class="li">· 开发机把结果写在自己的工作区</text>
+          <text x="78" y="712" class="li">· 调度机将其收集进产物通道</text>
+          <text x="590" y="690" class="li">· 客户端凭 tasks:read 下载 · 不直连主机</text>
+          <text x="590" y="712" class="li">· 校验 SHA-256 · 逐字节返回</text>
+          <text x="78" y="738" class="li" style="fill:var(--muted)">附件反向流动：先上传到任务，再由开发机读取。</text>
+        </g>
+      </g>
+
+      <!-- ============ 侧载系统 ============ -->
+      <g>
+        <rect x="30" y="820" width="1050" height="196" rx="16"
+              style="fill:color-mix(in srgb, var(--c-after) 3.5%, var(--surface));stroke:color-mix(in srgb, var(--c-after) 42%, var(--surface))" stroke-width="1.4"/>
+        <text x="54" y="846" class="z-title">侧载系统 · 非内建</text>
+        <text x="1056" y="846" text-anchor="end" class="z-sub">同一任务 API · 同一 scope · 同一审计 —— 无容器、无心跳、不占租约</text>
+
+        <g>
+          <rect x="54" y="866" width="232" height="116" rx="12" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="72" y="890" class="box-title">CI / 构建任务</text>
+          <text x="72" y="910" class="box-sub">sdl_… · tasks:write</text>
+          <text x="72" y="934" class="li">· 提交 / 取消任务</text>
+          <text x="72" y="952" class="li">· 读取构建机与队列</text>
+          <text x="72" y="970" class="li">· 收集产物</text>
+        </g>
+        <g>
+          <rect x="306" y="866" width="232" height="116" rx="12" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="324" y="890" class="box-title">测试自动化</text>
+          <text x="324" y="910" class="box-sub">sdl_… · tasks:write</text>
+          <text x="324" y="934" class="li">· 提交测试任务</text>
+          <text x="324" y="952" class="li">· 轮询状态</text>
+          <text x="324" y="970" class="li">· 下载产物</text>
+        </g>
+        <g>
+          <rect x="558" y="866" width="232" height="116" rx="12" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="576" y="890" class="box-title">内部门户 / 工单</text>
+          <text x="576" y="910" class="box-sub">sdl_… · tasks:read/write</text>
+          <text x="576" y="934" class="li">· 创建任务</text>
+          <text x="576" y="952" class="li">· 展示队列状态</text>
+          <text x="576" y="970" class="li">· 关联产物</text>
+        </g>
+        <g>
+          <rect x="810" y="866" width="246" height="116" rx="12" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="828" y="890" class="box-title">脚本 / CLI</text>
+          <text x="828" y="910" class="box-sub">sdl_… · 按需授权</text>
+          <text x="828" y="934" class="li">· 一次性任务</text>
+          <text x="828" y="952" class="li">· 自动化</text>
+          <text x="828" y="970" class="li">· 同一 HTTPS 路径</text>
+        </g>
+
+        <text x="54" y="1006" class="li" style="fill:var(--muted)">边界：无容器 · 无实例记录 · 无心跳 · 无租约 · 令牌以哈希保存 · 未知 scope 被拒绝</text>
+      </g>
+
+      <!-- ============ 侧载客户端视角 ============ -->
+      <g>
+        <rect x="1100" y="396" width="350" height="244" rx="16"
+              style="fill:color-mix(in srgb, var(--c-after) 4%, var(--surface));stroke:color-mix(in srgb, var(--c-after) 55%, var(--surface))"
+              stroke-width="1.5" stroke-dasharray="7 5"/>
+        <text x="1120" y="422" class="z-title">侧载客户端视角</text>
+
+        <g>
+          <rect x="1118" y="436" width="314" height="184" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-after) 50%, var(--surface))" stroke-width="1.8"/>
+          <circle cx="1140" cy="460" r="4.5" fill="var(--c-after)"/>
+          <text x="1154" y="466" class="box-title">一枚令牌，一台主机</text>
+          <text x="1136" y="486" class="box-sub">HTTPS · 在控制面校验 scope</text>
+          <line x1="1136" y1="496" x2="1414" y2="496" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+          <text x="1136" y="514" class="li">· POST /api/v1/tasks</text>
+          <text x="1136" y="531" class="li">· GET /api/v1/tasks/:id</text>
+          <text x="1136" y="548" class="li">· POST .../attachments</text>
+          <text x="1136" y="565" class="li">· GET .../artifacts</text>
+          <rect x="1136" y="580" width="278" height="22" rx="6" style="fill:color-mix(in srgb, var(--c-after) 12%, var(--surface))"/>
+          <text x="1146" y="595" class="tag-text">始终不知道调度机地址</text>
+        </g>
+      </g>
+
+      <!-- 客户 / 第三方 -->
+      <g>
+        <rect x="1150" y="664" width="250" height="64" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+        <text x="1170" y="688" class="tile-t">客户 / 第三方</text>
+        <text x="1170" y="706" class="tile-s">curl · 脚本 · 按需令牌</text>
+        <line x1="1275" y1="664" x2="1275" y2="643" stroke="var(--edge-after)" stroke-width="1.8"
+              stroke-dasharray="5 4" marker-end="url(#ar-after)" vector-effect="non-scaling-stroke"/>
+        <text x="1285" y="658" class="box-sub">同一条侧载路径</text>
+      </g>
+
+      <!-- 主机网络策略 -->
+      <g>
+        <line x1="1080" y1="780" x2="1102" y2="780" stroke="var(--edge-net)" stroke-width="2.2"
+              stroke-dasharray="6 4" marker-end="url(#ar-net)" vector-effect="non-scaling-stroke"/>
+        <text x="1120" y="740" class="label label-net">主机网络策略 · 仅出站</text>
+        <rect x="1110" y="748" width="340" height="64" rx="10" fill="var(--surface)"
+              style="stroke:color-mix(in srgb, var(--edge-net) 55%, var(--surface))" stroke-width="1.6" stroke-dasharray="6 4"/>
+        <text x="1126" y="772" class="tile-t">开发机 · 不开放入站</text>
+        <text x="1126" y="792" class="tile-s">访问依赖 · 不持有实例凭据</text>
+      </g>
+
+      <!-- ============ 宿主机资源与保护 ============ -->
+      <g>
+        <rect x="30" y="1040" width="1050" height="160" rx="16"
+              style="fill:color-mix(in srgb, var(--c-res) 3.5%, var(--surface));stroke:color-mix(in srgb, var(--c-res) 38%, var(--surface))" stroke-width="1.4"/>
+        <text x="54" y="1068" class="z-title">宿主机资源与保护</text>
+        <text x="1056" y="1068" text-anchor="end" class="z-sub">先准入再启动 · 资源状态独立于任务状态 · 单台宿主机</text>
+
+        <g>
+          <rect x="54" y="1088" width="300" height="96" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-res) 50%, var(--surface))" stroke-width="1.6"/>
+          <circle cx="76" cy="1110" r="4.5" fill="var(--c-res)"/>
+          <text x="90" y="1116" class="box-title">Host Resource Monitor</text>
+          <text x="72" y="1136" class="box-sub">内建 · 短周期采样</text>
+          <text x="72" y="1156" class="li">· CPU / 内存 / 磁盘 / I/O</text>
+          <text x="72" y="1174" class="li">· 容器健康 · PID</text>
+        </g>
+
+        <g>
+          <rect x="380" y="1088" width="330" height="96" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-res) 60%, var(--surface))" stroke-width="2"/>
+          <circle cx="402" cy="1110" r="4.5" fill="var(--c-res)"/>
+          <text x="416" y="1116" class="box-title">资源准入控制器</text>
+          <text x="398" y="1136" class="box-sub">宿主 / 控制面 / 存储 / 余量</text>
+          <text x="398" y="1156" class="li">· 原子判定：预算 + 并发</text>
+          <text x="398" y="1174" class="li">· 不足 → QUEUED，不起容器</text>
+        </g>
+
+        <g>
+          <rect x="736" y="1088" width="318" height="96" rx="12" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-res) 50%, var(--surface))" stroke-width="1.6" stroke-dasharray="6 4"/>
+          <circle cx="758" cy="1110" r="4.5" fill="var(--c-res)"/>
+          <text x="772" y="1116" class="box-title">保护看门狗</text>
+          <text x="754" y="1136" class="box-sub">host-watchdog.service · 独立进程</text>
+          <text x="754" y="1156" class="li">· 心跳丢失 → PROTECTING</text>
+          <text x="754" y="1174" class="li">· 关闭准入 · 告警</text>
+        </g>
+
+        <line x1="356" y1="1136" x2="376" y2="1136" stroke="var(--edge-res)" stroke-width="2"
+              marker-end="url(#ar-res)" vector-effect="non-scaling-stroke"/>
+        <line x1="734" y1="1136" x2="714" y2="1136" stroke="var(--edge-res)" stroke-width="2"
+              stroke-dasharray="5 4" marker-end="url(#ar-res)" vector-effect="non-scaling-stroke"/>
+
+        <path d="M545 1086 V1028 H1092 V778 H1084" fill="none" stroke="var(--edge-res)" stroke-width="2"
+              stroke-dasharray="6 4" marker-end="url(#ar-res)" vector-effect="non-scaling-stroke"/>
+        <text x="1100" y="932" class="label label-res">claim 前资源准入</text>
+
+        <g>
+          <rect x="1100" y="1040" width="350" height="160" rx="14" fill="var(--surface)"
+                style="stroke:color-mix(in srgb, var(--c-res) 45%, var(--surface))" stroke-width="1.5"/>
+          <text x="1120" y="1068" class="box-title">过载分级</text>
+          <text x="1430" y="1068" text-anchor="end" class="box-sub">独立于任务状态</text>
+          <text x="1120" y="1094" class="li">NORMAL</text>
+          <text x="1272" y="1094" class="li">正常调度</text>
+          <line x1="1120" y1="1102" x2="1430" y2="1102" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+          <text x="1120" y="1120" class="li">WARNING</text>
+          <text x="1272" y="1120" class="li">降并发 · 轻量优先</text>
+          <text x="1120" y="1142" class="li">THROTTLED</text>
+          <text x="1272" y="1142" class="li">暂停高资源任务</text>
+          <text x="1120" y="1164" class="li">PROTECTING</text>
+          <text x="1272" y="1164" class="li">关闭准入 · 保护 PG</text>
+          <text x="1120" y="1186" class="li">RECOVERING</text>
+          <text x="1272" y="1186" class="li">观察后渐进恢复</text>
+        </g>
+      </g>
+
+      <!-- ============ 支撑面 ============ -->
+      <g>
+        <rect x="30" y="1224" width="1050" height="208" rx="16"
+              style="fill:color-mix(in srgb, var(--c-support) 3.5%, var(--surface));stroke:color-mix(in srgb, var(--c-support) 30%, var(--surface))" stroke-width="1.3"/>
+        <text x="54" y="1250" class="z-title">支撑面（内网）</text>
+        <text x="1056" y="1250" text-anchor="end" class="z-sub">仅调度机 / 开发机接入 · 侧载客户端不接入 · 全部内网</text>
+
+        <g>
+          <rect x="169" y="1266" width="236" height="58" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="185" y="1290" class="tile-t">产物存储</text>
+          <text x="185" y="1308" class="tile-s">报告 / 附件 · SHA-256</text>
+        </g>
+        <g>
+          <rect x="437" y="1266" width="236" height="58" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="453" y="1290" class="tile-t">PostgreSQL</text>
+          <text x="453" y="1308" class="tile-s">任务状态权威 · 审计</text>
+        </g>
+        <g>
+          <rect x="705" y="1266" width="236" height="58" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="721" y="1290" class="tile-t">Redis</text>
+          <text x="721" y="1308" class="tile-s">队列提示 · 可重建</text>
+        </g>
+        <g>
+          <rect x="169" y="1334" width="236" height="58" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="185" y="1358" class="tile-t">LLM 网关</text>
+          <text x="185" y="1376" class="tile-s">模型映射 · 配额</text>
+        </g>
+        <g>
+          <rect x="437" y="1334" width="236" height="58" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="453" y="1358" class="tile-t">Secret Store</text>
+          <text x="453" y="1376" class="tile-s">引用 · 不存明文</text>
+        </g>
+        <g>
+          <rect x="705" y="1334" width="236" height="58" rx="10" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="721" y="1358" class="tile-t">监控</text>
+          <text x="721" y="1376" class="tile-s">指标 · 日志 · 看板</text>
+        </g>
+      </g>
+
+    </svg>
+  </div>
+
+  <div class="legend">
+    <b>图例</b>
+    <span class="lg"><span class="sw thick"></span>侧载接入（设备 → 控制面）</span>
+    <span class="lg"><span class="sw"></span>任务派发 / 心跳（Pull）</span>
+    <span class="lg"><span class="sw dash"></span>文件通道（附件 / 产物）</span>
+    <span class="lg"><span class="sw net"></span>主机网络策略（仅出站）</span>
+    <span class="lg"><span class="sw res"></span>资源准入 / 看门狗</span>
+    <span class="lg"><span class="box-sw"></span>侧载边界（非内建）</span>
+  </div>
+
+  <div class="flow">
+    <span class="step">① 持有侧载令牌</span><span class="arr">→</span>
+    <span class="step">② 提交任务</span><span class="arr">→</span>
+    <span class="step">③ 校验 scope</span><span class="arr">→</span>
+    <span class="step">④ 调度机排队 / 派发</span><span class="arr">→</span>
+    <span class="step">⑤ 开发机执行</span><span class="arr">→</span>
+    <span class="step">⑥ 文件通道收集</span><span class="arr">→</span>
+    <span class="step">⑦ 客户端下载产物</span>
+  </div>
+
+  <section class="cards">
+    <article class="card c-cmd">
+      <h2>只有两个内建角色</h2>
+      <p>平台只有调度机和至少一台开发机。开发人员、测试人员、售后人员、CI 任务、脚本和外部系统都通过侧载令牌进入，因此不需要为它们新增角色、容器或派发规则。</p>
+    </article>
+    <article class="card c-cmd">
+      <h2>固定的调用链</h2>
+      <p>设备只调用控制面；控制面校验令牌、解析主机及其根调度机，再转发请求。设备看不到调度机地址，也不持有实例凭据——与后台管理端走的是同一条路径。</p>
+    </article>
+    <article class="card c-after">
+      <h2>侧载不是 Agent</h2>
+      <p>它没有容器、不注册、不发心跳、不占租约。由于复用常规的任务 / 租约 / fencing 路径，它无法绕过调度、准入和审计。</p>
+    </article>
+    <article class="card c-dev">
+      <h2>主机保持通用并可横向扩容</h2>
+      <p>每台开发机暴露相同的通用能力：独立工作区、绑定的 Agent Profile 或 Shell、scope 内的控制台命令，以及启动前的资源准入。扩容意味着增加主机，而不是定义新角色或项目专属操作。</p>
+    </article>
+    <article class="card c-after">
+      <h2>权限天生最小</h2>
+      <p>scope 是封闭集合：<code>tasks:read</code>、<code>tasks:write</code>、<code>builders:read</code>、<code>queue:read</code>、<code>console:run</code>。其中 <code>console:run</code> 需在 <code>tasks:write</code> 之上单独授予；未知 scope 会被拒绝而不是忽略。</p>
+    </article>
+    <article class="card c-res">
+      <h2>文件双向流动</h2>
+      <p>输入以附件上传，落到 <code>&lt;workspace&gt;/attachments/</code>。输出通过调度机的产物通道收集：任意格式，校验 SHA-256，逐字节返回，而不是塞进标准输出。</p>
+    </article>
+  </section>
+
+  <footer>
+    <span>通用架构示例 · 依据 docs/sideload.md · 不含具体项目组件</span>
+    <span>静态 SVG · 可缩放 · 支持深色模式</span>
+  </footer>
+</div>
+
+<script>
+  (function(){
+    var root = document.documentElement;
+    var btn = document.getElementById('theme');
+    function effective(){
+      return root.getAttribute('data-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    }
+    function sync(){
+      btn.textContent = effective() === 'dark' ? '浅色模式' : '深色模式';
+    }
+    btn.addEventListener('click', function(){
+      root.setAttribute('data-theme', effective() === 'dark' ? 'light' : 'dark');
+      sync();
+    });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', sync);
+    sync();
+  })();
+</script>
+</body>
+</html>

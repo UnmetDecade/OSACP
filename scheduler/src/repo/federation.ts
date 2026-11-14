@@ -327,7 +327,7 @@ export async function capabilitySnapshot(nodeId: string): Promise<CapabilitySnap
   );
   const localPressure = worstPressure(localPools.map((p) => p.pressure_state));
 
-  const children = await q(
+  const children = await q<Record<string, unknown>>(
     `SELECT node_id, host_id, role, local_score, subtree_score, builder_count, child_count,
             url, max_builder_score, idle_builder_count, instances,
             mode, max_builder_ceiling, max_builder_live, guaranteed_score,
@@ -339,40 +339,42 @@ export async function capabilitySnapshot(nodeId: string): Promise<CapabilitySnap
       ORDER BY node_id`,
     [nodeId, STALE_CHILD_SECONDS],
   );
-  const childScore = children.reduce((sum: number, c: any) => sum + Number(c.subtree_score ?? 0), 0);
+  const childScore = children.reduce((sum: number, c) => sum + Number(c.subtree_score ?? 0), 0);
   // Capacity metrics must aggregate up the hierarchy too, or an intermediate node reports only its own local builders,
   // and the root above will think the whole subtree has no machine that can handle difficulty D.
-  const childBuilders = children.reduce((sum: number, c: any) => sum + Number(c.builder_count ?? 0), 0);
+  const childBuilders = children.reduce((sum: number, c) => sum + Number(c.builder_count ?? 0), 0);
   const childIdle = children.reduce(
-    (sum: number, c: any) => sum + Number(c.idle_builder_count ?? 0),
+    (sum: number, c) => sum + Number(c.idle_builder_count ?? 0),
     0,
   );
   const childMax = children.reduce(
-    (max: number, c: any) => Math.max(max, Number(c.max_builder_score ?? 0)),
+    (max: number, c) => Math.max(max, Number(c.max_builder_score ?? 0)),
     0,
   );
   const childCeiling = children.reduce(
-    (max: number, c: any) => Math.max(max, Number(c.max_builder_ceiling ?? c.max_builder_score ?? 0)),
+    (max: number, c) => Math.max(max, Number(c.max_builder_ceiling ?? c.max_builder_score ?? 0)),
     0,
   );
   const childLive = children.reduce(
-    (max: number, c: any) => Math.max(max, Number(c.max_builder_live ?? c.max_builder_score ?? 0)),
+    (max: number, c) => Math.max(max, Number(c.max_builder_live ?? c.max_builder_score ?? 0)),
     0,
   );
   const childGuaranteed = children.reduce(
-    (sum: number, c: any) => sum + Number(c.guaranteed_score ?? 0),
+    (sum: number, c) => sum + Number(c.guaranteed_score ?? 0),
     0,
   );
   const childAvailable = children.reduce(
-    (sum: number, c: any) => sum + Number(c.available_commitment_mem_bytes ?? 0),
+    (sum: number, c) => sum + Number(c.available_commitment_mem_bytes ?? 0),
     0,
   );
-  const childPressure = worstPressure(children.map((c: any) => c.pressure_state));
+  const childPressure = worstPressure(
+    children.map((c) => (typeof c.pressure_state === "string" ? c.pressure_state : null)),
+  );
   // The instance roster aggregates upward too: the root never touches grandchild builders directly, yet can still
   // route target_instance_id to the direct child that contains it.
   const instances = [...localInstances];
   const seen = new Set(instances.map((i) => i.instance_id));
-  for (const child of children as CapabilitySnapshot["children"]) {
+  for (const child of children as unknown as CapabilitySnapshot["children"]) {
     for (const item of Array.isArray(child.instances) ? child.instances : []) {
       if (!item?.instance_id || seen.has(item.instance_id)) continue;
       seen.add(item.instance_id);
@@ -403,6 +405,6 @@ export async function capabilitySnapshot(nodeId: string): Promise<CapabilitySnap
     child_count: children.length,
     subtree_score: Number(local?.score ?? 0) + childScore,
     instances,
-    children: children as CapabilitySnapshot["children"],
+    children: children as unknown as CapabilitySnapshot["children"],
   };
 }

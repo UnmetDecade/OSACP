@@ -14,6 +14,8 @@ syncing on open and refreshing every 15 seconds thereafter. There is no demo mod
 npm install
 npm run dev      # http://localhost:5173 (5178 in this repo's development setup)
 npm run build    # type check + production build
+npm test         # Vitest + Testing Library
+npm run test:coverage  # unit tests with a coverage report
 node scripts/capture-ui.mjs            # full-route screenshots (scheduler and PCS must be reachable)
 node scripts/capture-ui.mjs --dark     # dark mode
 ADMIN_TOKEN=... node scripts/capture-ui.mjs  # screenshots with a token

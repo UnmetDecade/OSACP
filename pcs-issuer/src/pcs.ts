@@ -83,7 +83,7 @@ async function call(
   method: string,
   path: string,
   body?: unknown,
-): Promise<Record<string, any>> {
+): Promise<Record<string, unknown>> {
   const token = process.env.PCS_ADMIN_TOKEN;
   if (!token) throw new Error("PCS_ADMIN_TOKEN is required (generate one with admin-token and export it)");
   const res = await fetch(`${PCS_URL}${path}`, {

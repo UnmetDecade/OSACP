@@ -4,7 +4,7 @@
 
 **在任意多台主机上运行 Claude Code、Codex、DeepSeek 或普通 Shell —— 确定性调度、递归调度机、满权限构建机。**
 
-[快速开始](#快速开始) · [架构](#架构) · [调度算法](#调度算法) · [界面](#界面) · [文档](#文档) · **[English](README.md)**
+[快速开始](#快速开始) · [架构](#架构) · [示例](#示例工程架构) · [调度算法](#调度算法) · [界面](#界面) · [文档](#文档) · **[English](README.md)**
 
 [![CI](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -41,7 +41,7 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 ## 架构
 
-<a href="docs/开源分布式AI-Agent计算与调度平台架构图.html">
+<a href="docs/Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html">
   <img src="docs/assets/architecture-zh.png" alt="平台架构 —— PCS 控制面、host-runtime、递归调度机、侧载通道与跨调度机中继" width="100%">
 </a>
 
@@ -56,7 +56,25 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 侧载不是第五个部件：它是一枚按主机限定的令牌，从 PCS 进来后落到该主机的根调度机，所以局域网设备走的是和控制台一样的任务链路。文件跟着任务走 —— 附件进、产物出。
 
-完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](docs/开源分布式AI-Agent计算与调度平台架构图.html)与 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
+完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](docs/Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html)与 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
+
+## 示例工程架构
+
+<a href="docs/example-project-architecture.zh-CN.html">
+  <img src="docs/assets/example-architecture-zh.png" alt="示例工程架构 — 内建一台调度机与 N 台开发机，开发人员、测试人员、CI 与其他系统通过侧载令牌接入" width="100%">
+</a>
+
+<p align="center"><sub>内建的只有调度机和 N 台开发机；其他参与者全部通过侧载令牌进入。点击打开可交互 HTML 版本。</sub></p>
+
+这是一套今天就能落地的形态：
+
+- **多机研发自动化** — 一台调度机 + N 台开发机；扩容靠增加开发机，而不是新增角色。
+- **Agent 驱动交付** — 开发人员和测试人员从管理端或 `curl` 提交任务；Claude Code / Codex / DeepSeek / Shell 在绑定的 Agent Profile 中执行。
+- **CI 与测试自动化** — CI 任务用一枚 `sdl_…` 令牌提交任务、轮询状态、下载产物，不需要安装 Agent。
+- **售后与客户接入** — 售后人员或客户脚本提交任务并读取结果，始终不知道调度机地址。
+- **文件双向流动** — 附件进、产物出，SHA-256 校验，逐字节返回。
+
+平台内建的只有调度机和开发机，其他参与者都是侧载客户端；因此所有人都走同一套任务、租约、fencing 和审计路径——不需要新增容器、角色或派发规则。
 
 ## 界面
 
@@ -254,10 +272,12 @@ cd scheduler   && npm install && npm run typecheck && npm test
 cd pcs-issuer  && npm install && npm run typecheck && npm test   # 需要 PostgreSQL
 cd host-runtime && npm install && npm run typecheck && npm test
 cd secret-store && npm install && npm run typecheck && npm test
-cd admin-app   && npm install && npm run build
+cd admin-app   && npm install && npm run lint && npm test && npm run build
 ```
 
 验收与压测脚本见 [scripts/README.zh-CN.md](scripts/README.zh-CN.md)。这些脚本会建库、重置数据，不要在承载真实业务的控制面上直接运行。
+
+完整的环境准备、检查项、代码规范和发版流程见 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。参与本项目即表示同意 [行为准则](CODE_OF_CONDUCT.zh-CN.md)。版本变更记录见 [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)。
 
 ## 文档
 
@@ -269,6 +289,7 @@ cd admin-app   && npm install && npm run build
 - [管理应用](docs/admin-app.zh-CN.md)
 - [Agent 控制](docs/agent-control.zh-CN.md) —— 任务暂停、自主程度、归类结果、失败分类
 - [侧载](docs/sideload.zh-CN.md) —— curl 令牌、权限、文件收发
+- [示例工程架构](docs/example-project-architecture.zh-CN.html) —— 一台调度机 + N 台开发机的实际部署形态
 - [部署](docs/deployment.zh-CN.md)
 - [English README](README.md)
 

@@ -180,6 +180,7 @@ Two **cute robots** replace the original cartoon characters. Hand-drawn SVG, no 
 - Destructive operations (deleting a builder, restarting the scheduler) require confirmation; the confirmation text is the instance name.
 - Empty states suggest the next action instead of just showing "No data".
 - Connection mode: opening the page connects to same-origin PCS and scheduler; there is no demo data; all pages refresh based on the selected host, and the bottom-left shows connection status.
+- Language: the UI follows the browser language on first visit — a `zh` variant shows Chinese, anything else shows English. A manual switch is saved in `localStorage` and wins over the browser default on later visits.
 - Responsive: ≥ 1280 three-column board; ≥ 960 two columns; single column on mobile.
 
 ---

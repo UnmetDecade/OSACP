@@ -1,5 +1,6 @@
 import { t } from "../i18n";
 import type { LiveConnection } from "./config";
+import type { JsonObject } from "./rows";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -21,12 +22,18 @@ type Req = {
   auth?: boolean;
 };
 
-async function request(
+/**
+ * Send one request and parse the JSON body.
+ *
+ * The response shape is supplied by the caller (`pcs<HostsResponse>(...)`): this layer only guarantees that the body
+ * was parsed and that HTTP errors became ApiError, so every call site still validates the fields it reads.
+ */
+async function request<T>(
   connection: LiveConnection,
   base: string,
   path: string,
   { method = "GET", body, auth = false }: Req,
-): Promise<any> {
+): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
   if (body !== undefined) headers["content-type"] = "application/json";
   if (auth && connection.adminToken) headers.authorization = `Bearer ${connection.adminToken}`;
@@ -48,7 +55,7 @@ async function request(
   }
 
   const text = await res.text();
-  let data: any = null;
+  let data: unknown = null;
   if (text) {
     try {
       data = JSON.parse(text);
@@ -56,8 +63,9 @@ async function request(
       data = text;
     }
   }
+  const bodyRecord = data && typeof data === "object" ? (data as JsonObject) : {};
   if (!res.ok) {
-    const err = data?.error ?? {};
+    const err = (bodyRecord.error ?? {}) as { message?: unknown; code?: unknown; detail?: unknown };
     // When the proxy/gateway drops, the response body may be empty or HTML; fall back to a readable status code.
     const bodyText =
       typeof data === "string" && !data.trim().startsWith("<")
@@ -69,23 +77,23 @@ async function request(
       `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
     throw new ApiError(res.status, String(err.code ?? "HTTP_ERROR"), message, err.detail);
   }
-  return data;
+  return data as T;
 }
 
-export function pcs(
+export function pcs<T = JsonObject>(
   connection: LiveConnection,
   path: string,
   req: Omit<Req, "auth"> = {},
-): Promise<any> {
-  return request(connection, connection.pcsUrl, path, { ...req, auth: true });
+): Promise<T> {
+  return request<T>(connection, connection.pcsUrl, path, { ...req, auth: true });
 }
 
-export function scheduler(
+export function scheduler<T = JsonObject>(
   connection: LiveConnection,
   path: string,
   req: Omit<Req, "auth"> = {},
-): Promise<any> {
-  return request(connection, connection.schedulerUrl, path, { ...req, auth: false });
+): Promise<T> {
+  return request<T>(connection, connection.schedulerUrl, path, { ...req, auth: false });
 }
 
 /**
@@ -95,14 +103,14 @@ export function scheduler(
  * /schedulers/:dep/proxy rather than having the browser connect to internal addresses directly. Without a deployment id,
  * it falls back to the default scheduler (compatible with legacy setups that have only a root scheduler).
  */
-export function schedulerFor(
+export function schedulerFor<T = JsonObject>(
   connection: LiveConnection,
   deploymentId: string | null | undefined,
   path: string,
   req: Omit<Req, "auth"> = {},
-): Promise<any> {
-  if (!deploymentId) return scheduler(connection, path, req);
-  return request(
+): Promise<T> {
+  if (!deploymentId) return scheduler<T>(connection, path, req);
+  return request<T>(
     connection,
     connection.pcsUrl,
     `/api/v1/platform/schedulers/${encodeURIComponent(deploymentId)}/proxy${path}`,

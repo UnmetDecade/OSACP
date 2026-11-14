@@ -147,10 +147,10 @@ async function loadAttachment(rec: Record<string, unknown>): Promise<Buffer | nu
       signal: AbortSignal.timeout(120_000),
       redirect: "error",
     });
-  } catch (err: any) {
+  } catch (err) {
     throw new TaskFailed(
       "ATTACHMENT_FETCH_FAILED",
-      `Failed to fetch attachment: ${String(err?.message ?? err)}`,
+      `Failed to fetch attachment: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   if (!res.ok) {

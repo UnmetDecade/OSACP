@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { getLiveConnection } from "../live/config";
 import { errorMessage } from "../live/client";
+import type { TerminalControlFrame } from "../live/rows";
 import { openTerminal } from "../api";
 
 /**
@@ -216,15 +217,16 @@ async function connect(session: Internal): Promise<void> {
     socket.onmessage = (event) => {
       if (!current()) return;
       if (typeof event.data === "string") {
-        let control: any = null;
+        let control: TerminalControlFrame | null = null;
         try {
-          control = JSON.parse(event.data);
+          control = JSON.parse(event.data) as TerminalControlFrame;
         } catch {
           session.term.write(event.data);
           return;
         }
         if (control?.type === "exit") {
-          session.term.write(`\r\n\x1b[90m${t("会话结束（退出码 {code}）", { code: control.code })}\x1b[0m\r\n`);
+          const code = String(control.code ?? "");
+          session.term.write(`\r\n\x1b[90m${t("会话结束（退出码 {code}）", { code })}\x1b[0m\r\n`);
           session.setStatus("closed");
         } else if (control?.type === "error") {
           const message = String(control.message ?? "");

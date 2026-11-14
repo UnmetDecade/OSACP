@@ -4,7 +4,7 @@
 
 **Run Claude Code, Codex, DeepSeek or plain shell on any number of hosts — with deterministic scheduling, recursive schedulers and full-root builders.**
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Scheduling](#scheduling-algorithm) · [Screenshots](#product-tour) · [Docs](#documentation) · **[简体中文](README.zh-CN.md)**
+[Quick start](#quick-start) · [Architecture](#architecture) · [Example](#example-project-architecture) · [Scheduling](#scheduling-algorithm) · [Screenshots](#product-tour) · [Docs](#documentation) · **[简体中文](README.zh-CN.md)**
 
 [![CI](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -57,6 +57,24 @@ Four moving parts:
 A sideload is not a fifth moving part: it is a scoped token that enters through PCS and lands on the host's root scheduler, so a LAN device uses the same task path as the console. Files travel with the task — attachments in, collected artifacts out.
 
 The full model — including `W` (capability score), `D` (task difficulty), `ΣW` aggregation and relay depth — is in the [architecture diagram](docs/Open-Source-Agent-Compute-Platform-Architecture.html) and [docs/architecture.md](docs/architecture.md).
+
+## Example project architecture
+
+<a href="docs/example-project-architecture.html">
+  <img src="docs/assets/example-architecture-en.png" alt="Example project architecture — one scheduler and N development machines built in, with developers, testers, CI and other systems connected through sideload tokens" width="100%">
+</a>
+
+<p align="center"><sub>One scheduler and N development machines are built in; every other participant enters through a sideload token. Click to open the interactive HTML version.</sub></p>
+
+A concrete shape you can run today:
+
+- **Multi-machine R&D automation** — one scheduler plus N development machines. Add capacity by adding a development machine, not a new role.
+- **Agent-driven delivery** — developers and testers submit tasks from the admin app or `curl`; Claude Code / Codex / DeepSeek / shell run inside the bound Agent Profile.
+- **CI and test automation** — a CI job submits tasks, polls status and downloads artifacts with a scoped `sdl_…` token, without installing an agent.
+- **Support and customer intake** — support staff or customer scripts submit tasks and read results; they never learn the scheduler address.
+- **Files in both directions** — attachments in, artifacts out, SHA-256 verified and returned byte-for-byte.
+
+Only the scheduler and development machines are built in. Everyone else is a sideload client, so the same task, lease, fencing and audit path applies to every participant — no new container, role or dispatch rule.
 
 ## Product tour
 
@@ -254,10 +272,12 @@ cd scheduler   && npm install && npm run typecheck && npm test
 cd pcs-issuer  && npm install && npm run typecheck && npm test   # needs PostgreSQL
 cd host-runtime && npm install && npm run typecheck && npm test
 cd secret-store && npm install && npm run typecheck && npm test
-cd admin-app   && npm install && npm run build
+cd admin-app   && npm install && npm run lint && npm test && npm run build
 ```
 
 Acceptance and load scripts: [scripts/README.md](scripts/README.md). They create/reset databases — do not run them against a production control plane.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, checks, code style and release process. By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Documentation
 
@@ -271,6 +291,7 @@ Every design doc exists in English and 简体中文; each page links to its coun
 - [Admin app](docs/admin-app.md)
 - [Agent control](docs/agent-control.md) — task parks, autonomy levels, typed outcomes, failure classes
 - [Sideloads](docs/sideload.md) — curl tokens, permissions, files in and out
+- [Example project architecture](docs/example-project-architecture.html) — a concrete scheduler + N development machines deployment
 - [Deployment](docs/deployment.md)
 - [中文 README](README.zh-CN.md)
 

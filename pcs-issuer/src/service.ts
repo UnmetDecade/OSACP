@@ -52,6 +52,13 @@ import {
   type JwtClaims,
 } from "./jwt.js";
 
+/** Narrow untrusted JSON to an object before reading a field from it. */
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 export type HostRow = {
   host_id: string;
   hostname: string;
@@ -122,6 +129,27 @@ export type DeploymentRow = {
   created_by: string;
   created_at: string;
   updated_at: string;
+};
+
+type FleetHostDbRow = {
+  host_id: string;
+  hostname: string;
+  status: string;
+  parent_host_id: string | null;
+  role_mode: string;
+  resources: unknown;
+  local_score: number | string;
+  builder_count: number | string;
+  has_scheduler: boolean;
+};
+
+/** The subset of a deployment needed to resolve scheduler placement, used by both full rows and the plan query. */
+export type SchedulerRefRow = Pick<
+  DeploymentRow,
+  "deployment_id" | "instance_id" | "scheduler_role" | "parent_deployment_id"
+> & {
+  scheduler_url?: string | null;
+  env?: Record<string, string> | null;
 };
 
 export type CommandRow = {
@@ -445,7 +473,7 @@ function normalizeQuota(quota?: { rpm?: number; daily_calls?: number }): Record<
   return out;
 }
 
-function normalizeAgentProfile(row: any): AgentProfileRow {
+function normalizeAgentProfile(row: AgentProfileRow): AgentProfileRow {
   return {
     ...row,
     entrypoint: row.entrypoint ?? [],
@@ -463,7 +491,7 @@ function normalizeAgentProfile(row: any): AgentProfileRow {
   };
 }
 
-function normalizeApiProfile(row: any): ApiProfileRow {
+function normalizeApiProfile(row: ApiProfileRow): ApiProfileRow {
   return {
     ...row,
     scopes: row.scopes ?? [],
@@ -979,7 +1007,11 @@ export class PcsService {
       undefined,
     )) as { items?: unknown[] } | null;
     const items = Array.isArray(out?.items) ? out!.items : [];
-    return { items: items.filter((i: any) => i?.role_id === "builder") };
+    return {
+      items: items.filter(
+        (i) => (i as { role_id?: unknown } | null)?.role_id === "builder",
+      ),
+    };
   }
 
   // ---------------------------------------------------------------- Hosts
@@ -1527,9 +1559,12 @@ export class PcsService {
       if (!profile.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile is disabled: ${apiId}`);
     }
 
-    const resources = (host.resources ?? {}) as Record<string, any>;
+    const resources = (host.resources ?? {}) as Record<string, unknown>;
     const disks = Array.isArray(resources.disk) ? resources.disk : [];
-    const disk = disks.find((d: any) => d.fs === "root") ?? disks[0] ?? {};
+    const disk =
+      (disks.find((d) => (d as { fs?: unknown } | null)?.fs === "root") ??
+        disks[0] ??
+        {}) as Record<string, unknown>;
     const memTotal = Number(resources.mem_total_bytes) || 2 * 1024 ** 3;
     const detail: CapabilityDetail = {
       cores: Math.max(1, Number(resources.cpu_count) || 1),
@@ -2132,7 +2167,7 @@ export class PcsService {
     generated_at: string;
   }> {
     const rows = (
-      await query<any>(
+      await query<FleetHostDbRow>(
         `SELECT h.host_id, h.hostname, h.status, h.parent_host_id, h.role_mode,
                 h.resources,
                 -- Only builders that are actually running count toward dispatchable capacity: FAILED / stopping instances are excluded from ΣW.
@@ -2152,7 +2187,7 @@ export class PcsService {
       )
     ).rows;
 
-    const byId = new Map<string, any>(rows.map((r) => [r.host_id, { ...r }]));
+    const byId = new Map<string, FleetHostDbRow>(rows.map((r) => [r.host_id, { ...r }]));
     const children = new Map<string, string[]>();
     for (const row of rows) {
       if (!row.parent_host_id || !byId.has(row.parent_host_id)) continue;
@@ -2253,7 +2288,7 @@ export class PcsService {
 
   async heartbeat(
     host: HostRow,
-    body: Record<string, any>,
+    body: Record<string, unknown>,
   ): Promise<{
     ok: true;
     server_time: string;
@@ -2273,7 +2308,7 @@ export class PcsService {
           WHERE host_id=$1 AND status <> 'REVOKED'`,
         [host.host_id, state],
       );
-      await this.upsertRuntime(c, host.host_id, body.runtime ?? {});
+      await this.upsertRuntime(c, host.host_id, (body.runtime ?? {}) as Record<string, unknown>);
     });
     // The host-runtime pulls dynamic grants from the scheduler directly; it learns the addresses here
     // because schedulers may be deployed after the host was bootstrapped.
@@ -2304,7 +2339,7 @@ export class PcsService {
   private async upsertRuntime(
     c: import("pg").PoolClient,
     hostId: string,
-    runtime: Record<string, any>,
+    runtime: Record<string, unknown>,
   ): Promise<void> {
     await c.query(
       `INSERT INTO pcs_host_runtimes
@@ -2399,9 +2434,9 @@ export class PcsService {
    * active is ordered by creation time descending, landing on the instance's newest deployment.
    */
   private resolveSchedulerRef(
-    active: DeploymentRow[],
+    active: SchedulerRefRow[],
     ref: string,
-  ): DeploymentRow | undefined {
+  ): SchedulerRefRow | undefined {
     const hit =
       active.find((d) => d.deployment_id === ref) ??
       active.find((d) => d.instance_id === ref);
@@ -2412,9 +2447,9 @@ export class PcsService {
   private resolveSchedulerPlacement(
     hostId: string,
     instanceId: string,
-    active: DeploymentRow[],
+    active: SchedulerRefRow[],
     input: { scheduler_role?: "root" | "node"; parent_scheduler_id?: string },
-  ): { role: "root" | "node"; parent: DeploymentRow | null } {
+  ): { role: "root" | "node"; parent: SchedulerRefRow | null } {
     const existing = active.find((d) => d.instance_id === instanceId);
     const root = active.find((d) => (d.scheduler_role ?? "root") === "root");
     let role = input.scheduler_role ?? (existing?.scheduler_role as "root" | "node" | undefined);
@@ -2554,7 +2589,7 @@ export class PcsService {
       if (placement.role === "node" && placement.parent) {
         const parentUrl =
           placement.parent.scheduler_url ??
-          this.cfg.schedulerUrls[placement.parent.host_id] ??
+          this.cfg.schedulerUrls[host.host_id] ??
           this.cfg.schedulerUrl;
         if (parentUrl) env.SCHEDULER_PARENT_URL ??= parentUrl;
       }
@@ -3048,7 +3083,7 @@ export class PcsService {
       );
     }
     const text = await res.text();
-    let data: any = null;
+    let data: unknown = null;
     if (text) {
       try {
         data = JSON.parse(text);
@@ -3057,7 +3092,7 @@ export class PcsService {
       }
     }
     if (!res.ok) {
-      const err = data?.error ?? {};
+      const err = jsonObject(jsonObject(data).error);
       throw new PcsError(
         res.status,
         String(err.code ?? "SCHEDULER_ERROR"),
@@ -3094,7 +3129,7 @@ export class PcsService {
     }
     if (!res.ok) {
       const text = await res.text();
-      let data: any = null;
+      let data: unknown = null;
       if (text) {
         try {
           data = JSON.parse(text);
@@ -3102,7 +3137,7 @@ export class PcsService {
           data = text;
         }
       }
-      const err = data?.error ?? {};
+      const err = jsonObject(jsonObject(data).error);
       throw new PcsError(
         res.status,
         String(err.code ?? "SCHEDULER_ERROR"),
@@ -3432,12 +3467,12 @@ export class PcsService {
     const activeSchedulers = active.filter((r) => r.role_id === "scheduler");
     const schedulerPlacement =
       input.role_id === "scheduler"
-        ? this.resolveSchedulerPlacement(host.host_id, itemInputs[0].instance_id, activeSchedulers as any, input)
+        ? this.resolveSchedulerPlacement(host.host_id, itemInputs[0].instance_id, activeSchedulers, input)
         : null;
     const builderScheduler =
       input.role_id === "builder"
         ? input.scheduler_id
-          ? this.resolveSchedulerRef(activeSchedulers as any, input.scheduler_id) ?? null
+          ? this.resolveSchedulerRef(activeSchedulers, input.scheduler_id) ?? null
           : activeSchedulers.find((r) => (r.scheduler_role ?? "root") === "root") ??
             activeSchedulers[0] ??
             null
@@ -3456,7 +3491,9 @@ export class PcsService {
 
     // Scheduling mode is chosen once, on the root scheduler, and inherited by node schedulers and builders
     // on the same host. A builder without a scheduler falls back to the control-plane default.
-    const modeOf = (d: any): "static" | "dynamic" | null => {
+    const modeOf = (
+      d: { env?: Record<string, string> | null } | null | undefined,
+    ): "static" | "dynamic" | null => {
       const raw = String(d?.env?.SCHEDULING_MODE ?? "").toLowerCase();
       return raw === "dynamic" ? "dynamic" : raw === "static" ? "static" : null;
     };
@@ -3542,7 +3579,7 @@ export class PcsService {
         if (schedulerPlacement.role === "node" && schedulerPlacement.parent) {
           const parentUrl =
             schedulerPlacement.parent.scheduler_url ??
-            this.cfg.schedulerUrls[schedulerPlacement.parent.host_id] ??
+            this.cfg.schedulerUrls[host.host_id] ??
             this.cfg.schedulerUrl;
           if (parentUrl) instanceEnv.SCHEDULER_PARENT_URL = parentUrl;
         }
@@ -4110,9 +4147,9 @@ export class PcsService {
 
   // ---------------------------------------------------------------- Reports
 
-  async storeReport(host: HostRow, body: Record<string, any>): Promise<{ ok: true }> {
-    const containers: Array<Record<string, any>> = Array.isArray(body.containers)
-      ? body.containers
+  async storeReport(host: HostRow, body: Record<string, unknown>): Promise<{ ok: true }> {
+    const containers: Array<Record<string, unknown>> = Array.isArray(body.containers)
+      ? body.containers.map((c) => (c !== null && typeof c === "object" ? (c as Record<string, unknown>) : {}))
       : [];
     const state = String(body.host_state ?? "NORMAL");
 
@@ -4130,7 +4167,7 @@ export class PcsService {
           WHERE host_id=$1 AND status <> 'REVOKED'`,
         [host.host_id, JSON.stringify(body.resources ?? {}), state],
       );
-      await this.upsertRuntime(c, host.host_id, body.runtime ?? {});
+      await this.upsertRuntime(c, host.host_id, (body.runtime ?? {}) as Record<string, unknown>);
 
       const seen: string[] = [];
       for (const ct of containers) {
@@ -4264,7 +4301,7 @@ export class PcsService {
   private async pushHostToScheduler(hostId: string, hostState: string): Promise<void> {
     // Each scheduler has its own database, so the host roster is pushed to every scheduler on this host (root + nodes);
     // otherwise a builder registering with a node reports HOST_UNKNOWN. Falls back to the control plane config when no scheduler is registered.
-    const r = await query<{ hostname: string; os: string; arch: string; resources: any }>(
+    const r = await query<{ hostname: string; os: string; arch: string; resources: unknown }>(
       `SELECT hostname, os, arch, resources FROM pcs_hosts WHERE host_id=$1`,
       [hostId],
     );
@@ -4283,7 +4320,7 @@ export class PcsService {
       this.cfg.schedulerUrls[hostId] ?? this.cfg.schedulerSyncUrl ?? this.cfg.schedulerUrl;
     if (bases.size === 0 && fallback) bases.add(fallback);
     if (bases.size === 0) return;
-    const res = (row.resources ?? {}) as Record<string, any>;
+    const res = (row.resources ?? {}) as Record<string, unknown>;
     const body = JSON.stringify({
       host_id: hostId,
       name: row.hostname,
@@ -4367,7 +4404,7 @@ export class PcsService {
     const goals = promptField(input.goals, "goals", 2_000);
     const limits = normalizeLimits(input.limits);
     try {
-      const r = await query(
+      const r = await query<AgentProfileRow>(
         `INSERT INTO agent_profiles
            (agent_profile_id, role_id, name, version, adapter, artifact_image, entrypoint, args,
             model_api_profile_id, tool_api_profile_ids, limits, capabilities, allowed_tools,
@@ -4406,19 +4443,21 @@ export class PcsService {
         task_types: taskTypes,
       });
       return normalizeAgentProfile(r.rows[0]);
-    } catch (e: any) {
-      if (e?.code === "23505") conflict("AGENT_PROFILE_EXISTS", `Agent Profile already exists: ${profileId}`);
+    } catch (e) {
+      if ((e as { code?: unknown } | null)?.code === "23505") {
+        conflict("AGENT_PROFILE_EXISTS", `Agent Profile already exists: ${profileId}`);
+      }
       throw e;
     }
   }
 
   async listAgentProfiles(): Promise<AgentProfileRow[]> {
-    const r = await query(`SELECT * FROM agent_profiles ORDER BY created_at DESC`);
+    const r = await query<AgentProfileRow>(`SELECT * FROM agent_profiles ORDER BY created_at DESC`);
     return r.rows.map(normalizeAgentProfile);
   }
 
   async getAgentProfile(profileId: string): Promise<AgentProfileRow | null> {
-    const r = await query(`SELECT * FROM agent_profiles WHERE agent_profile_id = $1`, [profileId]);
+    const r = await query<AgentProfileRow>(`SELECT * FROM agent_profiles WHERE agent_profile_id = $1`, [profileId]);
     return r.rows[0] ? normalizeAgentProfile(r.rows[0]) : null;
   }
 
@@ -4480,7 +4519,7 @@ export class PcsService {
     const goals = textOf("goals", 2_000);
     const limits =
       input.limits !== undefined ? normalizeLimits(input.limits) : current.limits;
-    const r = await query(
+    const r = await query<AgentProfileRow>(
       `UPDATE agent_profiles SET
          name=$2, version=$3, adapter=$4, artifact_image=$5, entrypoint=$6::jsonb, args=$7::jsonb,
          model_api_profile_id=$8, tool_api_profile_ids=$9::text[], limits=$10::jsonb,
@@ -4610,7 +4649,7 @@ export class PcsService {
     }
     const quota = normalizeQuota(input.quota);
     try {
-      const r = await query(
+      const r = await query<ApiProfileRow>(
         `INSERT INTO api_profiles
            (api_profile_id, name, kind, base_url, auth_type, secret_ref, scopes, quota,
             timeout_seconds, egress, fallback, enabled)
@@ -4637,19 +4676,21 @@ export class PcsService {
         secret_ref: secretRef,
       });
       return normalizeApiProfile(r.rows[0]);
-    } catch (e: any) {
-      if (e?.code === "23505") conflict("API_PROFILE_EXISTS", `API Profile already exists: ${apiId}`);
+    } catch (e) {
+      if ((e as { code?: unknown } | null)?.code === "23505") {
+        conflict("API_PROFILE_EXISTS", `API Profile already exists: ${apiId}`);
+      }
       throw e;
     }
   }
 
   async listApiProfiles(): Promise<ApiProfileRow[]> {
-    const r = await query(`SELECT * FROM api_profiles ORDER BY created_at DESC`);
+    const r = await query<ApiProfileRow>(`SELECT * FROM api_profiles ORDER BY created_at DESC`);
     return r.rows.map(normalizeApiProfile);
   }
 
   async getApiProfile(apiId: string): Promise<ApiProfileRow | null> {
-    const r = await query(`SELECT * FROM api_profiles WHERE api_profile_id = $1`, [apiId]);
+    const r = await query<ApiProfileRow>(`SELECT * FROM api_profiles WHERE api_profile_id = $1`, [apiId]);
     return r.rows[0] ? normalizeApiProfile(r.rows[0]) : null;
   }
 
@@ -4692,7 +4733,7 @@ export class PcsService {
       throw new PcsError(400, "INVALID_PROFILE", "timeout_seconds must be an integer in 1..600");
     }
     const quota = input.quota !== undefined ? normalizeQuota(input.quota) : current.quota;
-    const r = await query(
+    const r = await query<ApiProfileRow>(
       `UPDATE api_profiles SET
          name=$2, base_url=$3, auth_type=$4, secret_ref=$5, scopes=$6::text[], quota=$7::jsonb,
          timeout_seconds=$8, egress=$9, fallback=$10::text[], enabled=$11, updated_at=now()
@@ -4982,7 +5023,7 @@ export class PcsService {
     const agent = await this.getAgentProfile(b.agent_profile_id);
     if (!agent) return null;
     const apis = (
-      await query(
+      await query<ApiProfileRow>(
         `SELECT p.* FROM role_api_bindings b
            JOIN api_profiles p ON p.api_profile_id = b.api_profile_id
           WHERE b.host_id = $1 AND b.instance_id = $2

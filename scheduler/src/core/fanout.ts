@@ -126,7 +126,7 @@ export async function splitTask(taskId: string, proof: LeaseProof, children: Spl
     );
     const allowedArtifacts = requestedArtifacts.length
       ? (
-          await c.query(
+          await c.query<{ artifact_id: string; actual_sha256: string; media_type: string }>(
             `SELECT artifact_id, actual_sha256, media_type FROM artifacts
               WHERE task_id = $1 AND status = 'COMPLETE' AND artifact_id = ANY($2::text[])`,
             [taskId, requestedArtifacts],
@@ -165,8 +165,8 @@ export async function splitTask(taskId: string, proof: LeaseProof, children: Spl
         ? [
             ...inheritedUpstream,
             ...allowedArtifacts
-              .filter((a: any) => child.artifact_ids!.map(String).includes(a.artifact_id))
-              .map((a: any) => ({
+              .filter((a) => child.artifact_ids!.map(String).includes(a.artifact_id))
+              .map((a) => ({
                 artifact_id: a.artifact_id,
                 sha256: a.actual_sha256,
                 media_type: a.media_type,
@@ -292,7 +292,13 @@ export async function settleFanout(c: Client, child: { task_id: string; fanout_i
   }
 
   const artifacts = (
-    await c.query(
+    await c.query<{
+      artifact_id: string;
+      actual_sha256: string;
+      media_type: string;
+      task_id: string;
+      task_type: string;
+    }>(
       `SELECT artifact_id, actual_sha256, media_type, task_id, task_type
          FROM artifacts a JOIN tasks t USING (task_id)
         WHERE a.task_id = ANY($1::text[]) AND a.status = 'COMPLETE'
@@ -303,10 +309,12 @@ export async function settleFanout(c: Client, child: { task_id: string; fanout_i
   ).rows;
 
   const req = isObject(parent.requirements) ? parent.requirements : {};
-  const inherited = Array.isArray(req.upstream_artifacts) ? (req.upstream_artifacts as any[]) : [];
+  const inherited = Array.isArray(req.upstream_artifacts)
+    ? (req.upstream_artifacts as Record<string, unknown>[])
+    : [];
   const refs = [
     ...inherited,
-    ...artifacts.map((a: any) => ({
+    ...artifacts.map((a) => ({
       artifact_id: a.artifact_id,
       sha256: a.actual_sha256,
       media_type: a.media_type,

@@ -6034,7 +6034,8 @@ async function getGrants(hostId) {
 }
 function mapGrant(r) {
   return {
-    ...r,
+    host_id: String(r.host_id),
+    instance_id: String(r.instance_id),
     generation: n(r.generation),
     cpu_millicores: n(r.cpu_millicores),
     memory_bytes: n(r.memory_bytes),
@@ -6043,7 +6044,11 @@ function mapGrant(r) {
     cpu_weight: n(r.cpu_weight),
     cap_cpu_millicores: r.cap_cpu_millicores === void 0 ? void 0 : n(r.cap_cpu_millicores),
     cap_mem_bytes: r.cap_mem_bytes === void 0 ? void 0 : n(r.cap_mem_bytes),
-    applied_generation: r.applied_generation === null ? null : n(r.applied_generation)
+    state: String(r.state),
+    applied_generation: r.applied_generation === null ? null : n(r.applied_generation),
+    applied_at: r.applied_at ?? null,
+    last_error: r.last_error ?? null,
+    updated_at: String(r.updated_at)
   };
 }
 async function grantsWith(c, hostId) {
@@ -6075,9 +6080,9 @@ async function getInstanceGrantState(instanceId) {
     [owner.host_id]
   );
   return {
-    instance_id: owner.instance_id,
-    host_id: owner.host_id,
-    scheduling_mode: owner.scheduling_mode ?? "static",
+    instance_id: String(owner.instance_id),
+    host_id: String(owner.host_id),
+    scheduling_mode: typeof owner.scheduling_mode === "string" ? owner.scheduling_mode : "static",
     grant: grant ? mapGrant(grant) : null,
     pool: pool2 ? {
       ...pool2,
@@ -6489,8 +6494,10 @@ async function loadIdlePeers(c, inst) {
   return rows.map((row) => ({ row, score: dynamicScoreOf(row) }));
 }
 function peerCanTakeTask(p, task) {
-  if (!(p.allowed_task_types ?? []).includes(task.task_type)) return false;
-  if (!(p.payload_schemas ?? []).includes(task.payload_schema)) return false;
+  const allowedTypes = Array.isArray(p.allowed_task_types) ? p.allowed_task_types : [];
+  const schemas = Array.isArray(p.payload_schemas) ? p.payload_schemas : [];
+  if (!allowedTypes.includes(task.task_type)) return false;
+  if (!schemas.includes(task.payload_schema)) return false;
   const target = task.requirements?.target_instance_id;
   if (target && target !== p.instance_id) return false;
   const needed = task.requirements?.capabilities ?? [];
@@ -6506,7 +6513,10 @@ async function claim(input) {
   return tx(async (c) => {
     const cfg = await loadConfig(c);
     const policy = policyForScheduler(cfg?.dynamic_policy);
-    const owner = (await c.query(`SELECT host_id FROM role_instances WHERE instance_id = $1`, [input.instance_id])).rows[0];
+    const owner = (await c.query(
+      `SELECT host_id FROM role_instances WHERE instance_id = $1`,
+      [input.instance_id]
+    )).rows[0];
     if (!owner) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
     const hostRes = await c.query(
       `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
@@ -6939,7 +6949,7 @@ async function assign(c, cfg, inst, host, task, traceId, mode, grant) {
       RETURNING *`,
     [task.task_id, attemptId]
   );
-  if (task.effective_priority < task.priority_class) {
+  if (Number(task.effective_priority ?? 0) < Number(task.priority_class ?? 0)) {
     await appendEvent(c, {
       task_id: task.task_id,
       event_type: "TASK_AGED",
@@ -6992,7 +7002,7 @@ async function assign(c, cfg, inst, host, task, traceId, mode, grant) {
     approval_mode: t.approval_mode ?? null,
     // P4: send only references, never implementations, API addresses or secrets; the instance validates against its locally loaded Profile
     agent: {
-      profile_id: inst.agent_profile_id,
+      profile_id: inst.agent_profile_id ?? null,
       version: inst.agent_profile_version ?? null
     },
     api_profiles: inst.api_profile_ids ?? [],
@@ -7079,6 +7089,9 @@ function selfNodeId() {
 }
 
 // scheduler/src/core/relay.ts
+function recordOf(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
 var MAX_RELAY_DEPTH = 8;
 var RELAY_FETCH_TIMEOUT_MS = 8e3;
 var RELAY_NODE_FRESH_SECONDS = Math.max(
@@ -7217,7 +7230,7 @@ async function relayToNode(node, task, input, depth) {
   } catch {
     throw new Error("child node did not return JSON");
   }
-  const childTaskId = String(out?.task_id ?? "").trim();
+  const childTaskId = String(recordOf(out)?.task_id ?? "").trim();
   if (!childTaskId) throw new Error("child node did not return task_id");
   await tx(async (c) => {
     const inserted = await c.query(
@@ -7245,17 +7258,19 @@ async function relayToNode(node, task, input, depth) {
   return { node_id: node.node_id, child_task_id: childTaskId };
 }
 function latestAttempt(child) {
-  const attempts = Array.isArray(child?.attempts) ? child.attempts : [];
-  return attempts.length ? attempts[attempts.length - 1] : null;
+  const attempts = Array.isArray(recordOf(child)?.attempts) ? recordOf(child).attempts : [];
+  return attempts.length ? recordOf(attempts[attempts.length - 1]) ?? null : null;
 }
 function childSummary(child) {
   const attempt = latestAttempt(child);
-  return String(child?.result_summary ?? attempt?.result_summary ?? "");
+  return String(recordOf(child)?.result_summary ?? attempt?.result_summary ?? "");
 }
 function childOutputs(child) {
   const attempt = latestAttempt(child);
-  const raw = attempt?.outputs ?? child?.relay?.child_result?.outputs;
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const relay = recordOf(recordOf(child)?.relay);
+  const childResult = recordOf(relay?.child_result);
+  const raw = attempt?.outputs ?? childResult?.outputs;
+  return recordOf(raw) ?? {};
 }
 async function mirrorStatus(parentTaskId, target, childStatus, summary) {
   if (!["QUEUED", "ASSIGNED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"].includes(target)) {
@@ -7387,7 +7402,7 @@ async function syncRelays(limit = 50) {
       );
       continue;
     }
-    const childStatus = String(child?.status ?? "").toUpperCase();
+    const childStatus = String(recordOf(child)?.status ?? "").toUpperCase();
     const summary = childSummary(child);
     if (!childStatus) {
       await recordRelayFailure(row.parent_task_id, "child task is missing status");
@@ -7606,9 +7621,10 @@ async function createWorkflowRun(input) {
 }
 async function advanceWorkflow(c, task, outcome) {
   if (!task.workflow_run_id) return;
-  const run = (await c.query(`SELECT * FROM workflow_runs WHERE workflow_run_id = $1 FOR UPDATE`, [
-    task.workflow_run_id
-  ])).rows[0];
+  const run = (await c.query(
+    `SELECT * FROM workflow_runs WHERE workflow_run_id = $1 FOR UPDATE`,
+    [task.workflow_run_id]
+  )).rows[0];
   if (!run) return;
   if (run.current_task_id && run.current_task_id !== task.task_id) return;
   if (outcome === "CANCELLED") {
@@ -8618,7 +8634,9 @@ async function submitResult(attemptId, input) {
     }
     const code = input.error?.code ?? "UNKNOWN";
     const outwardFailure = outward.length > 0;
-    const cfg = (await c.query(`SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`)).rows[0];
+    const cfg = (await c.query(
+      `SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`
+    )).rows[0];
     const backoff = backoffSeconds2(cfg.retry_backoff_seconds, task.attempt_count);
     const detail = input.error?.detail ?? {};
     const plan = planFailure({
@@ -9573,7 +9591,9 @@ async function capabilitySnapshot(nodeId) {
     (sum, c) => sum + Number(c.available_commitment_mem_bytes ?? 0),
     0
   );
-  const childPressure = worstPressure(children.map((c) => c.pressure_state));
+  const childPressure = worstPressure(
+    children.map((c) => typeof c.pressure_state === "string" ? c.pressure_state : null)
+  );
   const instances = [...localInstances];
   const seen = new Set(instances.map((i) => i.instance_id));
   for (const child of children) {
@@ -10007,10 +10027,13 @@ async function sweepDrainTimeouts() {
         AND drain_deadline_at <= app_now()
       RETURNING instance_id`
   );
-  return rows.map((r) => r.instance_id);
+  return rows.map((r) => String(r.instance_id));
 }
 
 // scheduler/src/http/server.ts
+function bodyAs(body) {
+  return body;
+}
 var NOT_MODIFIED = /* @__PURE__ */ Symbol("NOT_MODIFIED");
 var routes = [];
 function route(method, pattern, handler, opts = {}) {
@@ -10028,8 +10051,8 @@ route(
   "POST",
   "/v1/instances/register",
   (c) => {
-    assertSelf(c.auth, c.body?.instance_id);
-    return register(c.body);
+    assertSelf(c.auth, String(c.body.instance_id ?? ""));
+    return register(bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] }
 );
@@ -10037,19 +10060,19 @@ route(
   "POST",
   "/v1/instances/heartbeat",
   (c) => {
-    assertSelf(c.auth, c.body?.instance_id);
-    return heartbeat(c.body);
+    assertSelf(c.auth, String(c.body.instance_id ?? ""));
+    return heartbeat(bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:claim"] }
 );
 route("GET", "/v1/instances", async () => ({ items: await listInstances() }));
-route("POST", "/v1/hosts", (c) => upsertHost(c.body ?? {}));
+route("POST", "/v1/hosts", (c) => upsertHost(bodyAs(c.body)));
 route(
   "PUT",
   "/v1/instances/:id/capabilities",
   (c) => {
     assertSelf(c.auth, c.params.id);
-    return setCapabilities(c.params.id, c.body);
+    return setCapabilities(c.params.id, bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] }
 );
@@ -10058,7 +10081,7 @@ route(
   "/v1/instances/:id/drain",
   (c) => {
     assertSelf(c.auth, c.params.id);
-    return drain(c.params.id, c.body);
+    return drain(c.params.id, bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] }
 );
@@ -10076,7 +10099,7 @@ route(
   "/v1/instances/:id/deregister",
   (c) => {
     assertSelf(c.auth, c.params.id);
-    return deregister(c.params.id, c.body);
+    return deregister(c.params.id, bodyAs(c.body));
   },
   { auth: true, scopes: ["instance:register"] }
 );
@@ -10128,15 +10151,16 @@ route(
       });
       return { ok: false, state: "FAILED" };
     }
+    const applied = bodyAs(c.body);
     return markGrantApplied({
       host_id: state.host_id,
       instance_id: c.params.id,
       generation,
-      cpu_millicores: c.body?.cpu_millicores,
-      memory_bytes: c.body?.memory_bytes,
-      memory_low_bytes: c.body?.memory_low_bytes,
-      memory_high_bytes: c.body?.memory_high_bytes,
-      cpu_weight: c.body?.cpu_weight
+      cpu_millicores: applied.cpu_millicores,
+      memory_bytes: applied.memory_bytes,
+      memory_low_bytes: applied.memory_low_bytes,
+      memory_high_bytes: applied.memory_high_bytes,
+      cpu_weight: applied.cpu_weight
     });
   },
   { auth: true, scopes: ["instance:claim"] }
@@ -10149,14 +10173,14 @@ route(
   "POST",
   "/v1/claim",
   async (c) => {
-    assertSelf(c.auth, c.body?.instance_id);
-    const a = await claim({ instance_id: c.body.instance_id, trace_id: c.body.trace_id });
+    assertSelf(c.auth, String(c.body.instance_id ?? ""));
+    const a = await claim(bodyAs(c.body));
     if (!a) return { noop: true };
     return a;
   },
   { auth: true, scopes: ["instance:claim"] }
 );
-var proof = (c) => ({ ...c.body, auth_instance_id: c.auth?.instance_id ?? void 0 });
+var proof = (c) => bodyAs({ ...c.body, auth_instance_id: c.auth?.instance_id ?? void 0 });
 route("POST", "/v1/attempts/:id/start-ack", (c) => startAck(c.params.id, proof(c)), {
   auth: true,
   scopes: ["task:report"]
@@ -10169,22 +10193,39 @@ route("POST", "/v1/attempts/:id/progress", (c) => progress(c.params.id, proof(c)
   auth: true,
   scopes: ["task:report"]
 });
-route("POST", "/v1/attempts/:id/result", (c) => submitResult(c.params.id, proof(c)), {
-  auth: true,
-  scopes: ["task:report"]
-});
-route("POST", "/v1/tasks/:id/split", (c) => splitTask(c.params.id, proof(c), c.body?.children), {
+route("POST", "/v1/attempts/:id/result", (c) => submitResult(
+  c.params.id,
+  bodyAs({ ...c.body, auth_instance_id: c.auth?.instance_id ?? void 0 })
+), {
   auth: true,
   scopes: ["task:report"]
 });
 route(
   "POST",
+  "/v1/tasks/:id/split",
+  (c) => splitTask(
+    c.params.id,
+    proof(c),
+    bodyAs(c.body).children ?? []
+  ),
+  {
+    auth: true,
+    scopes: ["task:report"]
+  }
+);
+route(
+  "POST",
   "/v1/tasks/:id/answer",
-  (c) => answerTask(c.params.id, c.body?.answer, c.body?.actor ?? "operator")
+  (c) => answerTask(
+    c.params.id,
+    String(bodyAs(c.body).answer ?? ""),
+    String(c.body.actor ?? "operator")
+  )
 );
 route("POST", "/v1/tasks", async (c) => {
-  const task = await createTask(c.body);
-  const relayed = await maybeRelayTask(task, c.body);
+  const input = bodyAs(c.body);
+  const task = await createTask(input);
+  const relayed = await maybeRelayTask(task, input);
   return relayed ? { ...task, relay: relayed } : task;
 });
 route("GET", "/v1/tasks", async (c) => ({
@@ -10210,19 +10251,19 @@ route("GET", "/v1/events", async (c) => {
   return { items, next_after: items.length ? Number(items[items.length - 1].event_id) : after };
 });
 route("POST", "/v1/tasks/:id/cancel", async (c) => {
-  const out = await cancelTask(c.params.id, c.body?.actor ?? "operator");
+  const out = await cancelTask(c.params.id, String(c.body.actor ?? "operator"));
   await requestRelayCancel(c.params.id);
   return out;
 });
 route(
   "POST",
   "/v1/tasks/:id/retry",
-  (c) => retryTask(c.params.id, c.body?.actor ?? "operator")
+  (c) => retryTask(c.params.id, String(c.body.actor ?? "operator"))
 );
 route(
   "POST",
   "/v1/artifacts",
-  (c) => createArtifact(c.body, c.auth?.instance_id ?? c.body?.instance_id),
+  (c) => createArtifact(bodyAs(c.body), c.auth?.instance_id ?? String(c.body.instance_id ?? "")),
   { auth: true, scopes: ["artifact:write"] }
 );
 route(
@@ -10242,7 +10283,7 @@ route(
   { auth: true, scopes: ["artifact:read"] }
 );
 route("GET", "/v1/tasks/:id/artifacts", (c) => listTaskArtifacts(c.params.id));
-route("POST", "/v1/workflows", (c) => createWorkflowRun(c.body));
+route("POST", "/v1/workflows", (c) => createWorkflowRun(bodyAs(c.body)));
 route("GET", "/v1/workflows", async (c) => ({
   items: await listWorkflowRuns(c.query.get("limit") ? Number(c.query.get("limit")) : void 0)
 }));
@@ -10262,7 +10303,9 @@ route("GET", "/v1/workflows/:id", (c) => getWorkflowRun(c.params.id));
 route(
   "POST",
   "/v1/tasks/:id/approve",
-  (c) => decideApproval({ ...c.body, task_id: c.params.id })
+  (c) => decideApproval(
+    bodyAs({ ...c.body, task_id: c.params.id })
+  )
 );
 route("GET", "/v1/capability", async () => capabilitySnapshot(selfNodeId()));
 route("GET", "/v1/nodes", async () => ({
@@ -10278,7 +10321,9 @@ route("POST", "/v1/nodes/report", (c) => {
   if (token !== config.federationToken) {
     throw new ApiError(401, "FEDERATION_TOKEN_INVALID", "node report token is invalid");
   }
-  return upsertNodeReport({ ...c.body, parent_node_id: selfNodeId(), role: "node" });
+  return upsertNodeReport(
+    bodyAs({ ...c.body, parent_node_id: selfNodeId(), role: "node" })
+  );
 });
 route("GET", "/v1/federation/parent", async () => ({
   parent_url: getFederationParentUrl() || null

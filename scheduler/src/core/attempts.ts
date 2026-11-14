@@ -144,25 +144,50 @@ export interface LeaseProof {
   auth_instance_id?: string;
 }
 
+/** Rows locked by lockContext; only the columns read by the attempt protocol are named. */
+interface AttemptRow {
+  attempt_id: string;
+  task_id: string;
+  status: string;
+  outward_actions: unknown;
+  [column: string]: unknown;
+}
+interface TaskRow {
+  task_id: string;
+  status: string;
+  fanout_id?: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  [column: string]: unknown;
+}
+interface LeaseRow {
+  lease_token: string;
+  fencing_token: number | string;
+  expires_at: string;
+  instance_id: string | null;
+  released_at: string | null;
+  [column: string]: unknown;
+}
+
 interface Ctx {
-  attempt: any;
-  task: any;
-  lease: any;
+  attempt: AttemptRow;
+  task: TaskRow;
+  lease: LeaseRow;
   now: Date;
 }
 
 async function lockContext(c: Client, attemptId: string, proof: LeaseProof): Promise<Ctx> {
   const attempt = (
-    await c.query(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
+    await c.query<AttemptRow>(`SELECT * FROM task_attempts WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
   ).rows[0];
   if (!attempt) throw new ApiError(404, "NOT_FOUND", `attempt not found: ${attemptId}`);
 
   const task = (
-    await c.query(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [attempt.task_id])
+    await c.query<TaskRow>(`SELECT * FROM tasks WHERE task_id = $1 FOR UPDATE`, [attempt.task_id])
   ).rows[0];
 
   const lease = (
-    await c.query(`SELECT * FROM leases WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
+    await c.query<LeaseRow>(`SELECT * FROM leases WHERE attempt_id = $1 FOR UPDATE`, [attemptId])
   ).rows[0];
 
   // Write from an old attempt: the task already has a higher fencing, so return FENCING_STALE directly,
@@ -529,8 +554,11 @@ export async function submitResult(attemptId: string, input: ResultInput) {
     // a recovery action is chosen: a rate limit waits for the reset, a busy host gets the retry
     // slot back, a deterministic refusal is never retried.
     const outwardFailure = outward.length > 0;
-    const cfg = (await c.query(`SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`))
-      .rows[0];
+    const cfg = (
+      await c.query<{ retry_backoff_seconds: number[] }>(
+        `SELECT retry_backoff_seconds FROM scheduler_config WHERE id = TRUE`,
+      )
+    ).rows[0];
     const backoff = backoffSeconds(cfg.retry_backoff_seconds, task.attempt_count);
     const detail = (input.error?.detail ?? {}) as Record<string, unknown>;
     const plan = planFailure({

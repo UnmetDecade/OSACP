@@ -14,6 +14,8 @@
 npm install
 npm run dev      # http://localhost:5173（本仓库开发时用的 5178）
 npm run build    # 类型检查 + 生产构建
+npm test         # Vitest + Testing Library
+npm run test:coverage  # 单元测试并生成覆盖率报告
 node scripts/capture-ui.mjs            # 全路由截图（需要调度机与 PCS 可达）
 node scripts/capture-ui.mjs --dark     # 深色模式
 ADMIN_TOKEN=... node scripts/capture-ui.mjs  # 带令牌截图

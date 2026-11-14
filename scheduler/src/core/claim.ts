@@ -58,8 +58,71 @@ export interface Assignment {
   resource_grant: AssignmentGrant | null;
 }
 
-async function loadConfig(c: Client) {
-  const res = await c.query("SELECT * FROM scheduler_config WHERE id = TRUE");
+type SchedulerConfigRow = {
+  instance_limit: number;
+  global_limit: number;
+  role_pool_limit: number;
+  task_type_limit: number;
+  task_type_instance_limit?: number | null;
+  max_candidate_scan?: number | null;
+  aging_after_seconds: number;
+  backoff_base_seconds?: number | null;
+  backoff_max_seconds?: number | null;
+  max_blocked_attempts?: number | null;
+  lease_seconds: number;
+  dynamic_policy?: unknown;
+  [column: string]: unknown;
+};
+
+/** Instance row fields read by claim/admission; other columns are carried through untouched. */
+type ClaimInstanceRow = {
+  instance_id: string;
+  role_id: string;
+  host_id: string;
+  state: string;
+  scheduling_mode?: string | null;
+  allowed_task_types: unknown;
+  payload_schemas: unknown;
+  capabilities?: { healthy?: unknown; unhealthy?: unknown } | null;
+  capability_score?: unknown;
+  capability_live_score?: unknown;
+  capability_dispatch_score?: unknown;
+  cap_mem_bytes?: unknown;
+  cap_cpu_millicores?: unknown;
+  agent_profile_id?: string | null;
+  agent_profile_version?: string | null;
+  api_profile_ids?: string[] | null;
+  [column: string]: unknown;
+};
+
+type ClaimHostRow = {
+  host_id: string;
+  host_state: string;
+  mem_available_bytes: number | string;
+  [column: string]: unknown;
+};
+
+/** Candidate task row; fields are read with narrowing where the column type is not fixed. */
+type ClaimTaskRow = {
+  task_id: string;
+  task_type: string;
+  payload_schema?: string | null;
+  requirements?: Record<string, unknown> | null;
+  resource_profile_id?: string | null;
+  difficulty?: unknown;
+  waited_seconds?: unknown;
+  blocked_attempts?: unknown;
+  resource_block_reason?: string | null;
+  effective_priority?: number;
+  priority_class?: number;
+  payload_ref?: string | null;
+  deadline_at?: string | null;
+  approval_mode?: string | null;
+  [column: string]: unknown;
+};
+
+async function loadConfig(c: Client): Promise<SchedulerConfigRow> {
+  const res = await c.query<SchedulerConfigRow>("SELECT * FROM scheduler_config WHERE id = TRUE");
   return res.rows[0];
 }
 
@@ -97,15 +160,15 @@ interface Blocked {
 }
 
 interface AdmissionContext {
-  cfg: any;
-  inst: any;
-  host: any;
+  cfg: SchedulerConfigRow;
+  inst: ClaimInstanceRow;
+  host: ClaimHostRow;
   mode: "static" | "dynamic";
   res: Awaited<ReturnType<typeof instanceResourceState>> | null;
   policy: ReturnType<typeof policyForScheduler>;
 }
 
-const dynamicScoreOf = (inst: any): number => {
+const dynamicScoreOf = (inst: ClaimInstanceRow): number => {
   const dispatch = Number(inst.capability_dispatch_score ?? 0);
   if (dispatch > 0) return dispatch;
   const live = Number(inst.capability_live_score ?? 0);
@@ -127,14 +190,14 @@ const dynamicScoreOf = (inst: any): number => {
 const CAPABILITY_PREFER_WINDOW_SECONDS = 30;
 
 interface IdlePeer {
-  row: any;
+  row: ClaimInstanceRow;
   score: number;
 }
 
 /** ONLINE, bound to an Agent Profile, on a dispatchable host, and currently running nothing. */
-async function loadIdlePeers(c: Client, inst: any): Promise<IdlePeer[]> {
+async function loadIdlePeers(c: Client, inst: ClaimInstanceRow): Promise<IdlePeer[]> {
   const rows = (
-    await c.query(
+    await c.query<ClaimInstanceRow>(
       `SELECT p.*
          FROM role_instances p
          JOIN hosts h ON h.host_id = p.host_id
@@ -151,13 +214,15 @@ async function loadIdlePeers(c: Client, inst: any): Promise<IdlePeer[]> {
       [inst.role_id, inst.instance_id],
     )
   ).rows;
-  return rows.map((row: any) => ({ row, score: dynamicScoreOf(row) }));
+  return rows.map((row) => ({ row, score: dynamicScoreOf(row) }));
 }
 
 /** Whether an idle peer would be allowed to take this task at all. */
-function peerCanTakeTask(p: any, task: any): boolean {
-  if (!(p.allowed_task_types ?? []).includes(task.task_type)) return false;
-  if (!(p.payload_schemas ?? []).includes(task.payload_schema)) return false;
+function peerCanTakeTask(p: ClaimInstanceRow, task: ClaimTaskRow): boolean {
+  const allowedTypes = Array.isArray(p.allowed_task_types) ? p.allowed_task_types : [];
+  const schemas = Array.isArray(p.payload_schemas) ? p.payload_schemas : [];
+  if (!allowedTypes.includes(task.task_type)) return false;
+  if (!schemas.includes(task.payload_schema)) return false;
   const target = task.requirements?.target_instance_id;
   if (target && target !== p.instance_id) return false;
   const needed = (task.requirements?.capabilities ?? []) as string[];
@@ -180,12 +245,15 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
     // Read the owner first (unlocked), then lock in host -> instance order. The allocator also
     // locks host before touching instances, so claim and grant recomputation cannot deadlock.
     const owner = (
-      await c.query(`SELECT host_id FROM role_instances WHERE instance_id = $1`, [input.instance_id])
+      await c.query<{ host_id: string }>(
+        `SELECT host_id FROM role_instances WHERE instance_id = $1`,
+        [input.instance_id],
+      )
     ).rows[0];
     if (!owner) throw new ApiError(404, "INSTANCE_UNKNOWN", `instance not registered: ${input.instance_id}`);
 
     // Lock the host row: concurrent claims on one host serialize, making the budget trustworthy
-    const hostRes = await c.query(
+    const hostRes = await c.query<ClaimHostRow>(
       `SELECT * FROM hosts WHERE host_id = $1 FOR NO KEY UPDATE`,
       [owner.host_id],
     );
@@ -193,7 +261,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
     if (!host) throw new ApiError(409, "HOST_UNKNOWN", `host not registered: ${owner.host_id}`);
 
     // Lock the instance row: concurrent claims for one instance serialize, so one instance cannot take multiple tasks
-    const instRes = await c.query(
+    const instRes = await c.query<ClaimInstanceRow>(
       `SELECT * FROM role_instances WHERE instance_id = $1 FOR UPDATE`,
       [input.instance_id],
     );
@@ -290,7 +358,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
        FOR UPDATE OF t SKIP LOCKED
        LIMIT $8`;
 
-    const cand = await c.query(candidateSql, [
+    const cand = await c.query<ClaimTaskRow>(candidateSql, [
       cfg.aging_after_seconds,
       inst.role_id,
       inst.allowed_task_types,
@@ -305,7 +373,7 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
     // Idle peers are only needed once a candidate passes admission; load them lazily so a claim
     // that finds nothing to run does not pay for the extra queries.
     let idlePeers: IdlePeer[] | null = null;
-    const strongerIdlePeer = async (task: any): Promise<boolean> => {
+    const strongerIdlePeer = async (task: ClaimTaskRow): Promise<boolean> => {
       if (Number(task.waited_seconds ?? 0) >= CAPABILITY_PREFER_WINDOW_SECONDS) return false;
       idlePeers ??= await loadIdlePeers(c, inst);
       return idlePeers.some((p) => p.score > capabilityScore && peerCanTakeTask(p.row, task));
@@ -351,9 +419,9 @@ export async function claim(input: ClaimInput): Promise<Assignment | null> {
 /** Persist the task-level block with exponential backoff (§11.3). */
 async function recordBlock(
   c: Client,
-  task: any,
+  task: ClaimTaskRow,
   blocked: Blocked,
-  cfg: any,
+  cfg: SchedulerConfigRow,
   traceId?: string,
 ): Promise<void> {
   const attempts = Number(task.blocked_attempts ?? 0) + 1;
@@ -400,7 +468,7 @@ async function recordBlock(
 async function admit(
   c: Client,
   ctx: AdmissionContext,
-  task: any,
+  task: ClaimTaskRow,
 ): Promise<Blocked | null> {
   const { cfg, inst, host, mode, res, policy } = ctx;
 
@@ -629,10 +697,10 @@ async function admit(
 
 async function assign(
   c: Client,
-  cfg: any,
-  inst: any,
-  host: any,
-  task: any,
+  cfg: SchedulerConfigRow,
+  inst: ClaimInstanceRow,
+  host: ClaimHostRow,
+  task: ClaimTaskRow,
   traceId: string | undefined,
   mode: "static" | "dynamic",
   grant: ResourceGrantRow | null,
@@ -719,7 +787,7 @@ async function assign(
   );
 
   // Aging must be recorded to explain "why this one was claimed first" (§3.5)
-  if (task.effective_priority < task.priority_class) {
+  if (Number(task.effective_priority ?? 0) < Number(task.priority_class ?? 0)) {
     await appendEvent(c, {
       task_id: task.task_id,
       event_type: "TASK_AGED",
@@ -755,7 +823,7 @@ async function assign(
     trace_id: traceId,
   });
 
-  const t = updated.rows[0];
+  const t = updated.rows[0]!;
   return {
     task_id: t.task_id,
     task_type: t.task_type,
@@ -774,7 +842,7 @@ async function assign(
     approval_mode: t.approval_mode ?? null,
     // P4: send only references, never implementations, API addresses or secrets; the instance validates against its locally loaded Profile
     agent: {
-      profile_id: inst.agent_profile_id,
+      profile_id: inst.agent_profile_id ?? null,
       version: inst.agent_profile_version ?? null,
     },
     api_profiles: inst.api_profile_ids ?? [],

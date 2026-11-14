@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sideload Access Architecture · OSACP</title>
+<style>
+  :root{
+    color-scheme: light;
+    --page:#f9f9f7;
+    --surface:#fcfcfb;
+    --ink:#0b0b0b;
+    --ink2:#52514e;
+    --muted:#898781;
+    --grid:#e1e0d9;
+    --border:rgba(11,11,11,.10);
+    --c-control:#6250d6;
+    --c-dev:#1baf7a;
+    --c-side:#d55181;
+    --c-res:#0e7c86;
+    --c-people:#6b6a64;
+    --edge:#6b6a64;
+    --edge-data:#2a78d6;
+    --edge-cmd:#6250d6;
+    --edge-side:#c2417a;
+    --edge-res:#0e7c86;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:#0d0d0d;
+      --surface:#1a1a19;
+      --ink:#f0efec;
+      --ink2:#c3c2b7;
+      --muted:#898781;
+      --grid:#2c2c2a;
+      --border:rgba(255,255,255,.10);
+      --c-control:#9085e9;
+      --c-dev:#199e70;
+      --c-side:#d55181;
+      --c-res:#57c3cf;
+      --c-people:#a3a29a;
+      --edge:#8f8e86;
+      --edge-data:#3987e5;
+      --edge-cmd:#9085e9;
+      --edge-side:#e0699a;
+      --edge-res:#57c3cf;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0d0d;
+    --surface:#1a1a19;
+    --ink:#f0efec;
+    --ink2:#c3c2b7;
+    --muted:#898781;
+    --grid:#2c2c2a;
+    --border:rgba(255,255,255,.10);
+    --c-control:#9085e9;
+    --c-dev:#199e70;
+    --c-side:#d55181;
+    --c-res:#57c3cf;
+    --c-people:#a3a29a;
+    --edge:#8f8e86;
+    --edge-data:#3987e5;
+    --edge-cmd:#9085e9;
+    --edge-side:#e0699a;
+    --edge-res:#57c3cf;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--page);
+    color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:1500px;margin:0 auto;padding:36px 32px 56px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:22px}
+  .eyebrow{margin:0 0 6px;font-size:12.5px;letter-spacing:.08em;color:var(--muted)}
+  h1{margin:0;font-size:27px;line-height:1.2;letter-spacing:-.015em;font-weight:650}
+  .lede{margin:10px 0 0;max-width:780px;font-size:14.5px;line-height:1.65;color:var(--ink2)}
+  .head-actions{display:flex;align-items:center;gap:10px;flex:none}
+  .lang{
+    color:var(--ink2);text-decoration:none;font-size:13px;padding:8px 14px;
+    border:1px solid var(--border);border-radius:999px;background:var(--surface);
+  }
+  .lang:hover{color:var(--ink);border-color:var(--muted)}
+  #theme{
+    border:1px solid var(--border);background:var(--surface);color:var(--ink2);
+    border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer;
+  }
+  #theme:hover{color:var(--ink);border-color:var(--muted)}
+  .canvas{
+    background:var(--surface);border:1px solid var(--border);border-radius:18px;
+    padding:6px;overflow:hidden;
+  }
+  svg{display:block;width:100%;height:auto}
+  svg text{font-family:inherit}
+  .z-title{font-size:15.5px;font-weight:650;fill:var(--ink)}
+  .z-sub{font-size:11.5px;fill:var(--muted)}
+  .tile-t{font-size:12.5px;font-weight:600;fill:var(--ink)}
+  .tile-s{font-size:11px;fill:var(--muted)}
+  .li{font-size:11.5px;fill:var(--ink2)}
+  .tag-text{font-size:11px;fill:var(--ink2)}
+  .label{font-size:11.5px;fill:var(--ink2);paint-order:stroke;stroke:var(--surface);stroke-width:4.5;stroke-linejoin:round}
+  .label-cmd{fill:var(--edge-cmd);font-weight:600}
+  .label-data{fill:var(--edge-data)}
+  .label-side{fill:var(--edge-side);font-weight:600}
+  .label-muted{fill:var(--muted)}
+  .people-cap{font-size:11.5px;fill:var(--muted)}
+
+  .legend{
+    display:flex;flex-wrap:wrap;gap:10px 26px;align-items:center;
+    margin:18px 2px 0;padding:14px 16px;border:1px solid var(--border);border-radius:12px;
+    background:var(--surface);font-size:12.5px;color:var(--ink2)
+  }
+  .legend b{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.04em;margin-right:2px}
+  .lg{display:inline-flex;align-items:center;gap:8px}
+  .sw{width:34px;height:0;border-top:2px solid var(--edge);flex:none}
+  .sw.thick{border-top:4px solid var(--edge-cmd)}
+  .sw.dash{border-top:2px dashed var(--edge-data)}
+  .sw.side{border-top:2px dashed var(--edge-side)}
+  .box-sw{width:26px;height:14px;border:1.5px dashed color-mix(in srgb, var(--c-side) 55%, var(--surface));border-radius:4px;flex:none}
+
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 2px 0;font-size:12.5px;color:var(--ink2)}
+  .flow .step{padding:5px 11px;border:1px solid var(--border);border-radius:999px;background:var(--surface)}
+  .flow .arr{color:var(--muted)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 18px 16px}
+  .card h2{margin:0 0 8px;font-size:14px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .card h2::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--dot)}
+  .card p{margin:0;font-size:12.5px;line-height:1.7;color:var(--ink2)}
+  .card code{font-size:11.5px;padding:1px 5px;border-radius:4px;background:color-mix(in srgb, var(--ink) 6%, transparent)}
+  .c-cmd{--dot:var(--c-control)} .c-dev{--dot:var(--c-dev)} .c-side{--dot:var(--c-side)} .c-res{--dot:var(--c-res)}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  @media (max-width:900px){
+    .page{padding:24px 16px 40px}
+    .cards{grid-template-columns:1fr}
+    h1{font-size:22px}
+    header{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div>
+      <p class="eyebrow">Architecture overview · sideload access model</p>
+      <h1>AI Agent Compute Platform · Sideload Access</h1>
+      <p class="lede">The platform has exactly two built-in roles: the <b>scheduler</b> (control plane) and the <b>development machine</b> (execution plane). Developers, testers and every other system are not containers or registered instances — they hold a <b>sideload token</b> (<code>sdl_…</code>) and call <b>device → control plane → this host's root scheduler → development machine</b>. A device only talks to the control plane: it never learns the scheduler address and holds no instance credential. A sideload has no heartbeat and takes no lease, and its permissions are a closed scope set.</p>
+    </div>
+    <div class="head-actions">
+      <a class="lang" href="sideload-architecture.zh-CN.html" hreflang="zh-CN">简体中文</a>
+      <button id="theme" type="button">Dark mode</button>
+    </div>
+  </header>
+
+  <div class="canvas">
+    <svg viewBox="0 0 1480 690" role="img" aria-label="OSACP sideload access architecture">
+      <defs>
+        <marker id="ar-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/>
+        </marker>
+        <marker id="ar-cmd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-cmd)"/>
+        </marker>
+        <marker id="ar-data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-data)"/>
+        </marker>
+        <marker id="ar-side" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-side)"/>
+        </marker>
+      </defs>
+
+      <!-- ============ Access-side clients ============ -->
+      <g>
+        <text x="740" y="20" text-anchor="middle" class="people-cap">Access side: one device + one sideload token — no container, no instance registration</text>
+
+        <g>
+          <rect x="180" y="38" width="270" height="58" rx="16" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="204" cy="60" r="5" fill="var(--c-people)"/>
+          <text x="220" y="65" class="tile-t">Developers</text>
+          <text x="200" y="84" class="tile-s">sdl_… · tasks:write · console:run</text>
+        </g>
+        <g>
+          <rect x="470" y="38" width="270" height="58" rx="16" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="494" cy="60" r="5" fill="var(--c-people)"/>
+          <text x="510" y="65" class="tile-t">Testers</text>
+          <text x="490" y="84" class="tile-s">sdl_… · tasks:write · tasks:read</text>
+        </g>
+        <g>
+          <rect x="760" y="38" width="270" height="58" rx="16" fill="var(--surface)" stroke="var(--border)"/>
+          <circle cx="784" cy="60" r="5" fill="var(--c-people)"/>
+          <text x="800" y="65" class="tile-t">Other systems</text>
+          <text x="780" y="84" class="tile-s">CI · scripts · clients · scoped</text>
+        </g>
+
+        <line x1="620" y1="98" x2="620" y2="128" stroke="var(--edge-cmd)" stroke-width="4"
+              marker-start="url(#ar-cmd)" marker-end="url(#ar-cmd)" vector-effect="non-scaling-stroke"/>
+        <text x="634" y="118" class="label label-cmd">HTTPS · Authorization: Bearer sdl_…</text>
+      </g>
+
+      <!-- ============ Scheduler / control plane ============ -->
+      <g>
+        <rect x="120" y="132" width="1010" height="260" rx="16"
+              style="fill:color-mix(in srgb, var(--c-control) 4%, var(--surface));stroke:color-mix(in srgb, var(--c-control) 38%, var(--surface))" stroke-width="1.5"/>
+        <text x="144" y="160" class="z-title">Scheduler · control plane (built-in)</text>
+        <text x="1106" y="160" text-anchor="end" class="z-sub">Single source of task state · the token stops here</text>
+
+        <g>
+          <rect x="144" y="172" width="296" height="86" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="160" y="196" class="tile-t">Sideload entry (PCS)</text>
+          <text x="160" y="218" class="tile-s">Bearer sdl_ · scope check</text>
+          <text x="160" y="238" class="tile-s">Resolves this host's root scheduler</text>
+        </g>
+        <g>
+          <rect x="468" y="172" width="296" height="86" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="484" y="196" class="tile-t">Task API</text>
+          <text x="484" y="218" class="tile-s">Submit · query · cancel · retry</text>
+          <text x="484" y="238" class="tile-s">Idempotency key · trace_id</text>
+        </g>
+        <g>
+          <rect x="792" y="172" width="296" height="86" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="808" y="196" class="tile-t">Queue &amp; dispatch</text>
+          <text x="808" y="218" class="tile-s">Pull + heartbeat · capability match</text>
+          <text x="808" y="238" class="tile-s">Priority · aging · retry</text>
+        </g>
+        <g>
+          <rect x="144" y="272" width="296" height="90" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="160" y="296" class="tile-t">State machine · leases</text>
+          <text x="160" y="318" class="tile-s">QUEUED → ASSIGNED → DONE</text>
+          <text x="160" y="338" class="tile-s">Lease · fencing token</text>
+        </g>
+        <g>
+          <rect x="468" y="272" width="296" height="90" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="484" y="296" class="tile-t">File channel</text>
+          <text x="484" y="318" class="tile-s">Attachments in · artifacts out</text>
+          <text x="484" y="338" class="tile-s">SHA-256 · byte-for-byte</text>
+        </g>
+        <g>
+          <rect x="792" y="272" width="296" height="90" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="808" y="296" class="tile-t">PostgreSQL · audit</text>
+          <text x="808" y="318" class="tile-s">Single source of task state</text>
+          <text x="808" y="338" class="tile-s">Token create / delete logged</text>
+        </g>
+      </g>
+
+      <!-- ============ Control plane ↔ execution plane ============ -->
+      <g>
+        <line x1="520" y1="394" x2="520" y2="426" stroke="var(--edge)" stroke-width="1.8"
+              marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <text x="506" y="414" text-anchor="end" class="label label-muted">Dispatch · Pull</text>
+        <line x1="700" y1="426" x2="700" y2="394" stroke="var(--edge)" stroke-width="1.8"
+              marker-end="url(#ar-ink)" vector-effect="non-scaling-stroke"/>
+        <text x="714" y="414" class="label label-muted">Heartbeat · events · artifacts</text>
+      </g>
+
+      <!-- ============ Development machine / execution plane ============ -->
+      <g>
+        <rect x="120" y="430" width="1010" height="230" rx="16"
+              style="fill:color-mix(in srgb, var(--c-dev) 4%, var(--surface));stroke:color-mix(in srgb, var(--c-dev) 38%, var(--surface))" stroke-width="1.5"/>
+        <text x="144" y="456" class="z-title">Development machine · execution plane (built-in ×N)</text>
+        <text x="1106" y="456" text-anchor="end" class="z-sub">Only this host's scheduler dispatches to it</text>
+
+        <g>
+          <rect x="144" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="158" y="494" class="tile-t">Task workspace</text>
+          <text x="158" y="518" class="tile-s">Isolated directory per task</text>
+          <text x="158" y="540" class="tile-s">Source tree · attachments</text>
+        </g>
+        <g>
+          <rect x="392" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="406" y="494" class="tile-t">Agent execution</text>
+          <text x="406" y="518" class="tile-s">Runs the bound Agent Profile</text>
+          <text x="406" y="540" class="tile-s">or deterministic Shell</text>
+        </g>
+        <g>
+          <rect x="640" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="654" y="494" class="tile-t">Console commands</text>
+          <text x="654" y="518" class="tile-s"><tspan font-family="ui-monospace, monospace">task.console.*</tspan></text>
+          <text x="654" y="540" class="tile-s">Requires console:run</text>
+        </g>
+        <g>
+          <rect x="888" y="470" width="224" height="118" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="902" y="494" class="tile-t">Resource admission</text>
+          <text x="902" y="518" class="tile-s">Budget checked before start</text>
+          <text x="902" y="540" class="tile-s">Over limit stays queued</text>
+        </g>
+
+        <text x="144" y="626" class="li">Scaling out means adding development machines — every other participant stays on the sideload path.</text>
+      </g>
+
+      <!-- ============ Sideload boundary ============ -->
+      <g>
+        <rect x="1150" y="38" width="300" height="622" rx="16"
+              style="fill:color-mix(in srgb, var(--c-side) 3.5%, var(--surface));stroke:color-mix(in srgb, var(--c-side) 50%, var(--surface))"
+              stroke-width="1.5" stroke-dasharray="7 5"/>
+        <text x="1170" y="64" class="z-title">Sideload boundary</text>
+        <text x="1170" y="86" class="z-sub">Not a built-in role</text>
+
+        <text x="1170" y="112" class="li">· No container · no instance row</text>
+        <text x="1170" y="136" class="li">· No heartbeat · holds no lease</text>
+        <text x="1170" y="160" class="li">· Never learns the scheduler address</text>
+        <text x="1170" y="184" class="li">· Holds no instance credentials</text>
+        <text x="1170" y="208" class="li">· Token stored as a hash</text>
+        <text x="1170" y="232" class="li">  (plaintext shown once)</text>
+
+        <line x1="1170" y1="250" x2="1430" y2="250" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+
+        <text x="1170" y="276" class="li" style="font-weight:600">Permission scopes (closed set)</text>
+        <g>
+          <rect x="1170" y="288" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1182" y="305" class="tag-text">tasks:read</text>
+          <rect x="1306" y="288" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1318" y="305" class="tag-text">tasks:write</text>
+          <rect x="1170" y="322" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1182" y="339" class="tag-text">builders:read</text>
+          <rect x="1306" y="322" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1318" y="339" class="tag-text">queue:read</text>
+          <rect x="1170" y="356" width="124" height="26" rx="6" fill="color-mix(in srgb, var(--c-side) 8%, var(--surface))"/>
+          <text x="1182" y="373" class="tag-text">console:run</text>
+        </g>
+        <text x="1170" y="402" class="li">console:run is granted on top of tasks:write</text>
+
+        <line x1="1170" y1="420" x2="1430" y2="420" stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+
+        <text x="1170" y="446" class="li" style="font-weight:600">Lifecycle &amp; audit</text>
+        <text x="1170" y="472" class="li">· Online when last call ≤ 120 s</text>
+        <text x="1170" y="496" class="li">· Expiry or delete → 403 next call</text>
+        <text x="1170" y="520" class="li">· Create / delete audited</text>
+        <text x="1170" y="544" class="li">· Token and hash never logged</text>
+
+        <text x="1170" y="586" class="li" style="fill:var(--muted)">Same task / lease / fencing path</text>
+        <text x="1170" y="610" class="li" style="fill:var(--muted)">as the admin app — no bypass.</text>
+      </g>
+
+    </svg>
+  </div>
+
+  <div class="legend">
+    <b>Legend</b>
+    <span class="lg"><span class="sw thick"></span>Sideload access (device → control plane)</span>
+    <span class="lg"><span class="sw"></span>Task dispatch / heartbeat (Pull)</span>
+    <span class="lg"><span class="sw dash"></span>File channel (attachments / artifacts)</span>
+    <span class="lg"><span class="box-sw"></span>Sideload boundary (external system)</span>
+  </div>
+
+  <div class="flow">
+    <span class="step">① Hold a sideload token</span><span class="arr">→</span>
+    <span class="step">② Submit a task</span><span class="arr">→</span>
+    <span class="step">③ Scope check</span><span class="arr">→</span>
+    <span class="step">④ Scheduler queues / dispatches</span><span class="arr">→</span>
+    <span class="step">⑤ Development machine runs</span><span class="arr">→</span>
+    <span class="step">⑥ Files collected</span><span class="arr">→</span>
+    <span class="step">⑦ Client downloads artifacts</span>
+  </div>
+
+  <section class="cards">
+    <article class="card c-cmd">
+      <h2>Exactly two built-in roles</h2>
+      <p>Inside the platform there is a scheduler and at least one development machine. Developers, testers, CI jobs, scripts and any other system enter through sideload tokens, so no new role, container or dispatch rule is introduced for them.</p>
+    </article>
+    <article class="card c-cmd">
+      <h2>One fixed call chain</h2>
+      <p>A device calls the control plane; the control plane validates the token, resolves the host and its root scheduler, and forwards the request. The device never sees the scheduler address and never holds an instance credential — the same path the admin app uses.</p>
+    </article>
+    <article class="card c-side">
+      <h2>A sideload is not an Agent</h2>
+      <p>It has no container, no registration, no heartbeat and no lease of its own. Because it reuses the normal task / lease / fencing path, it cannot bypass scheduling, admission or auditing.</p>
+    </article>
+    <article class="card c-dev">
+      <h2>Least privilege by construction</h2>
+      <p>Scopes are a closed set: <code>tasks:read</code>, <code>tasks:write</code>, <code>builders:read</code>, <code>queue:read</code> and <code>console:run</code>. <code>console:run</code> is granted separately from <code>tasks:write</code>, and unknown scopes are rejected rather than ignored.</p>
+    </article>
+    <article class="card c-side">
+      <h2>Files move both ways</h2>
+      <p>Inputs are uploaded as attachments and land under <code>&lt;workspace&gt;/attachments/</code>. Outputs are collected through the scheduler's artifact channel: any format, SHA-256 verified and returned byte-for-byte instead of being packed into stdout.</p>
+    </article>
+    <article class="card c-res">
+      <h2>Lifecycle and audit</h2>
+      <p><code>last_seen_at</code> is updated at most every 30 seconds and the token reads online within 120 seconds. Deletion or expiry takes effect on the next request with <code>403</code>. Token creation and deletion are audited; the token and its hash are never logged.</p>
+    </article>
+  </section>
+
+  <footer>
+    <span>Based on docs/sideload.md · generic architecture, no project-specific components</span>
+    <span>Static SVG · scalable · dark mode supported</span>
+  </footer>
+</div>
+
+<script>
+  (function(){
+    var root = document.documentElement;
+    var btn = document.getElementById('theme');
+    function effective(){
+      return root.getAttribute('data-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    }
+    function sync(){
+      btn.textContent = effective() === 'dark' ? 'Light mode' : 'Dark mode';
+    }
+    btn.addEventListener('click', function(){
+      root.setAttribute('data-theme', effective() === 'dark' ? 'light' : 'dark');
+      sync();
+    });
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', sync);
+    sync();
+  })();
+</script>
+</body>
+</html>

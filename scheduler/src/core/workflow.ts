@@ -159,17 +159,30 @@ export async function createWorkflowRun(input: CreateWorkflowInput) {
  * Advance the workflow when a task terminates. Must be called in the same transaction that submits the task result,
  * otherwise a gap appears where "the task succeeded but the next phase was not enqueued".
  */
+type WorkflowRunRow = {
+  workflow_run_id: string;
+  workflow_template_id: string;
+  current_phase: string;
+  current_task_id?: string | null;
+  context?: Record<string, unknown> | null;
+  [column: string]: unknown;
+};
+
+/** A task row participating in the handoff; only task_id is guaranteed. */
+type TaskLikeRow = { task_id: string } & Record<string, unknown>;
+
 export async function advanceWorkflow(
   c: Client,
-  task: any,
+  task: { workflow_run_id?: string | null; task_id: string },
   outcome: "SUCCEEDED" | "FAILED" | "CANCELLED",
 ): Promise<void> {
   if (!task.workflow_run_id) return;
 
   const run = (
-    await c.query(`SELECT * FROM workflow_runs WHERE workflow_run_id = $1 FOR UPDATE`, [
-      task.workflow_run_id,
-    ])
+    await c.query<WorkflowRunRow>(
+      `SELECT * FROM workflow_runs WHERE workflow_run_id = $1 FOR UPDATE`,
+      [task.workflow_run_id],
+    )
   ).rows[0];
   if (!run) return;
 
@@ -216,7 +229,7 @@ export async function advanceWorkflow(
   });
 }
 
-async function finishRun(c: Client, run: any, status: string, eventType: string) {
+async function finishRun(c: Client, run: WorkflowRunRow, status: string, eventType: string) {
   await c.query(
     `UPDATE workflow_runs
         SET status = $2, current_task_id = NULL, updated_at = app_now()
@@ -237,14 +250,14 @@ async function finishRun(c: Client, run: any, status: string, eventType: string)
  */
 async function insertNextTask(
   c: Client,
-  run: any,
-  prev: any,
+  run: WorkflowRunRow,
+  prev: TaskLikeRow,
   phase: Phase,
   extra: Record<string, unknown> = {},
 ) {
   const ctx = run.context ?? {};
   const artifacts = (
-    await c.query(
+    await c.query<{ artifact_id: string; actual_sha256: string; media_type: string }>(
       `SELECT artifact_id, actual_sha256, media_type
          FROM artifacts
         WHERE task_id = $1 AND status = 'COMPLETE'
@@ -255,11 +268,11 @@ async function insertNextTask(
 
   const prevReq = (prev.requirements ?? {}) as Record<string, unknown>;
   const inherited = Array.isArray(prevReq.upstream_artifacts)
-    ? (prevReq.upstream_artifacts as any[])
+    ? (prevReq.upstream_artifacts as Record<string, unknown>[])
     : [];
   const refs = [
     ...inherited,
-    ...artifacts.map((a: any) => ({
+    ...artifacts.map((a) => ({
       artifact_id: a.artifact_id,
       sha256: a.actual_sha256,
       media_type: a.media_type,
@@ -287,12 +300,12 @@ async function insertNextTask(
     task_type: phase.task_type!,
     workflow_run_id: run.workflow_run_id,
     parent_task_id: prev.task_id,
-    priority_class: ctx.priority_class ?? prev.priority_class,
-    payload_ref: ctx.payload_ref ?? prev.payload_ref ?? undefined,
-    payload_sha256: ctx.payload_sha256 ?? prev.payload_sha256 ?? undefined,
-    payload_schema: ctx.payload_schema ?? prev.payload_schema ?? "1.0",
+    priority_class: (ctx.priority_class ?? prev.priority_class) as CreateTaskInput["priority_class"],
+    payload_ref: (ctx.payload_ref ?? prev.payload_ref ?? undefined) as string | undefined,
+    payload_sha256: (ctx.payload_sha256 ?? prev.payload_sha256 ?? undefined) as string | undefined,
+    payload_schema: (ctx.payload_schema ?? prev.payload_schema ?? "1.0") as string,
     requirements,
-    deadline_at: ctx.deadline_at ?? undefined,
+    deadline_at: (ctx.deadline_at ?? undefined) as string | undefined,
   };
   return insertTask(c, input);
 }
@@ -301,7 +314,13 @@ async function insertNextTask(
  * Enter the approval gate. The approval subject binds the output digest of the previous phase task:
  * before a controlled submit, recompute it and compare with the digest stored here (§7.3).
  */
-async function enterApproval(c: Client, run: any, prev: any, tpl: any, phase: Phase) {
+async function enterApproval(
+  c: Client,
+  run: WorkflowRunRow,
+  prev: TaskLikeRow,
+  tpl: Awaited<ReturnType<typeof loadTemplate>>,
+  phase: Phase,
+) {
   // Prefer the server-verified artifact digest; executor-reported outputs are only a fallback when there is no artifact.
   const artifact = (
     await c.query(

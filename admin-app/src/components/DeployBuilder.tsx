@@ -4,6 +4,7 @@ import { db } from "../store";
 import { editHost, fetchHostDeployments } from "../api";
 import { errorMessage } from "../live/client";
 import { useLive } from "../live/context";
+import type { ObservationRow } from "../live/rows";
 import type { Host } from "../types";
 import { Button, Callout, Field, Modal } from "./ui";
 
@@ -40,11 +41,12 @@ export function DeployBuilderModal({
   const selectedApi = db.apis.some((a) => a.id === apiProfile) ? apiProfile : "";
 
   /** Turn the host's failed command acknowledgement into an operator-readable reason. */
-  function deploymentError(observed: any): string {
+  function deploymentError(observed: ObservationRow | null | undefined): string {
     const err = observed?.error;
     if (!err || typeof err !== "object") return t("主机没有执行部署命令，请在主机页重试。");
-    const code = String(err.code ?? "DEPLOY_FAILED");
-    const message = String(err.message ?? "");
+    const detail = err as { code?: unknown; message?: unknown };
+    const code = String(detail.code ?? "DEPLOY_FAILED");
+    const message = String(detail.message ?? "");
     return message ? `${code}：${message}` : code;
   }
 

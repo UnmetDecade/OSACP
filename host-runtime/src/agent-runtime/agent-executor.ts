@@ -125,7 +125,7 @@ async function materializeUpstreamArtifacts(
       if (e instanceof TaskFailed) throw e;
       throw new TaskFailed(
         "UPSTREAM_ARTIFACT_FETCH_FAILED",
-        `Failed to download upstream artifact ${id}: ${String((e as any)?.message ?? e)}`,
+        `Failed to download upstream artifact ${id}: ${e instanceof Error ? e.message : String(e)}`,
         { artifact_id: id },
       );
     }
@@ -269,10 +269,10 @@ export async function runAgentTask(
         try {
           assertInsideWorkspace(p.replace(/^\.\/+/, ""), ctx.workspaceDir);
           artifactPaths.push({ name: String(e.name ?? "artifact"), path: p });
-        } catch (err: any) {
+        } catch (err) {
           artifactError = new TaskFailed(
             "ARTIFACT_PATH_DENIED",
-            String(err?.message ?? "Artifact path is outside the workspace"),
+            err instanceof Error ? err.message : "Artifact path is outside the workspace",
           );
         }
       }

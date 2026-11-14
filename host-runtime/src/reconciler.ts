@@ -1074,25 +1074,35 @@ function resolveOnPath(command: string, dirs: string[]): boolean {
  * The adapter's entrypoint (`node cli-agent.mjs`) resolves through the cache, but the CLI it drives
  * (`claude`, `codex`, ...) is looked up on the spawn PATH; missing it only shows up at task time.
  */
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
 function missingAgentCli(
   profilesFile: string,
   instanceId: string,
   pathDirs: string[],
 ): string | null {
   if (!fs.existsSync(profilesFile)) return null;
-  let parsed: any;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(profilesFile, "utf8"));
   } catch {
     return null;
   }
-  const all = Array.isArray(parsed?.agent_profiles) ? parsed.agent_profiles : [];
-  const boundId = parsed?.bindings?.[instanceId]?.agent_profile_id;
-  const profiles = boundId ? all.filter((p: any) => p?.agent_profile_id === boundId) : all;
-  for (const profile of profiles) {
-    if (profile?.enabled === false) continue;
-    if (profile?.adapter && profile.adapter !== "stdio-jsonrpc") continue;
-    const args: string[] = Array.isArray(profile?.args) ? profile.args.map(String) : [];
+  const root = parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  const all = Array.isArray(root.agent_profiles) ? root.agent_profiles : [];
+  const bindings = root.bindings as Record<string, unknown> | undefined;
+  const boundId = recordValue(bindings?.[instanceId])?.agent_profile_id;
+  const profiles = boundId
+    ? all.filter((p) => recordValue(p)?.agent_profile_id === boundId)
+    : all;
+  for (const raw of profiles) {
+    const profile = recordValue(raw);
+    if (!profile) continue;
+    if (profile.enabled === false) continue;
+    if (profile.adapter && profile.adapter !== "stdio-jsonrpc") continue;
+    const args: string[] = Array.isArray(profile.args) ? profile.args.map(String) : [];
     const provider = flagValue(args, "--provider") ?? "claude";
     const command = flagValue(args, "--command") ?? PROVIDER_CLI[provider];
     if (!command) continue;

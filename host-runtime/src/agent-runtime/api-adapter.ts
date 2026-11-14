@@ -221,7 +221,7 @@ export class ApiAdapter {
         res = await this.fetchImpl(url.toString(), {
           method,
           headers,
-          body: method === "GET" || method === "HEAD" ? undefined : (init.body as any),
+          body: method === "GET" || method === "HEAD" ? undefined : (init.body as unknown as NonNullable<RequestInit["body"]>),
           redirect: "manual",
           signal: AbortSignal.timeout(profile.timeout_seconds * 1000),
         });

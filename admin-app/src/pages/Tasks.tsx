@@ -238,11 +238,13 @@ export function TaskShow() {
 
   const inst = db.instances.find((i) => i.id === task.instance_id);
   // requirements is an object: reading it with String() printed "[object Object]" instead of the task body.
-  const requirements = (task.payload.requirements ?? {}) as Record<string, any>;
+  const requirements = (task.payload.requirements ?? {}) as Record<string, unknown>;
+  const build = (requirements.build ?? {}) as Record<string, unknown>;
+  const chat = (requirements.chat ?? {}) as Record<string, unknown>;
   const instruction = String(
     task.payload.instruction ??
-      requirements.build?.instruction ??
-      requirements.chat?.message ??
+      build.instruction ??
+      chat.message ??
       task.payload.command ??
       "",
   );

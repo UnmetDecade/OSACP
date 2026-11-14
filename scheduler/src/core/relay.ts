@@ -17,6 +17,12 @@ import type { CreateTaskInput } from "../repo/task-insert.js";
  *   - When the whole subtree lacks capability, the task stays queued on the parent and never vanishes.
  */
 
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 const MAX_RELAY_DEPTH = 8;
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
 const RELAY_NODE_FRESH_SECONDS = Math.max(
@@ -214,13 +220,13 @@ async function relayToNode(
   if (!res.ok) {
     throw new Error(`child node returned ${res.status}: ${text.slice(0, 200)}`);
   }
-  let out: any = null;
+  let out: unknown = null;
   try {
     out = JSON.parse(text);
   } catch {
     throw new Error("child node did not return JSON");
   }
-  const childTaskId = String(out?.task_id ?? "").trim();
+  const childTaskId = String(recordOf(out)?.task_id ?? "").trim();
   if (!childTaskId) throw new Error("child node did not return task_id");
 
   await tx(async (c) => {
@@ -262,24 +268,24 @@ type RelayRow = {
   cancel_requested_at: string | null;
 };
 
-function latestAttempt(child: any): Record<string, any> | null {
-  const attempts = Array.isArray(child?.attempts) ? child.attempts : [];
-  return attempts.length ? attempts[attempts.length - 1] : null;
+function latestAttempt(child: unknown): Record<string, unknown> | null {
+  const attempts = Array.isArray(recordOf(child)?.attempts) ? (recordOf(child)!.attempts as unknown[]) : [];
+  return attempts.length ? (recordOf(attempts[attempts.length - 1]) ?? null) : null;
 }
 
-function childSummary(child: any): string {
+function childSummary(child: unknown): string {
   const attempt = latestAttempt(child);
-  return String(child?.result_summary ?? attempt?.result_summary ?? "");
+  return String(recordOf(child)?.result_summary ?? attempt?.result_summary ?? "");
 }
 
-function childOutputs(child: any): Record<string, unknown> {
+function childOutputs(child: unknown): Record<string, unknown> {
   const attempt = latestAttempt(child);
   // Multi-level relay: the intermediate node has no attempt of its own; outputs hang off the child task it pushed down,
   // so the nested child_result.outputs must be lifted up verbatim, or the root only gets the summary.
-  const raw = attempt?.outputs ?? child?.relay?.child_result?.outputs;
-  return raw && typeof raw === "object" && !Array.isArray(raw)
-    ? (raw as Record<string, unknown>)
-    : {};
+  const relay = recordOf(recordOf(child)?.relay);
+  const childResult = recordOf(relay?.child_result);
+  const raw = attempt?.outputs ?? childResult?.outputs;
+  return recordOf(raw) ?? {};
 }
 
 async function mirrorStatus(
@@ -421,7 +427,7 @@ export async function syncRelays(limit = 50): Promise<{ checked: number; updated
       await sendChildCancel(row);
     }
 
-    let child: any;
+    let child: unknown;
     try {
       const res = await fetch(
         `${row.child_url.replace(/\/+$/, "")}/v1/tasks/${encodeURIComponent(row.child_task_id)}`,
@@ -437,7 +443,7 @@ export async function syncRelays(limit = 50): Promise<{ checked: number; updated
       continue;
     }
 
-    const childStatus = String(child?.status ?? "").toUpperCase();
+    const childStatus = String(recordOf(child)?.status ?? "").toUpperCase();
     const summary = childSummary(child);
     if (!childStatus) {
       await recordRelayFailure(row.parent_task_id, "child task is missing status");
@@ -467,7 +473,7 @@ export async function syncRelays(limit = 50): Promise<{ checked: number; updated
 }
 
 /** For getTask display: which node the task was pushed down to. */
-export async function relayInfo(taskId: string): Promise<Record<string, any> | null> {
+export async function relayInfo(taskId: string): Promise<Record<string, unknown> | null> {
   return q1(
     `SELECT child_node_id, child_url, child_task_id, state, child_state,
             child_result, sync_failures, last_error, created_at, updated_at

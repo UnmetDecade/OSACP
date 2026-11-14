@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible defect in OSACP.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not include credentials, private keys, real host addresses or production data.
+        For security vulnerabilities, use SECURITY.md instead of a public issue.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - scheduler
+        - pcs-issuer
+        - host-runtime
+        - secret-store
+        - admin-app
+        - agents
+        - deploy
+        - docs
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release tag, container image tag, or commit SHA.
+      placeholder: v4.5.0 / 41b7c4d
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: The smallest sequence that reproduces the problem.
+      placeholder: |
+        1. Deploy ...
+        2. Create ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, PostgreSQL version, Docker version and relevant configuration (redact secrets).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs. Redact tokens, keys and addresses.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed credentials, private keys and production data from this report.
+          required: true

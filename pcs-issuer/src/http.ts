@@ -5,6 +5,8 @@ import type { PcsConfig } from "./config.js";
 import { PcsError } from "./errors.js";
 import type {
   ApprovalTokenInput,
+  CreateAgentProfileInput,
+  CreateApiProfileInput,
   CreateDeploymentInput,
   CreateDeploymentPlanInput,
   EnrollInput,
@@ -53,7 +55,7 @@ function contentDisposition(name: string): string {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
-async function readJson(req: http.IncomingMessage): Promise<Record<string, any>> {
+async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -141,7 +143,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         const body = await readJson(req);
         const out = await service.createHost({
           name: String(body.name ?? ""),
-          labels: body.labels,
+          labels: body.labels as Record<string, unknown> | undefined,
         });
         return send(res, 201, {
           ...out,
@@ -182,8 +184,8 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         const out = await service.createSideload({
           host_id: String(body.host_id ?? ""),
           name: String(body.name ?? ""),
-          scopes: body.scopes,
-          expires_in_days: body.expires_in_days,
+          scopes: body.scopes as SideloadScope[] | undefined,
+          expires_in_days: body.expires_in_days as number | null | undefined,
           created_by: String(claims.operator_id ?? claims.sub),
         });
         // The plaintext token is returned exactly once, with the base URL the device should call.
@@ -413,13 +415,13 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         admin("host:admin");
         const body = await readJson(req);
         const out = await service.createSshHost({
-          name: body.name,
+          name: body.name as string | undefined,
           address: String(body.address ?? ""),
-          port: body.port,
-          user: body.user,
+          port: body.port as number | undefined,
+          user: body.user as string | undefined,
           private_key: String(body.private_key ?? ""),
           password: String(body.password ?? ""),
-          labels: body.labels,
+          labels: body.labels as Record<string, unknown> | undefined,
         });
         return send(res, 201, out);
       }
@@ -427,7 +429,11 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       if (method === "POST" && path === "/api/v1/platform/hosts/local") {
         admin("host:admin");
         const body = await readJson(req);
-        return send(res, 200, await service.createLocalHost({ name: body.name }));
+        return send(
+          res,
+          200,
+          await service.createLocalHost({ name: body.name as string | undefined }),
+        );
       }
 
       const hostProbe = /^\/api\/v1\/platform\/hosts\/([^/]+)\/probe$/.exec(path);
@@ -490,14 +496,20 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         const out = await service.updateHost(
           decodeURIComponent(hostDetail[1]),
           {
-            name: body.name,
-            address: body.address,
-            port: body.port,
-            user: body.user,
-            private_key: body.private_key,
-            password: body.password,
-            role_mode: body.role_mode,
-            native_builder: body.native_builder,
+            name: body.name as string | undefined,
+            address: body.address as string | undefined,
+            port: body.port as number | undefined,
+            user: body.user as string | undefined,
+            private_key: body.private_key as string | undefined,
+            password: body.password as string | undefined,
+            role_mode: body.role_mode as "containers" | "builder" | "scheduler" | undefined,
+            native_builder: body.native_builder as
+              | {
+                  display_name?: string;
+                  agent_profile_id?: string;
+                  api_profile_ids?: string[];
+                }
+              | undefined,
           },
           String(claims.operator_id ?? claims.sub),
         );
@@ -676,7 +688,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           res,
           201,
           await service.createAgentProfile(
-            body as any,
+            body as unknown as CreateAgentProfileInput,
             String(claims.operator_id ?? claims.sub),
           ),
         );
@@ -696,7 +708,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           200,
           await service.updateAgentProfile(
             decodeURIComponent(agentProfileEdit[1]),
-            body as any,
+            body as unknown as Partial<CreateAgentProfileInput>,
             String(claims.operator_id ?? claims.sub),
           ),
         );
@@ -721,7 +733,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           res,
           201,
           await service.createApiProfile(
-            body as any,
+            body as unknown as CreateApiProfileInput,
             String(claims.operator_id ?? claims.sub),
           ),
         );
@@ -741,7 +753,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           200,
           await service.updateApiProfile(
             decodeURIComponent(apiProfileEdit[1]),
-            body as any,
+            body as unknown as Partial<CreateApiProfileInput>,
             String(claims.operator_id ?? claims.sub),
           ),
         );
@@ -950,6 +962,6 @@ function publicUrl(req: http.IncomingMessage, cfg: PcsConfig): string {
   if (cfg.publicUrl) return cfg.publicUrl.replace(/\/$/, "");
   const host = req.headers.host ?? `${cfg.host}:${cfg.port}`;
   const forwarded = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
-  const proto = forwarded || ((req.socket as any).encrypted ? "https" : "http");
+  const proto = forwarded || ((req.socket as { encrypted?: boolean }).encrypted ? "https" : "http");
   return `${proto}://${host}`;
 }

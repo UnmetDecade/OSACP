@@ -20,7 +20,7 @@ export function verifyInstanceToken(
 ): InstanceClaims {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("Invalid token format");
-  let header: any;
+  let header: Record<string, unknown>;
   let claims: InstanceClaims;
   try {
     header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
