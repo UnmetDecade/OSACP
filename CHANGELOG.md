@@ -6,6 +6,15 @@ All notable changes to OSACP are recorded here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Added
+
+- Static GitHub Pages landing pages under `docs/` (English and Chinese) with links to the interactive architecture diagrams; README links point at the Pages URLs.
+- Admin app tests for the live client, sync mapping, action payloads, task creation, sideloads, host task scoping and UI primitives (100 tests).
+
+### Changed
+
+- Admin app coverage thresholds raised from 5%/2% to 21% statements, 20% branches, 18% functions and 22% lines, with stricter per-file floors for the live client, sync, host tree/task scoping and shared UI primitives.
+
 ## [4.5.1] - 2026-11-14
 
 ### Added

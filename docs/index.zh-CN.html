@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSACP · 多节点 AI Agent 计算与调度平台</title>
+<meta name="description" content="面向 AI 编码 Agent 的自托管算力底座：确定性调度、递归调度机、满权限构建机，可运行在任意数量的主机上。">
+<style>
+  :root{
+    color-scheme: light;
+    --page:#f9f9f7;
+    --surface:#fcfcfb;
+    --ink:#0b0b0b;
+    --ink2:#52514e;
+    --muted:#898781;
+    --border:rgba(11,11,11,.10);
+    --accent:#6250d6;
+    --accent-soft:rgba(98,80,214,.10);
+    --green:#1baf7a;
+    --pink:#d55181;
+    --code:#f1f0ea;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:#0d0d0d;
+      --surface:#1a1a19;
+      --ink:#f0efec;
+      --ink2:#c3c2b7;
+      --muted:#898781;
+      --border:rgba(255,255,255,.10);
+      --accent:#9085e9;
+      --accent-soft:rgba(144,133,233,.12);
+      --green:#25c08a;
+      --pink:#e0699a;
+      --code:#151514;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0d0d;
+    --surface:#1a1a19;
+    --ink:#f0efec;
+    --ink2:#c3c2b7;
+    --muted:#898781;
+    --border:rgba(255,255,255,.10);
+    --accent:#9085e9;
+    --accent-soft:rgba(144,133,233,.12);
+    --green:#25c08a;
+    --pink:#e0699a;
+    --code:#151514;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  html,body{margin:0}
+  body{
+    background:var(--page);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.6;
+  }
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 24px 64px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.02em}
+  .brand-mark{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--pink));display:grid;place-items:center;color:#fff;font-size:13px}
+  nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pill{
+    color:var(--ink2);font-size:13px;padding:7px 13px;border:1px solid var(--border);
+    border-radius:999px;background:var(--surface);
+  }
+  .pill:hover{color:var(--ink);border-color:var(--muted);text-decoration:none}
+  button.pill{cursor:pointer;font:inherit}
+  .hero{padding:72px 0 48px;max-width:860px}
+  .eyebrow{margin:0 0 14px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  h1{margin:0;font-size:clamp(34px,6vw,62px);line-height:1.08;letter-spacing:-.035em;font-weight:720}
+  h1 span{color:var(--muted)}
+  .lede{margin:22px 0 0;font-size:clamp(16px,2.2vw,19px);color:var(--ink2);max-width:720px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:28px}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:10px;
+    font-size:14px;font-weight:600;border:1px solid var(--border);
+  }
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{filter:brightness(1.08);text-decoration:none}
+  .btn.ghost{background:var(--surface);color:var(--ink)}
+  .btn.ghost:hover{border-color:var(--muted);text-decoration:none}
+  section{padding:44px 0;border-top:1px solid var(--border)}
+  .section-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  h2{margin:0;font-size:22px;letter-spacing:-.02em}
+  .section-head p{margin:0;color:var(--muted);font-size:13.5px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+  .card{
+    display:block;background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    padding:20px;color:var(--ink);transition:border-color .15s ease, transform .15s ease;
+  }
+  .card:hover{border-color:var(--muted);text-decoration:none;transform:translateY(-2px)}
+  .card .kicker{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .card h3{margin:8px 0 6px;font-size:16.5px;letter-spacing:-.01em}
+  .card p{margin:0;color:var(--ink2);font-size:13.5px}
+  .card .links{margin-top:14px;display:flex;gap:12px;font-size:12.5px;color:var(--muted)}
+  .card .links a{color:var(--accent)}
+  .parts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .part{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px}
+  .part b{display:block;font-size:14px;margin-bottom:4px}
+  .part span{font-size:13px;color:var(--ink2)}
+  .part i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}
+  .quick{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start}
+  pre{
+    margin:0;background:var(--code);border:1px solid var(--border);border-radius:14px;
+    padding:18px;overflow:auto;font-size:12.8px;line-height:1.7;
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  .note{background:var(--accent-soft);border:1px solid var(--border);border-radius:14px;padding:18px;font-size:13.5px;color:var(--ink2)}
+  .note b{color:var(--ink)}
+  footer{padding-top:32px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12.5px}
+  @media (max-width:760px){
+    .wrap{padding:20px 16px 48px}
+    .hero{padding:48px 0 34px}
+    .quick{grid-template-columns:1fr}
+    pre{font-size:12px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="brand-mark">O</span> OSACP</div>
+    <nav>
+      <a class="pill" href="#diagrams">架构图</a>
+      <a class="pill" href="#build">它是什么</a>
+      <a class="pill" href="#quickstart">快速开始</a>
+      <a class="pill" href="https://github.com/UnmetDecade/OSACP">GitHub</a>
+      <a class="pill" href="index.html" lang="en">English</a>
+      <button class="pill" id="theme" type="button">深色</button>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <p class="eyebrow">自托管 · 确定性 · Agent 无关</p>
+      <h1>AI 编码 Agent 的<span>算力底座。</span></h1>
+      <p class="lede">
+        在任意多台主机上运行 Claude Code、Codex、DeepSeek 或普通 Shell。
+        调度机负责决策，构建机负责执行，Agent 只负责解释。
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/UnmetDecade/OSACP">在 GitHub 查看</a>
+        <a class="btn ghost" href="#diagrams">打开架构图</a>
+        <a class="btn ghost" href="https://github.com/UnmetDecade/OSACP/releases">版本发布</a>
+      </div>
+    </div>
+
+    <section id="diagrams">
+      <div class="section-head">
+        <h2>架构图</h2>
+        <p>交互式 HTML · 明暗主题 · 中英文</p>
+      </div>
+      <div class="grid">
+        <a class="card" href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html">
+          <span class="kicker">平台</span>
+          <h3>PCS、host-runtime、调度机、构建机</h3>
+          <p>完整的控制面与执行面，包括联邦、中继、侧载接入和资源准入。</p>
+          <div class="links"><a href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html" lang="zh-CN">简体中文</a><a href="Open-Source-Agent-Compute-Platform-Architecture.html" lang="en">English</a></div>
+        </a>
+        <a class="card" href="sideload-architecture.zh-CN.html">
+          <span class="kicker">接入模型</span>
+          <h3>侧载令牌</h3>
+          <p>一台局域网设备如何用一枚限定权限的 <code>sdl_…</code> 令牌驱动一台主机的构建机，同时看不到调度机地址。</p>
+          <div class="links"><a href="sideload-architecture.zh-CN.html" lang="zh-CN">简体中文</a><a href="sideload-architecture.html" lang="en">English</a></div>
+        </a>
+        <a class="card" href="example-project-architecture.zh-CN.html">
+          <span class="kicker">部署形态</span>
+          <h3>一台调度机 + N 台开发机</h3>
+          <p>今天就能落地的具体形态：内建的只有调度机和开发机，其他参与者全部通过侧载接入。</p>
+          <div class="links"><a href="example-project-architecture.zh-CN.html" lang="zh-CN">简体中文</a><a href="example-project-architecture.html" lang="en">English</a></div>
+        </a>
+      </div>
+    </section>
+
+    <section id="build">
+      <div class="section-head">
+        <h2>四个运动部件</h2>
+        <p>除此之外，没有任何东西决定谁运行什么</p>
+      </div>
+      <div class="parts">
+        <div class="part"><b><i style="background:var(--accent)"></i>PCS</b><span>持有主机、部署计划、Profile、Secret 引用和审计。只写期望状态，从不直接调用 Docker。</span></div>
+        <div class="part"><b><i style="background:var(--green)"></i>host-runtime</b><span>运行在每台主机上。验证签名命令、创建容器并上报资源。只出站。</span></div>
+        <div class="part"><b><i style="background:var(--pink)"></i>调度机</b><span>状态权威。在递归树中排队、准入、发租约、fencing、派发和记录。</span></div>
+        <div class="part"><b><i style="background:var(--muted)"></i>构建机</b><span>唯一的工作角色。领取任务，运行 Agent 适配器或确定性 Shell，流式输出并上传产物。</span></div>
+      </div>
+    </section>
+
+    <section id="quickstart">
+      <div class="section-head">
+        <h2>快速开始</h2>
+        <p>单机 Compose · Node 22+ · PostgreSQL 16 · Docker 24+</p>
+      </div>
+      <div class="quick">
+        <pre><code>cd deploy
+cp .env.example .env
+mkdir -p keys tokens data/postgres data/artifacts
+
+ssh-keygen -t ed25519 -N "" -f keys/scheduler
+ssh-keygen -t ed25519 -N "" -f keys/builder
+for os in 20 22 24 26; do cp keys/builder.pub "keys/builder$os.pub"; done
+
+docker compose -f compose.yaml --env-file .env up -d --build</code></pre>
+        <div class="note">
+          <p style="margin:0 0 10px"><b>然后打开管理端。</b></p>
+          <p style="margin:0 0 10px">添加主机、部署调度机、添加构建机，然后提交第一个任务。需要让设备用 <code>curl</code> 调用主机时，再接入侧载。</p>
+          <p style="margin:0"><a href="https://github.com/UnmetDecade/OSACP/blob/main/docs/deployment.zh-CN.md">部署指南</a> · <a href="https://github.com/UnmetDecade/OSACP/blob/main/docs/sideload.zh-CN.md">侧载指南</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>继续阅读</h2>
+        <p>每篇设计文档都有英文默认版和中文版</p>
+      </div>
+      <div class="grid">
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/README.zh-CN.md"><span class="kicker">从这里开始</span><h3>README</h3><p>为什么需要这个平台、它由什么组成、如何运行。</p></a>
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/docs/scheduling-algorithm.zh-CN.md"><span class="kicker">核心</span><h3>调度算法</h3><p>能力评分、加权最大最小注水、压力处理和跨调度机中继。</p></a>
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/docs/architecture.zh-CN.md"><span class="kicker">设计</span><h3>总体架构</h3><p>控制面、host runtime、递归调度机和任务状态机。</p></a>
+        <a class="card" href="https://github.com/UnmetDecade/OSACP/blob/main/docs/federation.zh-CN.md"><span class="kicker">扩展</span><h3>主机联邦</h3><p>把主机合并成树、汇总 ΣW，并在不复制任务的前提下中继。</p></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>OSACP · MIT License</span>
+    <span><a href="https://github.com/UnmetDecade/OSACP">github.com/UnmetDecade/OSACP</a></span>
+  </footer>
+</div>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var button = document.getElementById("theme");
+    var saved = null;
+    try { saved = localStorage.getItem("osacp-theme"); } catch (e) {}
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+    function isDark() {
+      return root.getAttribute("data-theme") === "dark" ||
+        (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    }
+    function label() { button.textContent = isDark() ? "浅色" : "深色"; }
+    button.addEventListener("click", function () {
+      var next = isDark() ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("osacp-theme", next); } catch (e) {}
+      label();
+    });
+    label();
+  })();
+</script>
+</body>
+</html>

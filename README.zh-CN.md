@@ -41,7 +41,7 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 ## 架构
 
-<a href="docs/Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html">
+<a href="https://unmetdecade.github.io/OSACP/Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html">
   <img src="docs/assets/architecture-zh.png" alt="平台架构 —— PCS 控制面、host-runtime、递归调度机、侧载通道与跨调度机中继" width="100%">
 </a>
 
@@ -56,11 +56,11 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 侧载不是第五个部件：它是一枚按主机限定的令牌，从 PCS 进来后落到该主机的根调度机，所以局域网设备走的是和控制台一样的任务链路。文件跟着任务走 —— 附件进、产物出。
 
-完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](docs/Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html)与 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
+完整模型（能力值 `W`、任务难度 `D`、`ΣW` 汇总、中继深度）见[架构图](https://unmetdecade.github.io/OSACP/Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html)与 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
 
 ## 示例工程架构
 
-<a href="docs/example-project-architecture.zh-CN.html">
+<a href="https://unmetdecade.github.io/OSACP/example-project-architecture.zh-CN.html">
   <img src="docs/assets/example-architecture-zh.png" alt="示例工程架构 — 内建一台调度机与 N 台开发机，开发人员、测试人员、CI 与其他系统通过侧载令牌接入" width="100%">
 </a>
 
@@ -281,6 +281,8 @@ cd admin-app   && npm install && npm run lint && npm test && npm run build
 
 ## 文档
 
+每篇设计文档都有英文默认版和中文版；交互式架构图托管在[文档站](https://unmetdecade.github.io/OSACP/)。
+
 - [总体架构](docs/architecture.zh-CN.md)
 - [分配调度算法](docs/scheduling-algorithm.zh-CN.md) —— 能力值评分、注水分配、压力处理、中继
 - [控制面与主机联邦](docs/federation.zh-CN.md)
@@ -289,7 +291,7 @@ cd admin-app   && npm install && npm run lint && npm test && npm run build
 - [管理应用](docs/admin-app.zh-CN.md)
 - [Agent 控制](docs/agent-control.zh-CN.md) —— 任务暂停、自主程度、归类结果、失败分类
 - [侧载](docs/sideload.zh-CN.md) —— curl 令牌、权限、文件收发
-- [示例工程架构](docs/example-project-architecture.zh-CN.html) —— 一台调度机 + N 台开发机的实际部署形态
+- [示例工程架构](https://unmetdecade.github.io/OSACP/example-project-architecture.zh-CN.html) —— 一台调度机 + N 台开发机的实际部署形态
 - [部署](docs/deployment.zh-CN.md)
 - [English README](README.md)
 
