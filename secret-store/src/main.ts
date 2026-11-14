@@ -65,11 +65,21 @@ async function body(req: http.IncomingMessage): Promise<Record<string, any>> {
   }
 }
 
+/** Parse `Bearer <token>` without a regular expression: a linear scan cannot be made to backtrack. */
+function bearerToken(header: string | undefined): string | null {
+  if (!header) return null;
+  const prefix = "bearer ";
+  if (header.length <= prefix.length) return null;
+  if (header.slice(0, prefix.length).toLowerCase() !== prefix) return null;
+  const token = header.slice(prefix.length).trim();
+  return token.length ? token : null;
+}
+
 function instanceFrom(req: http.IncomingMessage): string {
-  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? "");
-  if (!m) throw new SecretError("TOKEN_REQUIRED", "Missing instance token", 401);
+  const token = bearerToken(req.headers.authorization);
+  if (!token) throw new SecretError("TOKEN_REQUIRED", "Missing instance token", 401);
   try {
-    return verifyInstanceToken(m[1], publicKey, audience).sub;
+    return verifyInstanceToken(token, publicKey, audience).sub;
   } catch (e) {
     throw new SecretError("TOKEN_INVALID", e instanceof Error ? e.message : "Invalid token", 401);
   }

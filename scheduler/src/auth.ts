@@ -36,11 +36,20 @@ function safeEqual(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
+/** Parse `Bearer <token>` without a regular expression: a linear scan cannot be made to backtrack. */
+function bearerToken(header: string | undefined): string | null {
+  if (!header) return null;
+  const prefix = "bearer ";
+  if (header.length <= prefix.length) return null;
+  if (header.slice(0, prefix.length).toLowerCase() !== prefix) return null;
+  const token = header.slice(prefix.length).trim();
+  return token.length ? token : null;
+}
+
 function bearer(req: http.IncomingMessage): string {
-  const header = req.headers.authorization ?? "";
-  const m = /^Bearer\s+(.+)$/i.exec(header);
-  if (!m) throw new ApiError(401, "UNAUTHENTICATED", "missing Bearer token");
-  return m[1];
+  const token = bearerToken(req.headers.authorization);
+  if (!token) throw new ApiError(401, "UNAUTHENTICATED", "missing Bearer token");
+  return token;
 }
 
 export function requireInstanceAuth(req: http.IncomingMessage): AuthContext | null {

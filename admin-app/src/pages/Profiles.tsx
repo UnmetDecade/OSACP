@@ -336,10 +336,21 @@ const API_PRESETS: Record<
   },
 };
 
-function apiProviderOf(baseUrl: string): ApiProvider {
-  if (baseUrl.includes("api.deepseek.com")) return "deepseek";
-  if (baseUrl.includes("api.anthropic.com")) return "anthropic";
-  if (baseUrl.includes("api.openai.com")) return "openai";
+/**
+ * Match the provider by exact hostname. A substring check would classify
+ * `https://api.anthropic.com.example.net/` as Anthropic, so parse the URL first
+ * and compare the host only.
+ */
+export function apiProviderOf(baseUrl: string): ApiProvider {
+  let hostname: string;
+  try {
+    hostname = new URL(baseUrl.includes("://") ? baseUrl : `https://${baseUrl}`).hostname.toLowerCase();
+  } catch {
+    return "custom";
+  }
+  if (hostname === "api.deepseek.com") return "deepseek";
+  if (hostname === "api.anthropic.com") return "anthropic";
+  if (hostname === "api.openai.com") return "openai";
   return "custom";
 }
 

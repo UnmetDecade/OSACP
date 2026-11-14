@@ -5827,11 +5827,18 @@ function safeEqual(a, b) {
   const bb = Buffer.from(b);
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
+function bearerToken(header) {
+  if (!header) return null;
+  const prefix = "bearer ";
+  if (header.length <= prefix.length) return null;
+  if (header.slice(0, prefix.length).toLowerCase() !== prefix) return null;
+  const token = header.slice(prefix.length).trim();
+  return token.length ? token : null;
+}
 function bearer(req) {
-  const header = req.headers.authorization ?? "";
-  const m = /^Bearer\s+(.+)$/i.exec(header);
-  if (!m) throw new ApiError(401, "UNAUTHENTICATED", "missing Bearer token");
-  return m[1];
+  const token = bearerToken(req.headers.authorization);
+  if (!token) throw new ApiError(401, "UNAUTHENTICATED", "missing Bearer token");
+  return token;
 }
 function requireInstanceAuth(req) {
   if (jwtEnabled()) {

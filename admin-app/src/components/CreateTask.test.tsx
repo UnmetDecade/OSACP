@@ -7,7 +7,7 @@ import { I18nProvider } from "../i18n";
 import { useLive } from "../live/context";
 import { db } from "../store";
 import type { Host, Instance } from "../types";
-import { CreateTaskModal } from "./CreateTask";
+import { CreateTaskModal, attachmentPreviewSrc } from "./CreateTask";
 
 vi.mock("../api", () => ({ submitBuild: vi.fn() }));
 vi.mock("../live/context", () => ({ useLive: vi.fn() }));
@@ -91,6 +91,21 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+});
+
+describe("attachmentPreviewSrc", () => {
+  it("renders a data URL only for images with valid base64 payloads", () => {
+    expect(attachmentPreviewSrc("image/png", "iVBORw0KGgo=")).toBe("data:image/png;base64,iVBORw0KGgo=");
+    expect(attachmentPreviewSrc("image/webp", "AAAA")).toBe("data:image/webp;base64,AAAA");
+  });
+
+  it("rejects non-image media types and malformed payloads", () => {
+    expect(attachmentPreviewSrc("image/svg+xml", "PHN2Zz4=")).toBeNull();
+    expect(attachmentPreviewSrc("text/html", "PGgxPg==")).toBeNull();
+    expect(attachmentPreviewSrc("image/png", "not base64!")).toBeNull();
+    expect(attachmentPreviewSrc("image/png", "AAAA\nBBBB")).toBeNull();
+    expect(attachmentPreviewSrc("image/png", "AA=AAA")).toBeNull();
+  });
 });
 
 describe("CreateTaskModal", () => {
