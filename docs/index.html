@@ -98,8 +98,12 @@
   .card .kicker{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
   .card h3{margin:8px 0 6px;font-size:16.5px;letter-spacing:-.01em}
   .card p{margin:0;color:var(--ink2);font-size:13.5px}
-  .card .links{margin-top:14px;display:flex;gap:12px;font-size:12.5px;color:var(--muted)}
-  .card .links a{color:var(--accent)}
+  /* A card and its language links are siblings: nesting anchors is invalid HTML
+     and makes browsers split the card into fragments. */
+  .diagram{display:flex;flex-direction:column;gap:10px}
+  .diagram .card{flex:1}
+  .diagram .links{display:flex;gap:12px;font-size:12.5px;padding:0 4px}
+  .diagram .links a{color:var(--accent)}
   .parts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
   .part{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px}
   .part b{display:block;font-size:14px;margin-bottom:4px}
@@ -157,24 +161,30 @@
         <p>Interactive HTML · light and dark · English and Chinese</p>
       </div>
       <div class="grid">
-        <a class="card" href="Open-Source-Agent-Compute-Platform-Architecture.html">
-          <span class="kicker">Platform</span>
-          <h3>PCS, host-runtime, schedulers, builders</h3>
-          <p>The full control plane and execution plane, including federation, relay, sideload access and resource admission.</p>
+        <div class="diagram">
+          <a class="card" href="Open-Source-Agent-Compute-Platform-Architecture.html">
+            <span class="kicker">Platform</span>
+            <h3>PCS, host-runtime, schedulers, builders</h3>
+            <p>The full control plane and execution plane, including federation, relay, sideload access and resource admission.</p>
+          </a>
           <div class="links"><a href="Open-Source-Agent-Compute-Platform-Architecture.html">English</a><a href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html" lang="zh-CN">简体中文</a></div>
-        </a>
-        <a class="card" href="sideload-architecture.html">
-          <span class="kicker">Access model</span>
-          <h3>Sideload tokens</h3>
-          <p>How one LAN device drives one host's builders with a scoped <code>sdl_…</code> token, without learning the scheduler address.</p>
+        </div>
+        <div class="diagram">
+          <a class="card" href="sideload-architecture.html">
+            <span class="kicker">Access model</span>
+            <h3>Sideload tokens</h3>
+            <p>How one LAN device drives one host's builders with a scoped <code>sdl_…</code> token, without learning the scheduler address.</p>
+          </a>
           <div class="links"><a href="sideload-architecture.html">English</a><a href="sideload-architecture.zh-CN.html" lang="zh-CN">简体中文</a></div>
-        </a>
-        <a class="card" href="example-project-architecture.html">
-          <span class="kicker">Deployment</span>
-          <h3>One scheduler, N development machines</h3>
-          <p>A concrete shape you can run today: only the scheduler and development machines are built in; everyone else enters through sideload.</p>
+        </div>
+        <div class="diagram">
+          <a class="card" href="example-project-architecture.html">
+            <span class="kicker">Deployment</span>
+            <h3>One scheduler, N development machines</h3>
+            <p>A concrete shape you can run today: only the scheduler and development machines are built in; everyone else enters through sideload.</p>
+          </a>
           <div class="links"><a href="example-project-architecture.html">English</a><a href="example-project-architecture.zh-CN.html" lang="zh-CN">简体中文</a></div>
-        </a>
+        </div>
       </div>
     </section>
 

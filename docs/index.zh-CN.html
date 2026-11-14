@@ -98,8 +98,12 @@
   .card .kicker{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
   .card h3{margin:8px 0 6px;font-size:16.5px;letter-spacing:-.01em}
   .card p{margin:0;color:var(--ink2);font-size:13.5px}
-  .card .links{margin-top:14px;display:flex;gap:12px;font-size:12.5px;color:var(--muted)}
-  .card .links a{color:var(--accent)}
+  /* A card and its language links are siblings: nesting anchors is invalid HTML
+     and makes browsers split the card into fragments. */
+  .diagram{display:flex;flex-direction:column;gap:10px}
+  .diagram .card{flex:1}
+  .diagram .links{display:flex;gap:12px;font-size:12.5px;padding:0 4px}
+  .diagram .links a{color:var(--accent)}
   .parts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
   .part{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px}
   .part b{display:block;font-size:14px;margin-bottom:4px}
@@ -157,24 +161,30 @@
         <p>交互式 HTML · 明暗主题 · 中英文</p>
       </div>
       <div class="grid">
-        <a class="card" href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html">
-          <span class="kicker">平台</span>
-          <h3>PCS、host-runtime、调度机、构建机</h3>
-          <p>完整的控制面与执行面，包括联邦、中继、侧载接入和资源准入。</p>
+        <div class="diagram">
+          <a class="card" href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html">
+            <span class="kicker">平台</span>
+            <h3>PCS、host-runtime、调度机、构建机</h3>
+            <p>完整的控制面与执行面，包括联邦、中继、侧载接入和资源准入。</p>
+          </a>
           <div class="links"><a href="Open-Source-Agent-Compute-Platform-Architecture.zh-CN.html" lang="zh-CN">简体中文</a><a href="Open-Source-Agent-Compute-Platform-Architecture.html" lang="en">English</a></div>
-        </a>
-        <a class="card" href="sideload-architecture.zh-CN.html">
-          <span class="kicker">接入模型</span>
-          <h3>侧载令牌</h3>
-          <p>一台局域网设备如何用一枚限定权限的 <code>sdl_…</code> 令牌驱动一台主机的构建机，同时看不到调度机地址。</p>
+        </div>
+        <div class="diagram">
+          <a class="card" href="sideload-architecture.zh-CN.html">
+            <span class="kicker">接入模型</span>
+            <h3>侧载令牌</h3>
+            <p>一台局域网设备如何用一枚限定权限的 <code>sdl_…</code> 令牌驱动一台主机的构建机，同时看不到调度机地址。</p>
+          </a>
           <div class="links"><a href="sideload-architecture.zh-CN.html" lang="zh-CN">简体中文</a><a href="sideload-architecture.html" lang="en">English</a></div>
-        </a>
-        <a class="card" href="example-project-architecture.zh-CN.html">
-          <span class="kicker">部署形态</span>
-          <h3>一台调度机 + N 台开发机</h3>
-          <p>今天就能落地的具体形态：内建的只有调度机和开发机，其他参与者全部通过侧载接入。</p>
+        </div>
+        <div class="diagram">
+          <a class="card" href="example-project-architecture.zh-CN.html">
+            <span class="kicker">部署形态</span>
+            <h3>一台调度机 + N 台开发机</h3>
+            <p>今天就能落地的具体形态：内建的只有调度机和开发机，其他参与者全部通过侧载接入。</p>
+          </a>
           <div class="links"><a href="example-project-architecture.zh-CN.html" lang="zh-CN">简体中文</a><a href="example-project-architecture.html" lang="en">English</a></div>
-        </a>
+        </div>
       </div>
     </section>
 
