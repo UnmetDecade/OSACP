@@ -36,14 +36,15 @@
 │   └── sshd_config
 ├── agents/                    # CLI Agent 适配器（部署时写入）
 │   ├── cli-agent.mjs          # Agent Profile 入口
-│   └── task-envelope.mjs      # 适配器按相对路径导入，必须同目录
+│   ├── task-envelope.mjs      # 适配器按相对路径导入，必须同目录
+│   └── mcp.json               # 可选 MCP 配置，仅在 payload 带了下发时存在
 ├── cache/                     # 主机缓存（只读挂载）
 │   ├── node/                  # Node 22+
 │   ├── agents/                # claude / codex
 │   └── openssh/*.deb          # 与镜像同版本的 ssh/sshd
 ├── tokens/                    # 实例 JWT（0600，部署时写入）
 ├── keys/                      # 授权公钥（只读）
-├── workspace/                 # 工作区（卷）
+├── workspace/                 # 工作区（卷）；.agent/ 放本次执行的会话记录
 ├── artifacts/                 # 产物暂存（卷）
 ├── state/                     # 已装软件包清单（按实例隔离的卷）
 ├── apt-cache/                 # 主机共享 deb 缓存（卷）
@@ -137,6 +138,50 @@ STARTING → REGISTERING → ONLINE ⇄ SUSPECT → OFFLINE
 5. 持续上报 `progress`。
 6. 上传产物到 `artifacts`，`result` 上报摘要。
 7. 清理工作区（可配置保留）。
+
+### 4.4 会话记录
+
+适配器只把解析后的结果、脱敏日志和进度事件发给 PCS，因此它同时把 CLI 自己的输出留在工作区里便于事后排查：
+
+| 文件 | 内容 |
+|---|---|
+| `.agent/session.jsonl` | CLI 的 stdout 原始字节；Claude Code 下就是它的 `stream-json` 事件流 |
+| `.agent/session.stderr.log` | CLI 的 stderr |
+
+- 每次执行都会覆盖这两个文件，上限 16 MiB；被截断的 JSONL 末尾会写一行
+  `{"type":"pcs_session_log","truncated":true}`，表示后面的内容没有保留。
+- 文件在工作区里，管理端的“工作目录”页面可以直接查看、下载。容器构建机和调度机容器默认在任务结束后删除
+  attempt 工作区（裸机主机保留）；要让记录留下来，部署时给实例加环境变量 `KEEP_WORKSPACE=1`。
+- 记录是**原文**：可能包含 Agent 看到的文件内容和命令输出，包括任务从环境变量里打印出来的东西。
+  工作区的访问权限就是这条记录的信任边界。
+- Agent Profile 加 `--no-session-log` 可关闭；此时结果的 metrics 里不再有 `session_log`。
+
+### 4.5 MCP 工具
+
+Claude Code Agent 可以加载 MCP Server。适配器按以下顺序确定配置：
+
+1. Agent Profile 上的 `--mcp-config <path>`；
+2. 环境变量 `PLATFORM_MCP_CONFIG`；
+3. 随部署下发的 `/opt/platform/agents/mcp.json`。
+
+默认不下发任何配置：启用 MCP 会让每次执行开头多一次 `npx`/`uvx` 下载。需要时，在构建 payload 前把
+[agents/mcp.example.json](../agents/mcp.example.json) 复制为 `agents/mcp.json`：
+
+```bash
+cp agents/mcp.example.json agents/mcp.json
+node scripts/build-app-payload.mjs
+```
+
+构建脚本会把它带进构建机 payload，部署时写到 `/opt/platform/agents/mcp.json`。示例固定了 Playwright MCP
+（`@playwright/mcp`）和文件系统 Server 的版本，并把 npm 缓存放在 `/opt/platform/state/npm`，让下载在任务之间复用。注意：
+
+- Playwright 需要实例里已安装浏览器二进制（先执行一次 `npx playwright install chromium`，或使用预装镜像）；
+  截图和 trace 落在 `.agent/mcp-output`，可以在工作目录页面里看到。
+- 裸机构建机没有 `/opt/platform`，需要自行调整配置里的缓存路径。
+- `auto` 审批模式下，适配器会预批准 `Bash` 和配置里点名的每个 Server（`mcp__<server>__*`）；
+  `ask`、`edits` 模式下 MCP 工具不会预批准。
+- MCP Server 继承与 CLI 相同的最小环境；需要 token 的 Server 必须把 token 加进 `PLATFORM_AGENT_PASS_ENV`
+  和 Profile 的 `--pass-env`。
 
 ---
 

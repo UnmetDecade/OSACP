@@ -75,7 +75,7 @@ const cfg = {
   request_timeout_ms: 5000,
   token_dir: process.env.INSTANCE_TOKEN_DIR || "/opt/platform/tokens",
   workspace_dir: "/opt/platform/workspace/scheduler",
-  keep_workspace: false,
+  keep_workspace: process.env.KEEP_WORKSPACE === "1",
   audit_dir: "/opt/platform/audit",
   ...(process.env.PROFILES_FILE ? { profiles_file: process.env.PROFILES_FILE } : {}),
   instances: [{

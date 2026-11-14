@@ -85,6 +85,10 @@ fs.mkdirSync(path.join(builderOut, "codex"), { recursive: true });
 await bundle({ "agent-runtime": runtimeEntry }, builderOut);
 fs.copyFileSync(path.join(repo, "agents", "cli-agent.mjs"), path.join(builderOut, "cli-agent.mjs"));
 fs.copyFileSync(path.join(repo, "agents", "task-envelope.mjs"), path.join(builderOut, "task-envelope.mjs"));
+// Opt-in MCP servers: copy agents/mcp.json when the operator created one (see agents/mcp.example.json).
+// There is no default so a fresh deployment does not pay npx startup on every run.
+const mcpConfig = path.join(repo, "agents", "mcp.json");
+if (fs.existsSync(mcpConfig)) fs.copyFileSync(mcpConfig, path.join(builderOut, "mcp.json"));
 fs.copyFileSync(
   path.join(repo, "deploy", "builder", "app-entrypoint.sh"),
   path.join(builderOut, "entrypoint.sh"),

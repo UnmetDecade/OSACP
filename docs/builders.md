@@ -36,14 +36,15 @@ Rules:
 │   └── sshd_config
 ├── agents/                    # CLI Agent adapters (written at deployment)
 │   ├── cli-agent.mjs          # Agent Profile entrypoint
-│   └── task-envelope.mjs      # imported by the adapter, so it ships in the same directory
+│   ├── task-envelope.mjs      # imported by the adapter, so it ships in the same directory
+│   └── mcp.json               # optional MCP servers, only when the payload delivered one
 ├── cache/                     # host cache (read-only mount)
 │   ├── node/                  # Node 22+
 │   ├── agents/                # claude / codex
 │   └── openssh/*.deb          # same-version ssh/sshd as the image
 ├── tokens/                    # instance JWT (0600, written at deployment)
 ├── keys/                      # authorized public keys (read-only)
-├── workspace/                 # workspace (volume)
+├── workspace/                 # workspace (volume); .agent/ holds the per-run session transcript
 ├── artifacts/                 # artifact staging (volume)
 ├── state/                     # installed package list (per-instance isolated volume)
 ├── apt-cache/                 # host-shared deb cache (volume)
@@ -138,6 +139,53 @@ STARTING → REGISTERING → ONLINE ⇄ SUSPECT → OFFLINE
 5. Continuously report `progress`.
 6. Upload artifacts to `artifacts` and report a summary via `result`.
 7. Clean up the workspace (retention is configurable).
+
+### 4.4 Session Transcripts
+
+The adapter only sends PCS the parsed result, redacted log lines and progress events, so it also keeps the CLI's own output
+inside the workspace for post-mortems:
+
+| File | Content |
+|---|---|
+| `.agent/session.jsonl` | The CLI's stdout, byte for byte; with Claude Code this is its `stream-json` event stream |
+| `.agent/session.stderr.log` | The CLI's stderr |
+
+- Both files are overwritten on each execution and capped at 16 MiB; a truncated JSONL file ends with a
+  `{"type":"pcs_session_log","truncated":true}` line so readers know the tail is missing.
+- They live in the workspace, so the admin app's workspace browser (`Builder → 工作目录`) can open and download them.
+  Container builders and the scheduler container delete the attempt workspace when a task ends (bare-metal hosts keep it);
+  deploy the instance with the environment variable `KEEP_WORKSPACE=1` to retain the transcript.
+- The transcript is raw: it can contain file contents and command output the agent saw, including anything a task printed
+  from its environment. Treat workspace access as the trust boundary.
+- `--no-session-log` disables the transcript for an Agent Profile; the result's metrics then omit `session_log`.
+
+### 4.5 MCP Tools
+
+Claude Code Agents can load MCP servers. The adapter resolves the configuration in this order:
+
+1. `--mcp-config <path>` on the Agent Profile;
+2. the `PLATFORM_MCP_CONFIG` environment variable;
+3. `/opt/platform/agents/mcp.json`, delivered with the deployment payload.
+
+No configuration is shipped by default: enabling MCP servers adds an `npx`/`uvx` download to the start of every run.
+To opt in, copy [agents/mcp.example.json](../agents/mcp.example.json) to `agents/mcp.json` before building the payload:
+
+```bash
+cp agents/mcp.example.json agents/mcp.json
+node scripts/build-app-payload.mjs
+```
+
+The payload build copies it to the builder, and the deployment writes it to `/opt/platform/agents/mcp.json`.
+The example pins Playwright MCP (`@playwright/mcp`) and the filesystem server, and puts the npm cache in
+`/opt/platform/state/npm` so downloads survive between tasks. Notes:
+
+- Playwright needs browser binaries in the instance (`npx playwright install chromium` once, or a prebuilt image);
+  screenshots and traces go to `.agent/mcp-output` and are visible in the workspace browser.
+- Bare-metal builders have no `/opt/platform`; adjust the cache path in the config.
+- In the `auto` approval mode, the adapter pre-approves `Bash` and every server named in the config
+  (`mcp__<server>__*`); in `ask` and `edits` modes MCP tools are not pre-approved.
+- MCP servers inherit the same minimal environment as the CLI, so a server that needs a token requires that token in
+  `PLATFORM_AGENT_PASS_ENV` and the Profile's `--pass-env`.
 
 ---
 

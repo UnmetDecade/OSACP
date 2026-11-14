@@ -26,6 +26,9 @@
  *   --pass-env <NAME>   Pass the specified environment variable to the external CLI (repeatable). By default only a minimal
  *                       safe environment is passed, preventing unrelated host credentials from being read by the Agent.
  *                       Example: --pass-env ANTHROPIC_API_KEY
+ *   --mcp-config <path> MCP server configuration for Claude Code. Falls back to PLATFORM_MCP_CONFIG, then to
+ *                       /opt/platform/agents/mcp.json when the deployment delivered one.
+ *   --no-session-log    Do not keep the CLI's raw stdout/stderr under .agent/ in the workspace.
  */
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -53,6 +56,7 @@ function parseArgs(argv) {
     promptStdin: false,
     resultFile: true,
     mcpConfig: "",
+    sessionLog: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -70,6 +74,7 @@ function parseArgs(argv) {
     else if (a === "--no-result-file") out.resultFile = false;
     else if (a === "--pass-env") out.passEnv.push(next());
     else if (a === "--mcp-config") out.mcpConfig = next();
+    else if (a === "--no-session-log") out.sessionLog = false;
     else throw new Error(`Unknown argument: ${a}`);
   }
   out.provider = out.provider ?? "claude";
@@ -78,6 +83,17 @@ function parseArgs(argv) {
 
 const opts = parseArgs(process.argv.slice(2));
 const WORKSPACE = process.env.PLATFORM_WORKSPACE ?? process.cwd();
+/** MCP servers shipped with the builder payload; absent unless the deployment included a config. */
+const DEFAULT_MCP_CONFIG = "/opt/platform/agents/mcp.json";
+/**
+ * Raw CLI output kept in the workspace next to the artifacts.
+ *
+ * PCS only receives the parsed result and redacted log lines, so without this file there is no
+ * record of what the agent actually saw and did. The directory uses the same trust boundary as the
+ * rest of the workspace: whoever may browse the workspace may read the transcript.
+ */
+const SESSION_LOG_DIR = ".agent";
+const SESSION_LOG_MAX_BYTES = 16 * 1024 * 1024;
 /** Agent persona configuration delivered by the platform; when fields are empty, the platform default prompt is kept. */
 const PROFILE = (() => {
   try {
@@ -213,7 +229,7 @@ function stripConflicting(args) {
  * unknown value fails closed to `ask`. The effective mode is reported back so the scheduler's
  * audit trail shows what actually ran, not just what was requested.
  */
-function resolveApproval(requested) {
+function resolveApproval(requested, mcpTools = []) {
   const supported = APPROVAL_FLAGS[opts.provider];
   const raw = String(requested ?? "full").toLowerCase();
   // No matrix for this driver: report honestly instead of pretending the mode was applied.
@@ -223,7 +239,29 @@ function resolveApproval(requested) {
   for (const level of APPROVAL_LEVELS) {
     if (APPROVAL_LEVELS.indexOf(level) <= APPROVAL_LEVELS.indexOf(wanted) && supported[level]) mode = level;
   }
-  return { requested: raw, mode, args: [...supported[mode]], downgraded: mode !== raw };
+  const args = [...supported[mode]];
+  // MCP tools are part of the same sandbox as Bash: the container network policy and the workspace are
+  // the boundary, so `auto` pre-approves them too. The CLI skips a bare `mcp__*` allow rule, so the
+  // rules have to name each configured server (`mcp__<server>__*`).
+  if (mode === "auto" && mcpTools.length) {
+    const at = args.indexOf("--allowedTools");
+    if (at >= 0 && at + 1 < args.length) args[at + 1] = [args[at + 1], ...mcpTools].join(",");
+  }
+  return { requested: raw, mode, args, downgraded: mode !== raw };
+}
+
+/** Tool allow rules for every server in the MCP config; characters in server names become `_`. */
+function mcpToolRules(configFile) {
+  if (!configFile) return [];
+  try {
+    const servers = JSON.parse(fs.readFileSync(configFile, "utf8"))?.mcpServers;
+    if (!servers || typeof servers !== "object") return [];
+    return Object.keys(servers)
+      .map((name) => `mcp__${name.replace(/[^A-Za-z0-9_-]/g, "_")}__*`)
+      .slice(0, 50);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -299,6 +337,68 @@ function redact(line) {
     .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>")
     .replace(/((?:secret|token|password|passwd|api[_-]?key)\s*[=:]\s*)[^\s,"'}]+/gi, "$1<redacted>")
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<redacted-private-key>");
+}
+
+/**
+ * Open one bounded transcript file. Writes are synchronous: the file has to be complete before the
+ * result is sent, and an async stream can be cut off when the adapter exits right after the run.
+ */
+function openSessionLog(file, { lineDelimited = false } = {}) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    return {
+      fd: fs.openSync(file, "w", 0o600),
+      bytes: 0,
+      truncated: false,
+      endsWithNewline: true,
+      lineDelimited,
+      lastNewlineOffset: 0,
+    };
+  } catch (e) {
+    event({ type: "log", level: "warn", message: `cannot write ${path.relative(WORKSPACE, file)}: ${e?.message ?? e}` });
+    return null;
+  }
+}
+
+function appendSessionLog(log, chunk) {
+  if (!log || log.fd === null || log.truncated) return;
+  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+  if (!buf.length) return;
+  // Stop at the cap on a chunk boundary instead of splitting a JSON line in half.
+  if (log.bytes + buf.length > SESSION_LOG_MAX_BYTES) {
+    log.truncated = true;
+    return;
+  }
+  try {
+    fs.writeSync(log.fd, buf);
+  } catch {
+    log.fd = null;
+    return;
+  }
+  log.bytes += buf.length;
+  log.endsWithNewline = buf[buf.length - 1] === 0x0a;
+  const newline = buf.lastIndexOf(0x0a);
+  if (newline >= 0) log.lastNewlineOffset = log.bytes - (buf.length - newline - 1);
+}
+
+function closeSessionLog(log, marker) {
+  if (!log || log.fd === null) return;
+  try {
+    if (log.truncated) {
+      // Keep the JSONL transcript line-valid: drop the incomplete last line the cap left behind.
+      if (log.lineDelimited && !log.endsWithNewline) fs.ftruncateSync(log.fd, log.lastNewlineOffset);
+      const needsNewline = !log.endsWithNewline && !log.lineDelimited;
+      fs.writeSync(log.fd, Buffer.from(`${needsNewline ? "\n" : ""}${marker}\n`, "utf8"));
+    }
+  } catch {
+    /* the transcript is best effort */
+  }
+  try {
+    fs.closeSync(log.fd);
+  } catch {
+    /* already closed */
+  }
+  log.fd = null;
 }
 
 function commandAvailable(cmd) {
@@ -615,7 +715,18 @@ async function execute(id) {
     return;
   }
   executing = true;
-  const approval = resolveApproval(task?.approval_mode);
+  // --mcp-config is only for Claude Code; skip silently if the file does not exist, to avoid breaking instance startup.
+  const mcpConfig = (() => {
+    if (opts.provider !== "claude") return "";
+    const file = opts.mcpConfig || process.env.PLATFORM_MCP_CONFIG || DEFAULT_MCP_CONFIG;
+    try {
+      return fs.statSync(file).isFile() ? file : "";
+    } catch {
+      return "";
+    }
+  })();
+  const mcpArgs = mcpConfig ? ["--mcp-config", mcpConfig] : [];
+  const approval = resolveApproval(task?.approval_mode, mcpToolRules(mcpConfig));
   const prompt = buildPrompt(task, approval.mode);
   if (approval.mode === "unmanaged") {
     event({
@@ -631,15 +742,6 @@ async function execute(id) {
     });
   }
   const overrideArgs = opts.cliArgs.length > 0;
-  // --mcp-config is only for Claude Code; skip silently if the file does not exist, to avoid breaking instance startup.
-  const mcpArgs = (() => {
-    if (!opts.mcpConfig || opts.provider !== "claude") return [];
-    try {
-      return fs.statSync(opts.mcpConfig).isFile() ? ["--mcp-config", opts.mcpConfig] : [];
-    } catch {
-      return [];
-    }
-  })();
   const rawArgs = overrideArgs
     ? [...opts.cliArgs.map((a) => a.replaceAll("{prompt}", prompt)), ...mcpArgs]
     : [
@@ -690,6 +792,17 @@ async function execute(id) {
   event({ type: "progress", percent: 5, phase: "start" });
   event({ type: "log", level: "info", message: `CLI Agent ${opts.provider} starting (${command})` });
 
+  const sessionLog = opts.sessionLog
+    ? {
+        stdout: openSessionLog(path.join(WORKSPACE, SESSION_LOG_DIR, "session.jsonl"), { lineDelimited: true }),
+        stderr: openSessionLog(path.join(WORKSPACE, SESSION_LOG_DIR, "session.stderr.log")),
+      }
+    : null;
+  const sessionLogPath = sessionLog?.stdout ? `${SESSION_LOG_DIR}/session.jsonl` : "";
+  if (sessionLogPath) {
+    event({ type: "log", level: "info", message: `session transcript: ${sessionLogPath}` });
+  }
+
   const startedAt = Date.now();
   let stdout = "";
   let stderr = "";
@@ -729,6 +842,7 @@ async function execute(id) {
     }, remainingMs());
 
     child.stdout.on("data", (b) => {
+      appendSessionLog(sessionLog?.stdout, b);
       const text = b.toString("utf8");
       if (stdout.length < maxBytes) stdout += text;
       if (!stream) return;
@@ -744,6 +858,7 @@ async function execute(id) {
       if (stream.buffer.length > 4 * 1024 * 1024) stream.buffer = "";
     });
     child.stderr.on("data", (b) => {
+      appendSessionLog(sessionLog?.stderr, b);
       const text = b.toString("utf8");
       stderr += text;
       for (const line of text.split("\n")) {
@@ -756,6 +871,12 @@ async function execute(id) {
     child.on("close", (code, signal) => done({ code: code ?? 1, signal }));
   });
 
+  closeSessionLog(
+    sessionLog?.stdout,
+    JSON.stringify({ type: "pcs_session_log", truncated: true, limit_bytes: SESSION_LOG_MAX_BYTES }),
+  );
+  closeSessionLog(sessionLog?.stderr, `[session log truncated at ${SESSION_LOG_MAX_BYTES} bytes]`);
+  const sessionLogBytes = sessionLog?.stdout?.bytes ?? 0;
   executing = false;
   if (cancelled) {
     send({
@@ -865,6 +986,7 @@ async function execute(id) {
       exit_code: result.code,
       stdout_chars: stdout.length,
       stderr_chars: stderr.length,
+      ...(sessionLogPath ? { session_log: sessionLogPath, session_log_bytes: sessionLogBytes } : {}),
       mode: "cli",
       approval_mode: approval.mode,
       requested_mode: approval.requested,

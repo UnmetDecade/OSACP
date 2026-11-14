@@ -235,6 +235,94 @@ async function streamSuccessTest() {
   s.child.kill("SIGKILL");
 }
 
+/**
+ * The transcript is the only record of what the CLI actually saw and did: PCS receives the parsed
+ * result and redacted log lines, not the raw stream.
+ */
+async function transcriptTest() {
+  const s = startStreamRun("ok");
+  await s.request("agent.health", {});
+  await s.request("agent.prepare", {
+    task: { task_id: "t_transcript", task_type: "task.build", requirements: {} },
+    workspace,
+  });
+  const exec = await s.request("agent.execute", {
+    task: { task_id: "t_transcript", task_type: "task.build", requirements: {} },
+    workspace,
+  });
+  s.child.kill("SIGKILL");
+
+  const file = path.join(workspace, ".agent", "session.jsonl");
+  const raw = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const lines = raw.split("\n").filter(Boolean);
+  let lineValid = lines.length > 0;
+  for (const line of lines) {
+    try {
+      JSON.parse(line);
+    } catch {
+      lineValid = false;
+    }
+  }
+  ok(lineValid, "transcript: the CLI's stream-json is kept line by line");
+  ok(lines.some((l) => l.includes('"type":"result"')) && raw.includes("STREAM_OK"), "transcript: the final result is kept");
+  ok(
+    exec.result?.metrics?.session_log === ".agent/session.jsonl" && exec.result?.metrics?.session_log_bytes > 0,
+    "transcript: the result reports where the transcript lives",
+  );
+}
+
+async function noTranscriptTest() {
+  fs.rmSync(path.join(workspace, ".agent"), { recursive: true, force: true });
+  const s = start("task.chat.worker", 60_000, ["--no-session-log"]);
+  await s.request("agent.health", {});
+  await s.request("agent.prepare", {
+    task: { task_id: "t_no_transcript", task_type: "task.chat.worker", requirements: {} },
+    workspace,
+  });
+  await s.request("agent.execute", {
+    task: {
+      task_id: "t_no_transcript",
+      task_type: "task.chat.worker",
+      requirements: { chat: { message: "no transcript", history: [] } },
+    },
+    workspace,
+  });
+  s.child.kill("SIGKILL");
+  ok(!fs.existsSync(path.join(workspace, ".agent", "session.jsonl")), "--no-session-log: no transcript is written");
+}
+
+async function mcpConfigTest() {
+  const config = path.join(workspace, "mcp-test.json");
+  fs.writeFileSync(config, JSON.stringify({ mcpServers: { playwright: {}, "my.server": {} } }));
+  const s = start("task.build", 60_000, [], {
+    provider: "claude",
+    command: process.execPath,
+    args: ["--cli-arg", path.join(here, "fixtures", "argv-cli.mjs"), "--cli-arg", "{prompt}"],
+    env: { PLATFORM_MCP_CONFIG: config },
+  });
+  await s.request("agent.health", {});
+  await s.request("agent.prepare", {
+    task: { task_id: "t_mcp", task_type: "task.build", requirements: {} },
+    workspace,
+  });
+  const exec = await s.request("agent.execute", {
+    task: { task_id: "t_mcp", task_type: "task.build", requirements: {}, approval_mode: "auto" },
+    workspace,
+  });
+  s.child.kill("SIGKILL");
+  let argv = [];
+  try {
+    argv = JSON.parse(String(exec.result?.summary ?? "[]"));
+  } catch {
+    argv = [];
+  }
+  ok(argv.includes("--mcp-config") && argv.includes(config), "mcp: PLATFORM_MCP_CONFIG reaches Claude Code");
+  ok(
+    argv.includes("Bash,mcp__playwright__*,mcp__my_server__*"),
+    "mcp: auto pre-approves every configured server by name",
+  );
+}
+
 async function streamRecoverTest() {
   const s = startStreamRun("recover");
   await s.request("agent.health", {});
@@ -478,6 +566,9 @@ try {
   await buildTest();
   await missingCliTest();
   await streamSuccessTest();
+  await transcriptTest();
+  await noTranscriptTest();
+  await mcpConfigTest();
   await streamRecoverTest();
   await streamStallTest();
   await approvalTest();

@@ -3242,7 +3242,8 @@ export class PcsService {
     const files: Array<{ path: string; content: string }> = [];
     // The Agent Profile's entry point is fixed at /opt/platform/agents/cli-agent.mjs, and the adapter imports its helper
     // modules by relative path, so they have to ship in the same directory instead of under app/.
-    const agentModules = new Set(["cli-agent.mjs", "task-envelope.mjs"]);
+    // mcp.json is optional: cli-agent falls back to /opt/platform/agents/mcp.json when the payload delivered one.
+    const agentModules = new Set(["cli-agent.mjs", "task-envelope.mjs", "mcp.json"]);
     const walk = (abs: string, rel: string): void => {
       for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
         if (entry.name.startsWith(".")) continue;

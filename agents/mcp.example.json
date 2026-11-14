@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.85",
+        "--headless",
+        "--isolated",
+        "--output-dir",
+        "./.agent/mcp-output"
+      ],
+      "env": {
+        "npm_config_cache": "/opt/platform/state/npm"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2.3.0", "."],
+      "env": {
+        "npm_config_cache": "/opt/platform/state/npm"
+      }
+    }
+  }
+}
