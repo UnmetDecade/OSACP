@@ -12,6 +12,12 @@ import type {
   SideloadRow,
   SideloadScope,
 } from "./service.js";
+import {
+  deleteInstanceFile,
+  issueFileDownloadTicket,
+  listInstanceFiles,
+  streamFileDownload,
+} from "./files.js";
 import { issueTerminalTicket } from "./terminal.js";
 
 // The scheduler proxy forwards task-creation requests; task attachments go as base64, so 1MiB would hit the limit quickly.
@@ -532,6 +538,56 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           String(claims.operator_id ?? claims.sub),
         );
         return send(res, 200, out);
+      }
+
+      // Workspace files: listing and deletion run as host commands (docker exec / ssh), downloads use
+      // a one-time ticket because a browser navigation cannot send the Bearer token.
+      const instanceFiles = /^\/api\/v1\/platform\/instances\/([^/]+)\/files$/.exec(path);
+      if (instanceFiles) {
+        const instanceId = decodeURIComponent(instanceFiles[1]);
+        const hostId = url.searchParams.get("host_id")?.trim() ?? "";
+        if (!hostId) throw new PcsError(400, "HOST_ID_REQUIRED", "host_id is required");
+        const filePath = url.searchParams.get("path") ?? "";
+        if (method === "GET") {
+          admin("host:read");
+          return send(res, 200, await listInstanceFiles(service, hostId, instanceId, filePath));
+        }
+        if (method === "DELETE") {
+          const claims = admin("host:admin");
+          return send(
+            res,
+            200,
+            await deleteInstanceFile(
+              service,
+              hostId,
+              instanceId,
+              filePath,
+              String(claims.operator_id ?? claims.sub),
+            ),
+          );
+        }
+      }
+
+      const fileDownload = /^\/api\/v1\/platform\/instances\/([^/]+)\/files\/download$/.exec(path);
+      if (method === "POST" && fileDownload) {
+        admin("host:read");
+        const body = await readJson(req);
+        const ticketHost = String(body.host_id ?? "").trim();
+        if (!ticketHost) throw new PcsError(400, "HOST_ID_REQUIRED", "host_id is required");
+        return send(
+          res,
+          200,
+          await issueFileDownloadTicket(service, {
+            host_id: ticketHost,
+            instance_id: decodeURIComponent(fileDownload[1]),
+            path: body.path,
+          }),
+        );
+      }
+
+      if (method === "GET" && path === "/api/v1/platform/files/download") {
+        streamFileDownload(res, url);
+        return;
       }
 
       if (method === "POST" && path === "/api/v1/platform/deployments") {

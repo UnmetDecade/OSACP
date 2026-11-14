@@ -107,6 +107,26 @@ export async function pipeToSsh(
 }
 
 /**
+ * Stream a remote command's stdout to the caller (workspace file downloads). Unlike execSsh this does
+ * not buffer or time out: the caller owns the stream and kills the child when the response closes.
+ * Credential cleanup runs when the child exits, not when this function returns.
+ */
+export function spawnSshExec(
+  target: SshTarget,
+  command: string,
+): { child: ChildProcess; cleanup: () => void } {
+  const prepared = prepareSsh(target);
+  const child = spawn("ssh", ["-o", "LogLevel=ERROR", ...prepared.args, command], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...prepared.env },
+  });
+  return {
+    child,
+    cleanup: () => fs.rmSync(prepared.dir, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Interactive login: `ssh -tt` requests a remote PTY, and stdin/stdout connect directly to the shell in the container.
  * The temp directory (private key, askpass) is deleted by cleanup when the session ends, so it cannot be cleaned up
  * before the function returns the way execSsh does.

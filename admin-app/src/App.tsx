@@ -14,6 +14,7 @@ import { TaskList, TaskShow } from "./pages/Tasks";
 import { TerminalPage } from "./pages/Terminal";
 import { ChatPage } from "./pages/Chat";
 import { LogsPage } from "./pages/Logs";
+import { FilesPage } from "./pages/Files";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="hosts/:id" element={<HostShow />} />
             <Route path="builders" element={<Builders />} />
             <Route path="builders/:id" element={<BuilderShow />} />
+            <Route path="builders/:id/files" element={<FilesPage />} />
             <Route path="scheduler" element={<SchedulerPage />} />
             <Route path="scheduler/:id" element={<SchedulerShow />} />
             <Route path="profiles" element={<ProfilesPage />} />

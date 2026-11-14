@@ -1706,9 +1706,16 @@ export class PcsService {
     ssh?: SshTarget;
     /** native instances have no container; the terminal lands directly in the host shell. */
     native?: boolean;
+    /** Where the deployment mounts the workspace inside the container (defaults to /opt/platform/workspace). */
+    workspace?: string;
   }> {
-    const r = await query<{ desired_state: string; status: string; execution: string | null }>(
-      `SELECT desired_state, status, execution FROM pcs_deployments
+    const r = await query<{
+      desired_state: string;
+      status: string;
+      execution: string | null;
+      volumes: Array<{ name: string; mount: string }> | null;
+    }>(
+      `SELECT desired_state, status, execution, volumes FROM pcs_deployments
         WHERE host_id=$1 AND instance_id=$2
         ORDER BY generation DESC, created_at DESC LIMIT 1`,
       [hostId, instanceId],
@@ -1728,11 +1735,14 @@ export class PcsService {
     // Keep in sync with containerName in host-runtime/src/container-spec.ts.
     const container = `platform-${instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48)}`;
     const native = dep.execution === "native";
+    const workspace = Array.isArray(dep.volumes)
+      ? dep.volumes.find((v) => v?.name === "workspace")?.mount
+      : undefined;
     const cred = await this.getHostCredential(hostId);
     if (cred?.transport === "ssh") {
-      return { transport: "ssh", container, native, ssh: await this.sshTarget(hostId) };
+      return { transport: "ssh", container, native, workspace, ssh: await this.sshTarget(hostId) };
     }
-    return { transport: "local", container, native };
+    return { transport: "local", container, native, workspace };
   }
 
   /** Host detail: the host row + access mode (without key plaintext) + the deployments on that host. */

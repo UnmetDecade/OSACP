@@ -89,6 +89,10 @@ export function BuilderShow() {
               <Icon name="chat" size={14} />
               {t("对话")}
             </Link>
+            <Link className="btn" to={`/builders/${builder.id}/files`}>
+              <Icon name="folder" size={14} />
+              {t("文件")}
+            </Link>
             <Button onClick={() => setProfilesOpen(true)}>
               <Icon name="agent" size={14} />
               {t("配置 Agent")}
@@ -124,7 +128,11 @@ export function BuilderShow() {
                 .map((id) => db.apis.find((a) => a.id === id)?.name ?? id)
                 .join(" · ") || "-"}
             </KeyVal>
-            <KeyVal label={t("工作目录")}><code>{builder.workspace ?? "/opt/platform/workspace"}</code></KeyVal>
+            <KeyVal label={t("工作目录")}>
+              <Link className="link" to={`/builders/${builder.id}/files`}>
+                <code>{builder.workspace ?? "/opt/platform/workspace"}</code>
+              </Link>
+            </KeyVal>
             <KeyVal label={t("最后心跳")}>{new Date(builder.last_heartbeat).toLocaleString("zh-CN")}</KeyVal>
             <KeyVal label={t("创建时间")}>{new Date(builder.created_at).toLocaleString("zh-CN")}</KeyVal>
           </div>

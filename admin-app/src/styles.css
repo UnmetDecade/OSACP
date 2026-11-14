@@ -1264,3 +1264,12 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
   .scene-sideloads { margin-bottom: 28px; }
   .scene-sideload { width: 150px; }
 }
+
+/* Workspace browser */
+.crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
+.crumb-sep { color: var(--text-3); margin: 0 2px; }
+.file-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.file-name > svg { color: var(--text-3); flex: none; }
+.file-name > span, .file-name > button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.file-table th:last-child, .file-table td:last-child { width: 1%; white-space: nowrap; }
