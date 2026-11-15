@@ -1,0 +1,291 @@
+# Single-machine demo of the example project architecture:
+#
+#   开发机 (docker-host-01)  界面开发 / 中间层开发 / 驱动开发 builders + root scheduler
+#   调度机 (dev-box)         内核开发 builder + its own scheduler instance
+#   侧载接入                  开发 / 测试 / 售后 tokens on the development host
+#
+#   scripts/demo.sh                 # create deploy/.env.demo if needed, build, start
+#   scripts/demo.sh --down          # stop everything (add -v to drop data)
+#
+# The full reference deployment is deploy/compose.yaml. This file trades it for a
+# seeded storyline: keys and the admin token are generated inside containers, only
+# loopback ports are published, and host onboarding is rejected (no host-runtime).
+#
+# The dev-* services share one builder image; only dev-ui carries the build so the
+# image is built once and the other three reuse it.
+
+name: platform-demo
+
+x-builder-env: &builder-env
+  SCHEDULER_URL: http://scheduler:8443
+  ROLE_ID: builder
+  HOST_ID: docker-host-01
+  AGENT_PROFILE_ID: ${BUILDER_AGENT_PROFILE_ID:-agp_builder}
+  INSTANCE_TOKEN_DIR: /opt/platform/tokens
+  MAX_CONCURRENCY: "1"
+  CLAIM_INTERVAL_SECONDS: ${CLAIM_INTERVAL_SECONDS:-0.5}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  PLATFORM_AGENT_PASS_ENV: ${PLATFORM_AGENT_PASS_ENV:-ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CODEX_HOME}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_DB: platform_control
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env.demo}
+    volumes:
+      - demo-postgres:/var/lib/postgresql/data
+      - ./demo-initdb.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform_control"]
+      interval: 5s
+      retries: 20
+    networks: [demo-net]
+
+  pcs:
+    build:
+      context: ..
+      dockerfile: deploy/pcs/Dockerfile
+    image: platform/pcs:demo
+    restart: unless-stopped
+    environment:
+      PCS_HOST: 0.0.0.0
+      PCS_PORT: "7901"
+      PCS_DATABASE_URL: postgres://platform:${POSTGRES_PASSWORD}@postgres:5432/platform_control
+      PCS_ADMIN_ORIGINS: http://127.0.0.1:${DEMO_PORT:-18080},http://localhost:${DEMO_PORT:-18080}
+      ADMIN_TOKEN_FILE: /run/demo/admin-token
+      ADMIN_TOKEN_HOURS: ${ADMIN_TOKEN_HOURS:-720}
+      # Seed the example-project hosts, deployments and sideloads; keep them ONLINE
+      # without a host-runtime heartbeat for the duration of the demo.
+      DEMO_SEED: "1"
+      PCS_HOST_OFFLINE_SECONDS: "315360000"
+    volumes:
+      - demo-pcs-keys:/app/keys
+      - demo-secrets:/run/demo
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:7901/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      retries: 12
+    networks: [demo-net]
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: deploy/scheduler/Dockerfile
+    image: platform/scheduler:demo
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://platform:${POSTGRES_PASSWORD}@postgres:5432/scheduler
+      HOST: 0.0.0.0
+      PORT: "8443"
+      SEED: "1"
+      ARTIFACT_DIR: /opt/platform/artifacts
+      SCHEDULER_INSTANCE_ID: scheduler
+      SCHEDULER_AGENT_PROFILE_ID: ${SCHEDULER_AGENT_PROFILE_ID:-agp_scheduler}
+      SCHEDULER_HOST_ID: docker-host-01
+      CLAIM_INTERVAL_SECONDS: ${CLAIM_INTERVAL_SECONDS:-0.5}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PLATFORM_AGENT_PASS_ENV: ${PLATFORM_AGENT_PASS_ENV:-ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CODEX_HOME}
+    ports:
+      - "127.0.0.1:${DEMO_SCHEDULER_PORT:-18443}:8443"
+    volumes:
+      - demo-artifacts:/opt/platform/artifacts
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8443/healthz || exit 1"]
+      interval: 10s
+      retries: 12
+    networks: [demo-net]
+
+  # Drops the placeholder builders from the scheduler seed so the studio shows only
+  # the three development workstreams; runs once per `up`.
+  demo-seed:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scheduler:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        until psql -h postgres -U platform -d scheduler -v ON_ERROR_STOP=1 -f /seed/demo-scheduler-seed.sql; do
+          echo "[demo-seed] waiting for the scheduler database"; sleep 2
+        done
+        echo "[demo-seed] scenario ready"
+    volumes:
+      - ./demo-scheduler-seed.sql:/seed/demo-scheduler-seed.sql:ro
+    restart: "no"
+    networks: [demo-net]
+
+  # A second scheduler *instance* for the kernel host: the same binary, no separate
+  # database. It heartbeats and owns the kernel-dev builder; it also serves the
+  # folded-host node in the studio.
+  scheduler-kernel:
+    image: platform/builder:demo-ubuntu22.04
+    restart: unless-stopped
+    depends_on:
+      scheduler:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mkdir -p /tmp/rt/{workspace,audit,tokens}
+        cat > /tmp/rt/config.json <<'JSON'
+        {
+          "scheduler_url": "http://scheduler:8443",
+          "heartbeat_seconds": 10,
+          "claim_interval_seconds": 2,
+          "lease_renew_seconds": 60,
+          "progress_seconds": 3,
+          "config_sync_seconds": 30,
+          "request_timeout_ms": 5000,
+          "token_dir": "/tmp/rt/tokens",
+          "workspace_dir": "/tmp/rt/workspace",
+          "audit_dir": "/tmp/rt/audit",
+          "instances": [{
+            "instance_id": "scheduler-kernel",
+            "role_id": "scheduler",
+            "host_id": "dev-box",
+            "agent_profile_id": "agp_scheduler",
+            "task_types": ["task.chat.scheduler", "task.console.scheduler"],
+            "capabilities": { "healthy": ["queue", "lease", "shell", "llm"] },
+            "slots": 1,
+            "slot_memory_bytes": 536870912
+          }]
+        }
+        JSON
+        export RUNTIME_CONFIG=/tmp/rt/config.json
+        export SCHEDULER_TOKEN="${SCHEDULER_AUTH_TOKEN:-}"
+        export CLAIM_INTERVAL_SECONDS=0.5
+        cd /opt/platform/host-runtime
+        exec node --import tsx src/main.ts --instance scheduler-kernel
+    networks: [demo-net]
+
+  dev-ui:
+    build:
+      context: ..
+      dockerfile: deploy/builder/Dockerfile
+      args:
+        UBUNTU_VERSION: "22.04"
+    image: platform/builder:demo-ubuntu22.04
+    restart: unless-stopped
+    hostname: dev-ui
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: dev-ui
+      BUILDER_OS: ubuntu22.04
+      CAPABILITY_SCORE: "720"
+    volumes:
+      - demo-ws-ui:/opt/platform/workspace
+      - demo-art-ui:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+    networks: [demo-net]
+
+  dev-middle:
+    image: platform/builder:demo-ubuntu22.04
+    restart: unless-stopped
+    depends_on:
+      dev-ui:
+        condition: service_started
+    hostname: dev-middle
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: dev-middle
+      BUILDER_OS: ubuntu22.04
+      CAPABILITY_SCORE: "760"
+    volumes:
+      - demo-ws-middle:/opt/platform/workspace
+      - demo-art-middle:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+    networks: [demo-net]
+
+  dev-driver:
+    image: platform/builder:demo-ubuntu22.04
+    restart: unless-stopped
+    depends_on:
+      dev-ui:
+        condition: service_started
+    hostname: dev-driver
+    environment:
+      <<: *builder-env
+      INSTANCE_ID: dev-driver
+      BUILDER_OS: ubuntu22.04
+      CAPABILITY_SCORE: "640"
+    volumes:
+      - demo-ws-driver:/opt/platform/workspace
+      - demo-art-driver:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+    networks: [demo-net]
+
+  kernel-dev:
+    image: platform/builder:demo-ubuntu22.04
+    restart: unless-stopped
+    depends_on:
+      dev-ui:
+        condition: service_started
+    hostname: kernel-dev
+    environment:
+      <<: *builder-env
+      HOST_ID: dev-box
+      INSTANCE_ID: kernel-dev
+      BUILDER_OS: ubuntu22.04
+      CAPABILITY_SCORE: "880"
+    volumes:
+      - demo-ws-kernel:/opt/platform/workspace
+      - demo-art-kernel:/opt/platform/artifacts
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 1024
+    networks: [demo-net]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web/Dockerfile
+    image: platform/web:demo
+    restart: unless-stopped
+    depends_on:
+      pcs:
+        condition: service_started
+      scheduler:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-18080}:8080"
+    volumes:
+      - demo-secrets:/run/demo:ro
+    networks: [demo-net]
+
+volumes:
+  demo-postgres:
+  demo-pcs-keys:
+  demo-secrets:
+  demo-artifacts:
+  demo-ws-ui:
+  demo-art-ui:
+  demo-ws-middle:
+  demo-art-middle:
+  demo-ws-driver:
+  demo-art-driver:
+  demo-ws-kernel:
+  demo-art-kernel:
+
+networks:
+  demo-net:
+    driver: bridge

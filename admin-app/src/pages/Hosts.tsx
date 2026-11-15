@@ -1,9 +1,9 @@
 import { t } from "../i18n";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { db } from "../store";
 import { useLive } from "../live/context";
-import { errorMessage } from "../live/client";
+import { ApiError, errorMessage } from "../live/client";
 import {
   addHost,
   bootstrapHost,
@@ -42,15 +42,39 @@ export function probeHint(error?: string): string {
   }
   return error;
 }
+
+/** Deployments without host-runtime (the one-command demo) reject host creation. */
+function hostErrorText(e: unknown): string {
+  if (e instanceof ApiError && e.code === "DEMO_MODE") return t("演示模式不支持添加主机");
+  return errorMessage(e);
+}
 export function HostsPage() {
   const live = useLive();
+  const [params, setParams] = useSearchParams();
+  // The studio sends operators here with ?add=1 when no host exists yet, so the
+  // dialog opens immediately instead of making them find the button. Deriving it
+  // from the URL also covers navigating from /hosts to /hosts?add=1.
+  const addRequested = params.get("add") === "1";
+  // Snapshot the arrival mode: the page fade would blink underneath a dialog that
+  // is already open, so this arrival skips it. Keeping it in state prevents the
+  // animation from restarting when the parameter is cleared on close.
+  const [skipEnter] = useState(addRequested);
   const [addOpen, setAddOpen] = useState(false);
+  const showAdd = addOpen || addRequested;
   const hosts = db.hosts;
   const local = hosts.filter((h) => h.transport === "local").length;
   const online = hosts.filter((h) => h.state === "ONLINE").length;
 
+  function closeAdd() {
+    setAddOpen(false);
+    if (params.get("add")) {
+      params.delete("add");
+      setParams(params, { replace: true });
+    }
+  }
+
   return (
-    <div className="page">
+    <div className={`page${skipEnter ? " page-static" : ""}`}>
       <PageHead
         title={t("主机")}
         meta={
@@ -91,8 +115,8 @@ export function HostsPage() {
       )}
 
       <AddHostModal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
+        open={showAdd}
+        onClose={closeAdd}
         onDone={async () => {
           if (live.connected) await live.refresh();
         }}
@@ -685,13 +709,13 @@ function AddHostModal({
           const b = await bootstrapHost(out.host_id, onDone);
           setBoot({ online: b.online, status: b.status, log: b.log });
         } catch (e) {
-          setBoot({ online: false, status: "FAILED", error: errorMessage(e) });
+          setBoot({ online: false, status: "FAILED", error: hostErrorText(e) });
         } finally {
           setBooting(false);
         }
       }
     } catch (e) {
-      setError(errorMessage(e));
+      setError(hostErrorText(e));
     } finally {
       setBusy(false);
     }

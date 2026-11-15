@@ -163,6 +163,9 @@ code, pre { font-family: var(--mono); }
 /* Pages consume the remaining height of .content: short pages are not pushed to the top with empty space below, */
 /* and full-screen pages (chat/terminal) simply stretch with flex:1, without estimating the header height. */
 .page { animation: page-in 0.18s ease-out; flex: 1 0 auto; display: flex; flex-direction: column; min-width: 0; }
+/* Arriving with a dialog already open (for example from the studio's empty
+   cards): skip the page fade, otherwise the page blinks beneath the mask. */
+.page-static { animation: none; }
 @keyframes page-in { from { opacity: 0; transform: translateY(2px); } }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .page-head-text { min-width: 0; }

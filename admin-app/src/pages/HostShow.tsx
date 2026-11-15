@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { db } from "../store";
 import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
-import { errorMessage } from "../live/client";
+import { ApiError, errorMessage } from "../live/client";
 import { bootstrapHost, probeHost, unmergeHost } from "../api";
 import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
@@ -75,7 +75,13 @@ export function HostShow() {
             },
       );
     } catch (e) {
-      setNotice({ tone: "bad", text: errorMessage(e) });
+      setNotice({
+        tone: "bad",
+        text:
+          e instanceof ApiError && e.code === "DEMO_MODE"
+            ? t("演示模式不支持添加主机")
+            : errorMessage(e),
+      });
     } finally {
       setBusy("");
     }

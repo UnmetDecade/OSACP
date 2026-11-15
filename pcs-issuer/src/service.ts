@@ -36,7 +36,7 @@ import {
   type SshTarget,
 } from "./ssh.js";
 import { buildBootstrapScript, buildEnvSetupScript, runLocalBootstrap } from "./bootstrap.js";
-import { ensureRuntimeBundle } from "./runtime-bundle.js";
+import { ensureRuntimeBundle, runtimeSourceAvailable } from "./runtime-bundle.js";
 import { resolveCapability, type CapabilityDetail } from "./capability.js";
 import { query, tx, type Client } from "./db.js";
 import {
@@ -1116,6 +1116,21 @@ export class PcsService {
   }
 
   /**
+   * A deployment without the host-runtime source (the one-command demo) cannot
+   * start a host. Reject at creation time so the dialog says so directly,
+   * instead of registering a host that can never come online.
+   */
+  private assertHostRuntimeAvailable(): void {
+    if (!runtimeSourceAvailable()) {
+      throw new PcsError(
+        503,
+        "DEMO_MODE",
+        "demo mode does not support adding hosts (host-runtime is not installed in this deployment)",
+      );
+    }
+  }
+
+  /**
    * Add an SSH host: persist it first (along with the encrypted private key), then probe once.
    * A failed probe does not delete the host — if the credential was wrong, the user can fix the address/retry on the detail page instead of re-entering it.
    */
@@ -1136,6 +1151,7 @@ export class PcsService {
     key_fingerprint: string | null;
     probe: SshProbe;
   }> {
+    this.assertHostRuntimeAvailable();
     const key = this.requireCredentialKey();
     const address = String(input.address ?? "").trim();
     const user = String(input.user ?? "root").trim();
@@ -1665,6 +1681,7 @@ export class PcsService {
     probe: SshProbe;
     created: boolean;
   }> {
+    this.assertHostRuntimeAvailable();
     const existing = await query<{ host_id: string }>(
       `SELECT host_id FROM pcs_host_credentials WHERE transport='local' LIMIT 1`,
     );
@@ -1850,7 +1867,17 @@ export class PcsService {
           );
 
     const [bundle, enrollmentToken] = await Promise.all([
-      ensureRuntimeBundle(),
+      ensureRuntimeBundle().catch((e: unknown) => {
+        // A deployment without the runtime source (for example the one-command
+        // demo) can register a host but never start it. Say that plainly instead
+        // of surfacing the generic 500.
+        console.error("[bootstrap]", e);
+        throw new PcsError(
+          503,
+          "DEMO_MODE",
+          "demo mode does not support starting hosts (host-runtime is not installed in this deployment)",
+        );
+      }),
       this.mintEnrollmentToken(hostId),
     ]);
     const script = buildBootstrapScript({

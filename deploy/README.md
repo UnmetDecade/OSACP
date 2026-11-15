@@ -6,6 +6,7 @@ In v4 both the scheduler and the builders are containers; this directory is a re
 
 | File | Purpose |
 |---|---|
+| `compose.demo.yaml` | One-command demo: PostgreSQL + PCS + scheduler + one builder + the admin UI |
 | `compose.yaml` | Single-machine orchestration: PostgreSQL + scheduler + four Ubuntu 20/22/24/26 builders |
 | `builder/Dockerfile` | Legacy builder image (Compose reference only; control-plane deployments now use bare ubuntu) |
 | `builder/entrypoint.sh` | Legacy image entrypoint (Compose reference only) |
@@ -14,6 +15,34 @@ In v4 both the scheduler and the builders are containers; this directory is a re
 | `scheduler/entrypoint.sh` | Legacy image entrypoint (Compose reference only) |
 | `scheduler/app-entrypoint.sh` | Bare-ubuntu scheduler entrypoint: pulls Node/CLI/ssh from the host cache, migrates and starts |
 | `.env.example` | Password and token template |
+| `demo-initdb.sql` | Creates the scheduler database in the demo PostgreSQL volume |
+| `pcs/Dockerfile`, `pcs/entrypoint.sh` | Demo control-plane image: generates keys, migrates, issues the demo admin token |
+| `web/Dockerfile`, `web/nginx.conf.template`, `web/40-demo-token.sh` | Demo UI image: static admin app with same-origin PCS/scheduler proxies |
+
+## Demo (one command)
+
+```bash
+scripts/demo.sh
+```
+
+Builds PostgreSQL + PCS + scheduler + the admin app and prints
+`http://127.0.0.1:18080` (override with `DEMO_PORT`; the scheduler is published
+on `127.0.0.1:18443` by default). Keys, the admin token and the database password
+are generated automatically; only loopback ports are published. The first run
+builds four images and takes several minutes.
+
+The demo follows the example-project storyline: a development host with three
+builders (UI / middle layer / driver), a folded kernel host with its own
+scheduler instance and builder, and three sideload clients (development, test,
+after-sales). The script submits a few Shell tasks so the studio has running,
+finished and queued work.
+
+Stop with `scripts/demo.sh --down` (add `--volumes` to drop the data too).
+
+The demo does not bundle host-runtime or mount the Docker socket, so host
+onboarding is not available: adding a host is rejected immediately with a
+“Demo mode does not support adding hosts” message. The scheduler and builders run
+as static containers instead; use the full deployment to manage hosts.
 
 ## Quick start
 

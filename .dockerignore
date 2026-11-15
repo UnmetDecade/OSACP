@@ -1,0 +1,22 @@
+# Keep build contexts small and never let host artifacts shadow what the
+# Dockerfile installs (for example macOS node_modules over Linux ones).
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+
+.git
+.github
+.screenshots
+tmp
+
+# Local deployment state and credentials
+deploy/keys
+deploy/tokens
+deploy/data
+deploy/.env
+deploy/.env.*
+
+# Local scratch
+*.log
+logs

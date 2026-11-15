@@ -24,6 +24,10 @@ Single-machine Compose only needs Docker; the multi-host control plane needs Nod
 
 ## 2. Path A: Single-Machine Compose
 
+To see the platform before preparing keys or a control plane, run `scripts/demo.sh`: it brings
+up PostgreSQL + PCS + the scheduler + one builder + the admin UI and prints
+`http://127.0.0.1:18080`.
+
 `deploy/compose.yaml` is the single source of truth; it brings up PostgreSQL + the scheduler + four
 builders on Ubuntu 20/22/24/26. For the full preparation steps see [deploy/README.md](../deploy/README.md); the shortest path:
 
