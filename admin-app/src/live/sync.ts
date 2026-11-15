@@ -23,6 +23,9 @@ import type {
   TaskChild,
   TaskEvent,
   TaskState,
+  ThreadDetail,
+  ThreadMessage,
+  ThreadTask,
 } from "../types";
 import { BUILDER_OS } from "../types";
 import { pcs, scheduler, schedulerFor } from "./client";
@@ -720,6 +723,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       difficulty: num(t.difficulty),
       state: taskState(str(t.status)),
       attention: taskAttention(t.attention, taskState(str(t.status))),
+      thread_id: t.thread_id ? str(t.thread_id) : null,
       instance_id: t.current_instance_id ? str(t.current_instance_id) : undefined,
       attempts: num(t.attempt_count),
       block_reason: t.resource_block_reason ? str(t.resource_block_reason) : undefined,
@@ -824,6 +828,117 @@ export async function fetchTaskDetail(
         updated_at: c.updated_at ? str(c.updated_at) : undefined,
       }),
     ),
+  };
+}
+
+/** One conversation thread with its tasks, messages and subscriptions. */
+export async function fetchThread(
+  connection: LiveConnection,
+  threadId: string,
+  schedulerDeploymentId?: string | null,
+): Promise<ThreadDetail> {
+  type Raw = {
+    thread_id?: string;
+    title?: string | null;
+    source?: string;
+    created_by?: string | null;
+    status?: string;
+    metadata?: Record<string, unknown>;
+    created_at?: string;
+    updated_at?: string;
+    tasks?: Array<Record<string, unknown>>;
+    messages?: Array<Record<string, unknown>>;
+    subscriptions?: Array<Record<string, unknown>>;
+  };
+  const out = await schedulerFor<Raw>(
+    connection,
+    schedulerDeploymentId,
+    `/v1/threads/${encodeURIComponent(threadId)}`,
+  );
+  const threads = out as Raw;
+  const tasks: ThreadTask[] = (threads.tasks ?? []).map((t) => {
+    const relation = str(t.relation);
+    const state = taskState(str(t.status));
+    return {
+      task_id: str(t.task_id),
+      task_type: str(t.task_type),
+      status: state,
+      outcome: t.outcome ? str(t.outcome) : null,
+      title: t.title ? str(t.title) : null,
+      relation: relation === "followup" || relation === "context" ? relation : "owner",
+      attention: taskAttention(t.attention, state),
+      created_at: t.created_at ? str(t.created_at) : undefined,
+      updated_at: t.updated_at ? str(t.updated_at) : undefined,
+    };
+  });
+  const messages: ThreadMessage[] = (threads.messages ?? []).map((m) => {
+    const role = str(m.role);
+    return {
+      message_id: str(m.message_id),
+      role: role === "agent" || role === "system" ? role : "user",
+      actor: m.actor ? str(m.actor) : null,
+      body: str(m.body),
+      task_id: m.task_id ? str(m.task_id) : null,
+      created_at: str(m.created_at),
+    };
+  });
+  return {
+    thread_id: str(threads.thread_id),
+    title: threads.title ? str(threads.title) : null,
+    source: str(threads.source, "api"),
+    created_by: threads.created_by ? str(threads.created_by) : null,
+    status: str(threads.status) === "ARCHIVED" ? "ARCHIVED" : "OPEN",
+    metadata: record(threads.metadata),
+    created_at: str(threads.created_at),
+    updated_at: str(threads.updated_at),
+    tasks,
+    messages,
+    subscriptions: (threads.subscriptions ?? []).map((s) => ({
+      subscription_id: str(s.subscription_id),
+      subscriber: str(s.subscriber),
+      kind: str(s.kind) === "outbox" ? "outbox" : "poll",
+      cursor: str(s.cursor),
+      created_at: str(s.created_at),
+      last_seen_at: s.last_seen_at ? str(s.last_seen_at) : null,
+    })),
+  };
+}
+
+/** Group an existing task into a new conversation thread. */
+export async function createTaskThread(
+  connection: LiveConnection,
+  taskId: string,
+  title: string | undefined,
+  schedulerDeploymentId?: string | null,
+): Promise<string> {
+  const out = await schedulerFor<{ thread_id?: string }>(connection, schedulerDeploymentId, "/v1/threads", {
+    method: "POST",
+    body: {
+      task_id: taskId,
+      title: title?.trim() || undefined,
+      source: "admin",
+      created_by: connection.operator,
+    },
+  });
+  return str(out?.thread_id);
+}
+
+/** Post a message and let the scheduler create the continuation task. */
+export async function postThreadMessage(
+  connection: LiveConnection,
+  threadId: string,
+  body: string,
+  schedulerDeploymentId?: string | null,
+): Promise<{ message_id: string; task_id: string | null }> {
+  const out = await schedulerFor<{ message?: { message_id?: string }; task?: { task_id?: string } | null }>(
+    connection,
+    schedulerDeploymentId,
+    `/v1/threads/${encodeURIComponent(threadId)}/messages`,
+    { method: "POST", body: { body, actor: connection.operator } },
+  );
+  return {
+    message_id: str(out?.message?.message_id),
+    task_id: out?.task?.task_id ? str(out.task.task_id) : null,
   };
 }
 

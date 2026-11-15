@@ -5537,4 +5537,5 @@ await runFile("008_dynamic_scheduling.sql");
 await runFile("009_agent_control.sql");
 await runFile("010_failure_recovery.sql");
 await runFile("011_artifact_names.sql");
+await runFile("012_threads.sql");
 process.exit(0);
