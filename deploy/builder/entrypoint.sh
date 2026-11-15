@@ -16,16 +16,21 @@ chmod 700 /root/.ssh
 # keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
-# Authorized public keys: prefer the mounted keys directory, then the SSH_AUTHORIZED_KEY environment variable.
-if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
-  cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
-elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
-  printf '%s\n' "$SSH_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
-fi
-chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+# SSH is optional: skip the authorized keys and sshd when the deployment disables it.
+if [[ "${SSH_ENABLED:-1}" != "0" ]]; then
+  # Authorized public keys: prefer the mounted keys directory, then the SSH_AUTHORIZED_KEY environment variable.
+  if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
+    cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
+  elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
+    printf '%s\n' "$SSH_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
+  fi
+  chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
 
-ssh-keygen -A >/dev/null
-/usr/sbin/sshd -e
+  ssh-keygen -A >/dev/null
+  /usr/sbin/sshd -e
+else
+  echo "[builder] SSH_ENABLED=0: sshd is not started"
+fi
 
 # Each container runs only one instance; the config is generated from environment variables, without bringing in host config.
 node -e '
@@ -34,6 +39,7 @@ let capabilityDetail;
 try {
   capabilityDetail = process.env.CAPABILITY_DETAIL ? JSON.parse(process.env.CAPABILITY_DETAIL) : undefined;
 } catch { capabilityDetail = undefined; }
+const chat = process.env.CHAT_ENABLED !== "0";
 const cfg = {
   scheduler_url: process.env.SCHEDULER_URL,
   heartbeat_seconds: 10,
@@ -53,8 +59,11 @@ const cfg = {
     role_id: process.env.ROLE_ID || "builder",
     host_id: process.env.HOST_ID || "docker-host-01",
     agent_profile_id: process.env.AGENT_PROFILE_ID || "agp_builder",
-    task_types: ["task.build", "task.chat.builder", "task.console.builder"],
-    capabilities: { healthy: ["code.build", "shell", "llm"], os: process.env.BUILDER_OS || "ubuntu22.04" },
+    task_types: ["task.build", ...(chat ? ["task.chat.builder"] : []), "task.console.builder"],
+    capabilities: {
+      healthy: chat ? ["code.build", "shell", "llm"] : ["code.build", "shell"],
+      os: process.env.BUILDER_OS || "ubuntu22.04",
+    },
     ...(process.env.CAPABILITY_SCORE ? { capability_score: Number(process.env.CAPABILITY_SCORE) } : {}),
     ...(capabilityDetail ? { capability_detail: capabilityDetail } : {}),
     slots: Number(process.env.MAX_CONCURRENCY || 1),

@@ -208,6 +208,10 @@ export type SchedulerDraft = {
   mem_mb: number;
   /** Root scheduler only: static keeps the deploy-time budget; dynamic adds the cgroup pool and live grants. */
   scheduling_mode?: "static" | "dynamic";
+  /** Disable the container's sshd and SSH port when false. */
+  ssh_enabled?: boolean;
+  /** Disable task.chat.scheduler (and the Chat entry point) when false. */
+  chat_enabled?: boolean;
 };
 
 export async function deployScheduler(
@@ -293,10 +297,28 @@ export async function createBuilder(input: BuilderDraft, afterRefresh: () => Pro
     agent_profile_id: input.agent_profile_id,
     api_profile_ids: input.api_profile_ids,
     image,
-    ports: [{ container: 2222, host: hostPort }],
+    ports: input.ssh_enabled === false ? [] : [{ container: 2222, host: hostPort }],
     scheduler_id: input.scheduler_id,
     capability_detail,
+    ssh_enabled: input.ssh_enabled,
+    chat_enabled: input.chat_enabled,
   });
+  await afterRefresh();
+}
+
+/** Toggle SSH/chat for a deployed builder or scheduler; the control plane recreates the container. */
+export async function updateDeploymentFeatures(
+  instanceId: string,
+  features: { ssh_enabled?: boolean; chat_enabled?: boolean },
+  afterRefresh: () => Promise<void>,
+): Promise<void> {
+  const inst = db.instances.find((i) => i.id === instanceId);
+  if (!inst?.deployment_id) throw new Error(t("找不到这个实例的部署记录，请先刷新"));
+  await pcs(
+    getLiveConnection(),
+    `/api/v1/platform/deployments/${encodeURIComponent(inst.deployment_id)}/features`,
+    { method: "PATCH", body: features },
+  );
   await afterRefresh();
 }
 

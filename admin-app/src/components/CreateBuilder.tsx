@@ -4,7 +4,7 @@ import { db } from "../store";
 import { errorMessage } from "../live/client";
 import { BUILDER_OS, type BuilderOs, type Instance } from "../types";
 import { createBuilder, type BuilderDraft } from "../api";
-import { Button, Callout, Field, Modal, Tag } from "./ui";
+import { Button, Callout, Field, Modal, Switch, Tag } from "./ui";
 import { Icon } from "./Icon";
 
 // Tier copy is translated at render time; module-level constants are evaluated once, so t() must not be called here.
@@ -44,6 +44,9 @@ export function CreateBuilderModal({
   const [name, setName] = useState("");
   const [agent, setAgent] = useState(builderAgents[0]?.id ?? "");
   const [apis, setApis] = useState<string[]>([]);
+  // Capability toggles; editable afterwards from the builder detail page (container is recreated).
+  const [sshEnabled, setSshEnabled] = useState(true);
+  const [chatEnabled, setChatEnabled] = useState(true);
   const selectedApi =
     apis[0] && db.apis.some((a) => a.id === apis[0]) ? apis[0] : db.apis[0]?.id ?? "";
   const [busy, setBusy] = useState(false);
@@ -126,6 +129,8 @@ export function CreateBuilderModal({
         agent_profile_id: agent,
         api_profile_ids: selectedApi ? [selectedApi] : [],
         scheduler_id: refOf(selectedScheduler),
+        ssh_enabled: sshEnabled,
+        chat_enabled: chatEnabled,
       };
       await createBuilder(draft, onCreated);
     } catch (e) {
@@ -308,6 +313,22 @@ export function CreateBuilderModal({
             ))}
           </select>
         </Field>
+
+        <div className="row">
+          <Switch
+            checked={sshEnabled}
+            onChange={() => setSshEnabled((v) => !v)}
+            label={t("启用 SSH（sshd 与端口映射）")}
+          />
+          <Switch
+            checked={chatEnabled}
+            onChange={() => setChatEnabled((v) => !v)}
+            label={t("启用对话（task.chat.builder）")}
+          />
+        </div>
+        <div className="muted">
+          {t("关闭 SSH 后不再启动 sshd，也不映射 SSH 端口；关闭对话后构建机不再接收聊天任务。之后可以在详情页修改，修改会重建容器。")}
+        </div>
 
         {error && <Callout tone="bad">{error}</Callout>}
       </div>

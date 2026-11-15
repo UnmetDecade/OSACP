@@ -39,6 +39,7 @@ export function TerminalPage() {
     .filter(
       (i) =>
         (i.role === "builder" || i.role === "scheduler") &&
+        i.ssh_enabled !== false &&
         (!host || scopedHostIds.has(i.host_id)),
     )
     .sort(

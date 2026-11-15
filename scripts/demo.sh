@@ -51,10 +51,16 @@ esac
 if [[ ! -f "$ENV_FILE" ]]; then
   umask 077
   password="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-  printf 'POSTGRES_PASSWORD=%s\n' "$password" > "$ENV_FILE"
-  echo "[demo] created $ENV_FILE with a random PostgreSQL password"
+  admin_password="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  printf 'POSTGRES_PASSWORD=%s\nDEMO_ADMIN_PASSWORD=%s\n' "$password" "$admin_password" > "$ENV_FILE"
+  echo "[demo] created $ENV_FILE with random database and admin passwords"
+fi
+# Older demo env files predate accounts; add the admin password in place.
+if ! grep -q '^DEMO_ADMIN_PASSWORD=' "$ENV_FILE"; then
+  printf 'DEMO_ADMIN_PASSWORD=%s\n' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" >> "$ENV_FILE"
 fi
 chmod 600 "$ENV_FILE"
+ADMIN_PASSWORD="$(grep -m1 '^DEMO_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
 
 echo "[demo] building and starting the stack (first run takes a few minutes)..."
 compose up -d --build
@@ -91,7 +97,10 @@ for _ in $(seq 1 180); do
 [demo] ready
 
   Admin app      $URL
+  Sign in        admin / $ADMIN_PASSWORD
   Scheduler API  http://127.0.0.1:${DEMO_SCHEDULER_PORT}
+
+The admin password is also stored in deploy/.env.demo (0600).
 
 Scenario: 开发机 (界面 / 中间层 / 驱动开发) with a root scheduler, plus a folded
 调度机 running the kernel workstream; 开发 / 测试 / 售后 are sideload clients.

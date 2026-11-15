@@ -4,7 +4,7 @@ import { deployScheduler, type SchedulerDraft } from "../api";
 import { errorMessage } from "../live/client";
 import { db } from "../store";
 import type { Host, Instance } from "../types";
-import { Button, Callout, Field, Modal } from "./ui";
+import { Button, Callout, Field, Modal, Switch } from "./ui";
 
 /** Keep digits only and strip leading zeros ("01" → "1"); keep the empty string so typing can continue. */
 function intText(raw: string): string {
@@ -72,6 +72,9 @@ export function DeploySchedulerModal({
     const used = db.instances.filter((i) => i.host_id === host.id).map((i) => i.ssh_port ?? 0);
     return String(Math.max(2200, ...used) + 1);
   });
+  // Capability toggles; both editable later from the scheduler detail page (which recreates the container).
+  const [sshEnabled, setSshEnabled] = useState(true);
+  const [chatEnabled, setChatEnabled] = useState(true);
   const [cpus, setCpus] = useState("2");
   const [mem, setMem] = useState("2048");
   // Only the root picks a mode; node schedulers and builders inherit it through the control plane.
@@ -138,6 +141,8 @@ export function DeploySchedulerModal({
         ssh_port: intValue(sshPort, 2201, 1, 65535),
         cpus: intValue(cpus, 2, 1, 16),
         mem_mb: intValue(mem, 2048, 1024, 16384),
+        ssh_enabled: sshEnabled,
+        chat_enabled: chatEnabled,
         ...(role === "root" ? { scheduling_mode: mode } : {}),
       };
       await deployScheduler(input, async () => {
@@ -294,6 +299,7 @@ export function DeploySchedulerModal({
                   max={65535}
                   step={1}
                   value={sshPort}
+                  disabled={!sshEnabled}
                   onChange={(e) => setSshPort(intText(e.target.value))}
                 />
               </Field>
@@ -319,6 +325,22 @@ export function DeploySchedulerModal({
                   onChange={(e) => setMem(intText(e.target.value))}
                 />
               </Field>
+            </div>
+
+            <div className="row">
+              <Switch
+                checked={sshEnabled}
+                onChange={() => setSshEnabled((v) => !v)}
+                label={t("启用 SSH（sshd 与端口映射）")}
+              />
+              <Switch
+                checked={chatEnabled}
+                onChange={() => setChatEnabled((v) => !v)}
+                label={t("启用对话（task.chat.scheduler）")}
+              />
+            </div>
+            <div className="muted">
+              {t("关闭 SSH 后不再启动 sshd，也不映射 SSH 端口；关闭对话后调度机不再接收聊天任务。之后可以在详情页修改，修改会重建容器。")}
             </div>
           </>
         )}

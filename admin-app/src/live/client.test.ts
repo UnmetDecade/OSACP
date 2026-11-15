@@ -174,3 +174,61 @@ describe("errorMessage", () => {
     expect(errorMessage(42)).toBe("42");
   });
 });
+
+describe("session cookie requests", () => {
+  const session: LiveConnection = { ...defaultConnection(), adminToken: "" };
+
+  afterEach(() => {
+    document.cookie = "pcs_csrf=; Max-Age=0; Path=/";
+  });
+
+  it("sends cookies and the CSRF header on mutations", async () => {
+    document.cookie = "pcs_csrf=csrf-value";
+    fetchMock.mockResolvedValue(json({ ok: true }));
+
+    await pcs(session, "/api/v1/platform/hosts", { method: "POST", body: { name: "x" } });
+
+    const { init } = lastRequest();
+    expect(init.credentials).toBe("same-origin");
+    expect(init.headers).toMatchObject({ "x-csrf-token": "csrf-value" });
+    expect(init.headers).not.toHaveProperty("authorization");
+  });
+
+  it("does not send a CSRF header on reads", async () => {
+    document.cookie = "pcs_csrf=csrf-value";
+    fetchMock.mockResolvedValue(json({ ok: true }));
+
+    await pcs(session, "/api/v1/platform/hosts");
+
+    expect(lastRequest().init.headers).not.toHaveProperty("x-csrf-token");
+  });
+
+  it("omits the header when the cookie is missing or malformed", async () => {
+    document.cookie = "pcs_csrf=%E0%A4%A";
+    fetchMock.mockResolvedValue(json({ ok: true }));
+
+    await pcs(session, "/api/v1/platform/hosts", { method: "PATCH", body: {} });
+
+    expect(lastRequest().init.headers).not.toHaveProperty("x-csrf-token");
+  });
+
+  it("announces an expired session on 401", async () => {
+    const listener = vi.fn();
+    window.addEventListener("pcs-unauthorized", listener);
+    fetchMock.mockResolvedValue(json({ error: { code: "LOGIN_REQUIRED", message: "login" } }, 401));
+
+    await expect(pcs(session, "/api/v1/platform/hosts")).rejects.toMatchObject({ status: 401 });
+    expect(listener).toHaveBeenCalledTimes(1);
+    window.removeEventListener("pcs-unauthorized", listener);
+  });
+
+  it("does not announce 401 for bearer requests", async () => {
+    const listener = vi.fn();
+    window.addEventListener("pcs-unauthorized", listener);
+    fetchMock.mockResolvedValue(json({ error: { code: "TOKEN_EXPIRED", message: "expired" } }, 401));
+
+    await expect(pcs(connection, "/api/v1/platform/hosts")).rejects.toMatchObject({ status: 401 });
+    expect(listener).not.toHaveBeenCalled();
+    window.removeEventListener("pcs-unauthorized", listener);
+  });
+});

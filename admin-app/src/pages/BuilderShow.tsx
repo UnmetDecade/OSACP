@@ -7,9 +7,9 @@ import { errorMessage } from "../live/client";
 import { characterState } from "../characters";
 import { Character } from "../components/Character";
 import { InstanceProfilesModal } from "../components/InstanceProfiles";
-import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead } from "../components/ui";
+import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Switch, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
-import { builderAction, osLabel, sshCommand } from "../api";
+import { builderAction, osLabel, sshCommand, updateDeploymentFeatures } from "../api";
 
 export function BuilderShow() {
   const { id = "" } = useParams();
@@ -59,6 +59,20 @@ export function BuilderShow() {
     }
   }
 
+  /** Toggling a capability recreates the container with the next generation; volumes survive. */
+  async function toggleFeature(key: "ssh_enabled" | "chat_enabled", next: boolean) {
+    setBusy(key);
+    setError("");
+    try {
+      const features = key === "ssh_enabled" ? { ssh_enabled: next } : { chat_enabled: next };
+      await updateDeploymentFeatures(builder!.id, features, live.refresh);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return (
     <div className="page">
       <Link className="back" to="/builders"><Icon name="back" size={13} />{t("构建机")}</Link>
@@ -81,14 +95,18 @@ export function BuilderShow() {
         }
         actions={
           <>
-            <Link className="btn" to={`/terminal?instance=${encodeURIComponent(builder.key)}`}>
-              <Icon name="terminal" size={14} />
-              {t("终端")}
-            </Link>
-            <Link className="btn" to={`/chat?instance=${encodeURIComponent(builder.key)}`}>
-              <Icon name="chat" size={14} />
-              {t("对话")}
-            </Link>
+            {builder.ssh_enabled !== false && (
+              <Link className="btn" to={`/terminal?instance=${encodeURIComponent(builder.key)}`}>
+                <Icon name="terminal" size={14} />
+                {t("终端")}
+              </Link>
+            )}
+            {builder.chat_enabled !== false && (
+              <Link className="btn" to={`/chat?instance=${encodeURIComponent(builder.key)}`}>
+                <Icon name="chat" size={14} />
+                {t("对话")}
+              </Link>
+            )}
             <Link className="btn" to={`/builders/${builder.id}/files`}>
               <Icon name="folder" size={14} />
               {t("文件")}
@@ -141,20 +159,51 @@ export function BuilderShow() {
         <Card>
           <CardTitle
             extra={
-              <Button size="sm" onClick={copySsh}>
-                <Icon name={copied ? "check" : "copy"} size={13} />
-                {copied ? t("已复制") : t("复制")}
-              </Button>
+              builder.ssh_enabled !== false && (
+                <Button size="sm" onClick={copySsh}>
+                  <Icon name={copied ? "check" : "copy"} size={13} />
+                  {copied ? t("已复制") : t("复制")}
+                </Button>
+              )
             }
           >
             {t("SSH 访问")}
           </CardTitle>
-          <pre className="code-block ssh-block">{ssh}</pre>
-          <div className="kv-list" style={{ marginTop: 10 }}>
-            <KeyVal label={t("主机")}>{builder.ssh_host ?? "-"}</KeyVal>
-            <KeyVal label={t("端口")}>{builder.ssh_port ?? "-"}</KeyVal>
-            <KeyVal label={t("用户")}>root</KeyVal>
-            <KeyVal label={t("认证")}>{builder.state === "OFFLINE" ? t("容器未运行") : t("密钥 / 密码（由平台下发）")}</KeyVal>
+          {builder.ssh_enabled === false ? (
+            <Callout tone="warn">{t("SSH 已在部署中关闭：容器内不启动 sshd，也没有端口映射。在下方「能力」里开启会重建容器。")}</Callout>
+          ) : (
+            <>
+              <pre className="code-block ssh-block">{ssh}</pre>
+              <div className="kv-list" style={{ marginTop: 10 }}>
+                <KeyVal label={t("主机")}>{builder.ssh_host ?? "-"}</KeyVal>
+                <KeyVal label={t("端口")}>{builder.ssh_port ?? "-"}</KeyVal>
+                <KeyVal label={t("用户")}>root</KeyVal>
+                <KeyVal label={t("认证")}>{builder.state === "OFFLINE" ? t("容器未运行") : t("密钥 / 密码（由平台下发）")}</KeyVal>
+              </div>
+            </>
+          )}
+        </Card>
+
+        <Card>
+          <CardTitle extra={<Tag tone="warn">{t("修改会重建容器")}</Tag>}>{t("能力")}</CardTitle>
+          <div className="stack">
+            {builder.execution !== "native" && (
+              <Switch
+                checked={builder.ssh_enabled !== false}
+                disabled={busy !== ""}
+                onChange={() => void toggleFeature("ssh_enabled", builder.ssh_enabled === false)}
+                label={t("SSH 访问（sshd 与端口映射）")}
+              />
+            )}
+            <Switch
+              checked={builder.chat_enabled !== false}
+              disabled={busy !== ""}
+              onChange={() => void toggleFeature("chat_enabled", builder.chat_enabled === false)}
+              label={t("对话（task.chat.builder）")}
+            />
+            <div className="muted">
+              {t("切换后控制面会重建这个容器；工作区卷保留，正在运行的任务会中断。")}
+            </div>
           </div>
         </Card>
       </div>

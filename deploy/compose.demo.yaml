@@ -58,6 +58,7 @@ services:
       PCS_ADMIN_ORIGINS: http://127.0.0.1:${DEMO_PORT:-18080},http://localhost:${DEMO_PORT:-18080}
       ADMIN_TOKEN_FILE: /run/demo/admin-token
       ADMIN_TOKEN_HOURS: ${ADMIN_TOKEN_HOURS:-720}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
       # Seed the example-project hosts, deployments and sideloads; keep them ONLINE
       # without a host-runtime heartbeat for the duration of the demo.
       DEMO_SEED: "1"
@@ -268,8 +269,6 @@ services:
         condition: service_started
     ports:
       - "127.0.0.1:${DEMO_PORT:-18080}:8080"
-    volumes:
-      - demo-secrets:/run/demo:ro
     networks: [demo-net]
 
 volumes:

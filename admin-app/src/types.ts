@@ -199,6 +199,10 @@ export type Instance = {
   config_version: number;
   last_heartbeat: string;
   image: string;
+  /** False when the deployment disabled sshd; the UI hides SSH/terminal entry points. */
+  ssh_enabled?: boolean;
+  /** False when the deployment disabled task.chat.*; the UI hides chat entry points. */
+  chat_enabled?: boolean;
   ssh_host?: string;
   ssh_port?: number;
   ssh_user?: string;
@@ -421,6 +425,10 @@ export interface BuilderInput {
   scheduler_id?: string;
   /** Capability details; if omitted, only the cores/memory/disk items are derived from the resource tier. */
   capability_detail?: CapabilityDetail;
+  /** Disable the container's sshd and SSH port when false. */
+  ssh_enabled?: boolean;
+  /** Disable task.chat.builder (and the Chat entry point) when false. */
+  chat_enabled?: boolean;
 }
 
 /** Host onboarding: local host or SSH host. Credentials pass through browser memory only at submit time and are never echoed after encrypted storage. */

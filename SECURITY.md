@@ -18,8 +18,7 @@ The project is at v4.x; security fixes target the current main branch only.
 This platform is intended for **R&D teams on a trusted internal network**. The following behaviors are intentional, not vulnerabilities:
 
 - Builders run as `root` by default, with full SSH access, and can install software and reach the external network.
-- The platform has no RBAC, approval gates or permission matrix; anyone who can access the admin app can perform every operation.
-- Chat and container terminals are ordinary tasks; the terminal has no command allowlist (it is equivalent to SSH).
+- The admin app authenticates with accounts and per-account scopes, but this is **defence in depth, not a substitute for network isolation**: keep the admin surface on the LAN or a VPN. The first registered account becomes an administrator; later registrations need approval. Passwords are stored with scrypt, sessions are HttpOnly cookies hashed at rest with CSRF protection, and every mutation is attributed to an account in the audit log. The CLI admin token remains valid for automation, so protect the JWT private key.- Chat and container terminals are ordinary tasks; the terminal has no command allowlist (it is equivalent to SSH).
 
 Deployments should therefore, at minimum:
 

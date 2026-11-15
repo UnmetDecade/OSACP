@@ -83,8 +83,9 @@ npm start
 umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
 ```
 
-管理员令牌用 `npm run pcs -- admin-token --operator <name>` 签发，管理应用通过
-`PCS_ADMIN_TOKEN` 使用它。
+管理员令牌用 `npm run pcs -- admin-token --operator <name>` 签发，自动化仍可使用。
+管理应用改用账号登录：第一个注册的账号成为管理员，之后的注册需要审批
+（默认 `PCS_REGISTRATION=approval`）。
 
 ### 3.2 接入主机
 
@@ -114,13 +115,13 @@ Node、Claude Code、openssh deb 放在主机缓存 `~/.platform/cache/`，只�
 ```bash
 cd admin-app
 npm install
-printf 'PCS_ADMIN_TOKEN=%s\n' '<admin-jwt>' > .env.local   # 0600，已被 gitignore
 npm run dev
 ```
 
-开发代理把 `/api/pcs` 转到 `http://127.0.0.1:7901`、`/api/scheduler` 转到
-`http://127.0.0.1:8443`；可用 `VITE_PCS_TARGET` / `VITE_SCHEDULER_TARGET` 覆盖。
-生产构建 `npm run build`，由反向代理托管静态文件并转发两个 API 前缀。
+打开页面并注册第一个账号，它会成为管理员。会话是 HttpOnly Cookie + CSRF 令牌，
+`.env.local` 里不再写共享令牌。开发代理把 `/api/pcs` 转到 `http://127.0.0.1:7901`、
+`/api/scheduler` 转到 `http://127.0.0.1:8443`；可用 `VITE_PCS_TARGET` /
+`VITE_SCHEDULER_TARGET` 覆盖。
 
 ---
 
