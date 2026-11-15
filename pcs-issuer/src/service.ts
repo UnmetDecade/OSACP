@@ -96,6 +96,16 @@ function publicAccount(row: AccountRow): AccountRow {
   };
 }
 
+/** First non-loopback IPv4 of this machine: containers reach host-published ports through it. */
+function localAddress(): string {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) return entry.address;
+    }
+  }
+  return "127.0.0.1";
+}
+
 const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
 
 function normalizeUsername(raw: unknown): string {
@@ -108,8 +118,18 @@ function normalizeUsername(raw: unknown): string {
 
 function normalizePassword(raw: unknown): string {
   const password = String(raw ?? "");
-  if (password.length < 10 || password.length > 200) {
-    throw new PcsError(400, "PASSWORD_INVALID", "password must be between 10 and 200 characters");
+  if (password.length <= 8) {
+    throw new PcsError(400, "PASSWORD_INVALID", "password must be longer than 8 characters");
+  }
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+    throw new PcsError(
+      400,
+      "PASSWORD_INVALID",
+      "password must include an uppercase letter, a lowercase letter and a symbol",
+    );
+  }
+  if (password.length > 200) {
+    throw new PcsError(400, "PASSWORD_INVALID", "password must be at most 200 characters");
   }
   return password;
 }
@@ -1160,6 +1180,14 @@ export class PcsService {
     ).rows;
   }
 
+  /** First-run detection for the login page; exposes only whether any account exists. */
+  async hasAccounts(): Promise<boolean> {
+    const row = (
+      await query<{ n: string }>(`SELECT count(*)::text AS n FROM pcs_accounts`)
+    ).rows[0];
+    return Number(row?.n ?? "0") > 0;
+  }
+
   async createAccount(
     input: {
       username?: string;
@@ -2164,8 +2192,8 @@ export class PcsService {
       );
       await c.query(
         `INSERT INTO pcs_host_credentials (host_id, transport, address, ssh_port)
-         VALUES ($1,'local','127.0.0.1',22)`,
-        [hostId],
+         VALUES ($1,'local',$2,22)`,
+        [hostId, localAddress()],
       );
     });
     return { host_id: hostId, transport: "local", probe: await this.probeHost(hostId), created: true };
@@ -2351,6 +2379,9 @@ export class PcsService {
       agentEnvContent: this.readAgentEnvFile(),
       agentEnvSource: this.cfg.agentEnvFile ?? undefined,
       dockerRequired,
+      // Only the local host inherits the control machine's socket; remote hosts
+      // keep the standard path unless their environment says otherwise.
+      ...(cred.transport === "local" ? { dockerSocket: this.cfg.dockerSocket } : {}),
     });
 
     const result =
@@ -2861,6 +2892,18 @@ export class PcsService {
    * The scheduler's external API address. It listens on 8443 inside the container, and the host port is determined by the deployment's ports;
    * prefer "host address + host port", falling back to the control plane config when no SSH address is configured.
    */
+  /** First active root scheduler: the UI's default `/api/scheduler` proxy target. */
+  async defaultSchedulerUrl(): Promise<string | null> {
+    const r = await query<{ scheduler_url: string | null }>(
+      `SELECT scheduler_url FROM pcs_deployments
+        WHERE role_id='scheduler' AND status <> 'REMOVED'
+          AND scheduler_url IS NOT NULL AND scheduler_role='root'
+        ORDER BY (actual_state='RUNNING') DESC, created_at ASC
+        LIMIT 1`,
+    );
+    return r.rows[0]?.scheduler_url ?? null;
+  }
+
   private async schedulerUrlFor(hostId: string, ports: PortMapping[]): Promise<string | null> {
     const mapping = ports.find((p) => Number(p.container) === 8443);
     const address = await this.hostAddress(hostId);

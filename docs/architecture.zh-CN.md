@@ -159,8 +159,7 @@ host-runtime：校验签名/generation → 创建容器 → 注入 token → 启
 管理应用：显示 SSH 地址与端口
 ```
 
-> 两条路径都可用：`deploy/compose.yaml` 预置 1–4 个不同 Ubuntu 版本的构建机；
-> 管理应用「新建构建机」走 PCS 部署计划，宿主 SSH 端口随部署意图下发
+> 只有一条部署路径：管理应用「新建构建机」走 PCS 部署计划，宿主 SSH 端口随部署意图下发
 > （`instance.ports`），由 Host Runtime 写进 `PortBindings`。
 > 资源档位提供轻量 / 标准 / 重型三档，也可以自定义 CPU、内存、磁盘；
 > Agent 可选 Claude Code、Codex、DeepSeek 或自定义，DeepSeek 通过 llm 类型的 API Profile 接入。

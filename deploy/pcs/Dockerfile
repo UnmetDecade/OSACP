@@ -6,12 +6,14 @@
 # The build context is the repository root:
 #   docker build -f deploy/pcs/Dockerfile -t platform/pcs:demo .
 
-FROM node:22-bookworm-slim
+# Optional registry prefix for networks where Docker Hub is unreachable.
+ARG REGISTRY=
+FROM ${REGISTRY}node:22-bookworm-slim
 
 WORKDIR /app
 
 COPY pcs-issuer/package.json pcs-issuer/package-lock.json ./
-RUN npm ci
+RUN npm ci --loglevel=http
 
 COPY pcs-issuer ./
 COPY deploy/pcs/entrypoint.sh /usr/local/bin/pcs-entrypoint

@@ -207,8 +207,7 @@ SHA-256）。上面两条运维路由负责列出和下载这些文件，不需�
 
 ## 9. 部署形态
 
-单机 Compose 见 [deploy/compose.yaml](../deploy/compose.yaml)；控制面部署由 PCS 生成计划，
-host-runtime 拉起官方 ubuntu 容器并写入 `/opt/platform/app/` 载荷。
+部署由 PCS 生成计划（用 `scripts/deploy.sh` 启动），host-runtime 拉起官方 ubuntu 容器并写入 `/opt/platform/app/` 载荷。
 
 ```yaml
 scheduler:

@@ -7,14 +7,17 @@
 # The build context is the repository root:
 #   docker build -f deploy/web/Dockerfile -t platform/web:demo .
 
-FROM node:22-alpine AS build
+# Optional registry prefix for networks where Docker Hub is unreachable.
+ARG REGISTRY=
+
+FROM ${REGISTRY}node:22-alpine AS build
 WORKDIR /app
 COPY admin-app/package.json admin-app/package-lock.json ./
-RUN npm ci
+RUN npm ci --loglevel=http
 COPY admin-app ./
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM ${REGISTRY}nginx:1.27-alpine
 
 COPY deploy/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html

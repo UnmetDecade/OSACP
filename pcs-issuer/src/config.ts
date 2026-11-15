@@ -38,6 +38,12 @@ export interface PcsConfig {
   sessionHours: number;
   /** Cookie Secure flag: auto (TLS or X-Forwarded-Proto), always, or never (plain-HTTP LAN demos). */
   cookieSecure: "auto" | "always" | "never";
+  /** Demo deployments prefill the login form and seed a fixed admin account; never enable outside a loopback demo. */
+  demoMode: boolean;
+  /** Built admin app directory; when set, PCS serves it so one deployment covers both API and UI. */
+  webDir: string | null;
+  /** Docker socket for host-runtime on a local host (Docker Desktop/colima keep it outside /var/run). */
+  dockerSocket: string;
   /** Admin app origin allowlist; when empty, no CORS headers are sent */
   adminOrigins: string[];
   /** P6: direct TLS. Certificate and private key must be configured together; when unset, stays on HTTP (local development only). */
@@ -192,6 +198,9 @@ export function loadConfig(overrides: Partial<PcsConfig> = {}): PcsConfig {
         : process.env.PCS_COOKIE_SECURE === "1" || process.env.PCS_COOKIE_SECURE === "always"
           ? "always"
           : "auto",
+    demoMode: process.env.DEMO_MODE === "1",
+    webDir: (process.env.PCS_WEB_DIR ?? "").trim() ? path.resolve(process.env.PCS_WEB_DIR!) : null,
+    dockerSocket: (process.env.PCS_DOCKER_SOCKET ?? "").trim() || "/var/run/docker.sock",
     adminOrigins: (process.env.PCS_ADMIN_ORIGINS ?? "http://127.0.0.1:5173,http://localhost:5173")
       .split(",")
       .map((s) => s.trim())

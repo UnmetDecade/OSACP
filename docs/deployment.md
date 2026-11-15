@@ -3,7 +3,8 @@
 > English · [简体中文](deployment.zh-CN.md)
 
 > Version: v4.3 · 2026-11-12
-> Two paths: single-machine Compose to get the loop running; PCS + host-runtime to manage multiple hosts.
+> One path: PCS + host-runtime. `scripts/deploy.sh` starts the control plane (PostgreSQL + PCS + UI) on one
+> machine; additional hosts are added from the UI.
 
 ---
 
@@ -18,77 +19,42 @@
 | Docker | 24+, with the compose plugin | Latest stable |
 | Node | 22+ (PCS, host-runtime, admin app) | 22 LTS |
 
-Single-machine Compose only needs Docker; the multi-host control plane needs Node runnable on PCS and on every host.
+PCS, host-runtime and the admin app need Node; Docker is required for PostgreSQL and for the containers
+host-runtime creates on each host.
 
 ---
 
-## 2. Path A: Single-Machine Compose
+## 2. Deploy
 
-To see the platform before preparing keys or a control plane, run `scripts/demo.sh`: it brings
-up PostgreSQL + PCS + the scheduler + one builder + the admin UI and prints
-`http://127.0.0.1:18080`.
+One path: PCS + host-runtime. Start the control plane on one machine with one script, then add hosts and deploy
+schedulers/builders from the UI. `scripts/deploy.sh` is idempotent.
 
-`deploy/compose.yaml` is the single source of truth; it brings up PostgreSQL + the scheduler + four
-builders on Ubuntu 20/22/24/26. For the full preparation steps see [deploy/README.md](../deploy/README.md); the shortest path:
+### 2.1 Start the control plane
 
 ```bash
-cd deploy
-cp .env.example .env                 # set POSTGRES_PASSWORD; model credentials can stay empty
-mkdir -p keys tokens data/postgres data/artifacts
-
-# host login public keys: the sshd inside the container accepts keys only
-ssh-keygen -t ed25519 -N "" -f keys/scheduler
-ssh-keygen -t ed25519 -N "" -f keys/builder
-for os in 20 22 24 26; do cp keys/builder.pub "keys/builder$os.pub"; done
-
-docker compose -f compose.yaml --env-file .env up -d --build
+scripts/deploy.sh
 ```
 
-After startup:
+The script:
 
-| Entry | Address |
-|---|---|
-| Scheduler API | `http://<host>:8443` |
-| Scheduler SSH | `ssh root@<host> -p 2200` |
-| Builder SSH | `ssh root@<host> -p 2222–2225` |
+1. starts a local PostgreSQL container (unless `PCS_DATABASE_URL` is set);
+2. generates the PCS signing keys and the SSH credential key (`~/.config/platform/pcs-credential.key`);
+3. installs dependencies, builds the admin app and the deployment payload;
+4. prepares the host cache (`~/.platform/cache`: Linux Node, openssh debs, optional CLIs);
+5. migrates the database and starts PCS, which serves the admin app itself (`PCS_WEB_DIR`).
 
-The scheduler migrates and seeds automatically. Builders register with `http://scheduler:8443`; instance JWTs are placed in
-`deploy/tokens/<instance_id>.jwt` and read through the read-only volume `/opt/platform/tokens`.
+Open `http://127.0.0.1:7901`, register the first account (it becomes the administrator), add this machine as a
+local host, start its runtime, then deploy a scheduler and builders.
 
----
-
-## 3. Path B: PCS + host-runtime (Multiple Hosts)
-
-The control plane separates **desired state** from **actual state**: PCS writes the deployment plan and issues signed
-commands, host-runtime executes them on the host, and the admin app reads and writes only the PCS and scheduler APIs.
-
-### 3.1 Start PCS
-
-```bash
-cd pcs-issuer
-npm install
-npm run keygen          # ES256 JWT key + Ed25519 command-signing key (kept if already present)
-npm run migrate         # create the platform_control database
-
-PCS_HOST=0.0.0.0 \
-PCS_RUNTIME_URL=http://pcs.example:7901 \
-PCS_CREDENTIAL_KEY_FILE=$HOME/.config/platform/pcs-credential.key \
-PCS_IMAGE_ALLOWLIST=docker.io/library/ \
-npm start
-```
-
-`PCS_CREDENTIAL_KEY_FILE` is a 32-byte key (0600) used for AES-256-GCM encryption of host SSH private keys;
-if it is not configured, only the local host can be onboarded. Generate it once:
-
-```bash
-umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
-```
+For remote hosts, start with `PCS_HOST=0.0.0.0 PCS_RUNTIME_URL=http://<lan-ip>:7901` and add them over SSH.
+PCS runs in the foreground; Ctrl+C stops it. Environment knobs: `PCS_PORT`, `PCS_DATABASE_URL`,
+`PCS_SCHEDULER_DATABASE_URL`, `PCS_IMAGE_ALLOWLIST`, `PCS_REGISTRATION`, `PCS_SESSION_HOURS`.
 
 Admin tokens are issued with `npm run pcs -- admin-token --operator <name>`; they remain available for automation.
 The admin app itself signs in with accounts: the first registered account becomes the administrator, later
 registrations wait for approval (`PCS_REGISTRATION=approval`, the default).
 
-### 3.2 Onboard a Host
+### 2.2 Onboard a Host
 
 1. **Local host**: the machine where PCS runs; probed directly, no SSH needed.
 2. **SSH host**: fill in address, port, user, and private key; the key is encrypted into the database, and the API returns only the fingerprint.
@@ -98,7 +64,7 @@ registrations wait for approval (`PCS_REGISTRATION=approval`, the default).
 
 Remote host prerequisites: Docker Engine, Docker accessible to the current user, reachability of `PCS_RUNTIME_URL`, and Node 22+.
 
-### 3.3 Deployment Payload and Host Cache
+### 2.3 Deployment Payload and Host Cache
 
 Neither the scheduler nor the builder builds an image: official ubuntu (pinned digest) + a runtime payload written at deployment time.
 
@@ -111,7 +77,9 @@ node scripts/build-app-payload.mjs
 Node, Claude Code, and the openssh debs are placed in the host cache `~/.platform/cache/` and mounted read-only at
 `/opt/platform/cache`. Prepare it once; see [deploy/README.md](../deploy/README.md#bare-os-images--host-cache-scheduler-and-builder).
 
-### 3.4 Start the Admin App
+### 2.4 Admin app for development
+
+The deployed control plane already serves the built app, so this is only for frontend work:
 
 ```bash
 cd admin-app
@@ -119,11 +87,9 @@ npm install
 npm run dev
 ```
 
-Open the page and register the first account; it becomes the administrator. Sessions are HttpOnly cookies
-with a CSRF token, so no shared token is written to `.env.local`. The dev proxy forwards `/api/pcs` to
-`http://127.0.0.1:7901` and `/api/scheduler` to `http://127.0.0.1:8443`; override with
-`VITE_PCS_TARGET` / `VITE_SCHEDULER_TARGET`.
-For a production build, run `npm run build` and have a reverse proxy serve the static files and forward the two API prefixes.
+The dev proxy forwards `/api/pcs` to `http://127.0.0.1:7901` and `/api/scheduler` to
+`http://127.0.0.1:8443`; override with `VITE_PCS_TARGET` / `VITE_SCHEDULER_TARGET`. Sessions are HttpOnly
+cookies with a CSRF token, so no shared token is written to `.env.local`.
 
 ---
 
@@ -135,9 +101,9 @@ For a production build, run `npm run build` and have a reverse proxy serve the s
 | 8443 | Scheduler API | Reverse proxy + TLS; internal network only |
 | 2200 | Scheduler SSH | Internal network / VPN |
 | 2222–2231 | Builder SSH | Internal network / VPN |
-| 5432 | PostgreSQL | Not mapped |
+| 55432 | PostgreSQL (`scripts/deploy.sh`) | Published so scheduler containers can reach it; internal network only |
 
-If the admin app is accessed over the public internet, you must put Caddy/Nginx + HTTPS + basic auth/VPN in front of it.
+The admin app is served by PCS on 7901. Never expose it to the public internet; for public access use sideload tokens.
 
 ---
 

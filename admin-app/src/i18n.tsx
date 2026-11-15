@@ -10,6 +10,8 @@ import { createContext, Fragment, useContext, useEffect, useState, type ReactNod
 export type Lang = "zh" | "en";
 
 const STORAGE_KEY = "app-lang";
+/** Marks a choice the user made in the language switch; old auto-saved values lack it. */
+const EXPLICIT_KEY = "app-lang-explicit";
 
 /**
  * The browser language decides the first render: any Chinese variant uses Chinese,
@@ -23,10 +25,17 @@ export function detectLang(nav?: Pick<Navigator, "language" | "languages">): Lan
   return candidates.some((value) => value.toLowerCase().startsWith("zh")) ? "zh" : "en";
 }
 
+/**
+ * A saved choice is honored only when it came from the language switch. Older
+ * builds could auto-save the detected language, which froze the UI in whatever
+ * the first visit happened to be; those values are ignored so the browser
+ * language keeps deciding the default.
+ */
 export function storedLang(): Lang {
   try {
+    const explicit = localStorage.getItem(EXPLICIT_KEY) === "1";
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === "en" || saved === "zh") return saved;
+    if (explicit && (saved === "en" || saved === "zh")) return saved;
   } catch {
     // localStorage can be unavailable in private mode; fall back to the browser language.
   }
@@ -696,7 +705,15 @@ const EN: Record<string, string> = {
   "管理员在「账号」页面启用后，这个账号才能使用。": "An administrator must enable the account on the Accounts page before it can be used.",
   "3–32 位，字母、数字、点、下划线和短横线": "3–32 characters: letters, digits, dot, underscore or dash",
   "可选；默认与用户名相同": "Optional; defaults to the username",
-  "至少 10 位": "At least 10 characters",
+  "首次使用": "First-time setup",
+  "稍后": "Later",
+  "去注册": "Register",
+  "这台部署还没有任何账号。": "This deployment has no accounts yet.",
+  "点登录页底部的 Register 注册第一个账号；它会立即成为管理员并自动登录。": "Use Register at the bottom of the sign-in page to create the first account; it becomes the administrator and signs in automatically.",
+  "之后的注册会进入待审批状态，由管理员批准后才能登录。": "Later registrations stay pending until an administrator approves them.",
+  "密码需长度大于 8，并包含大写字母、小写字母和符号。": "The password must be longer than 8 characters and include an uppercase letter, a lowercase letter and a symbol.",
+  "长度大于 8，包含大小写字母和符号": "Longer than 8 characters, with uppercase, lowercase and a symbol",
+  "留空则不修改；修改后这个账号的所有会话会失效，且需满足复杂度": "Leave blank to keep it; a reset signs out every session and must meet the password policy",
   "当前账号没有查看账号的权限。": "This account cannot view accounts.",
   "{count} 个账号": "{count} accounts",
   "{count} 项": "{count} permissions",
@@ -716,6 +733,7 @@ const EN: Record<string, string> = {
   "读取审计日志（非管理员仅限本人）": "Read the audit log (non-administrators only their own)",
   "列出账号及其权限": "List accounts and their permissions",
   "创建、审批、禁用账号，修改权限": "Create, approve and disable accounts; change permissions",
+  "演示模式已填入默认账号 admin / admin。": "Demo mode prefilled the default account admin / admin.",
   "已接入：{host}，Docker {docker}。": "Connected: {host}, Docker {docker}.",
   "我是{name}，{instance} 的构建机器人。 {os}，root Shell 完整权限。要问进度、看磁盘，还是让我执行点什么？": "I'm {name}, the builder bot for {instance}. {os}, with full root shell access. Want a progress check, a disk review, or shall I run something?",
   "我是{name}，调度机器人。派发由确定性规则完成，我身上的 Agent 负责解释队列、租约和「为什么这条在等」。": "I'm {name}, the scheduler bot. Dispatch is done by deterministic rules; the agent on me explains the queue, leases, and “why this one is waiting”.",
@@ -829,16 +847,18 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-    try {
-      localStorage.setItem(STORAGE_KEY, lang);
-    } catch {
-      // localStorage cannot be written in private mode; the change still applies to this session.
-    }
   }, [lang]);
 
   const setLang = (next: Lang) => {
     current = next;
     setLangState(next);
+    // Persist only an explicit choice; the initial language keeps following the browser.
+    try {
+      localStorage.setItem(STORAGE_KEY, next);
+      localStorage.setItem(EXPLICIT_KEY, "1");
+    } catch {
+      // localStorage cannot be written in private mode; the change still applies to this session.
+    }
   };
 
   return (

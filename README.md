@@ -4,7 +4,7 @@
 
 **Run Claude Code, Codex, DeepSeek or plain shell on any number of hosts — with deterministic scheduling, recursive schedulers and full-root builders.**
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Example](#example-project-architecture) · [Scheduling](#scheduling-algorithm) · [Screenshots](#product-tour) · [Docs](#documentation) · **[简体中文](README.zh-CN.md)**
+[Deploy](#deploy) · [Architecture](#architecture) · [Example](#example-project-architecture) · [Scheduling](#scheduling-algorithm) · [Screenshots](#product-tour) · [Docs](#documentation) · **[简体中文](README.zh-CN.md)**
 
 [![CI](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -99,67 +99,49 @@ If remote operators really must reach the console, put it behind a TLS reverse p
 
 The studio is the main screen: root scheduler on top, node schedulers and builders below, with animated signals on every live link. Each card carries its host, resource envelope and capability score. The same tree is used to add a builder or another scheduler — the card you click already determines the parent.
 
-## Quick start
+## Deploy
 
-Requirements: Node 22+, PostgreSQL 16 (or Docker), Docker 24+.
-
-> **Just want to look?** `scripts/demo.sh` builds and starts PostgreSQL + PCS + scheduler + the example-project storyline (UI / middle-layer / driver builders, a folded kernel host, and sideload clients) + this UI, then prints `http://127.0.0.1:18080` and the seeded `admin` password (override the port with `DEMO_PORT`). Keys, the admin password and the database password are generated automatically; the first run takes a few minutes.
+> **Want to see it first?** `scripts/demo.sh` starts a self-contained demo — PostgreSQL + PCS + scheduler + the example-project storyline and this UI — at `http://127.0.0.1:18080`. Sign in with **admin / admin** (demo-only credentials). The demo is not a deployment path; it exists to show the product quickly.
 >
-> **Never expose the admin app to the public internet.** It is bound to `127.0.0.1` in the demo on purpose; see [Exposure](#exposure-keep-the-admin-surface-private).
+> ```bash
+> scripts/demo.sh --down            # stop the containers, keep the data
+> scripts/demo.sh --down --volumes  # stop and delete the demo data
+> ```
 
-### 1. Single-machine Compose
+Requirements: Node 22+ and Docker (for PostgreSQL and the host cache). On Debian/Ubuntu, Fedora and macOS with Homebrew the script installs missing prerequisites (sudo may prompt; on macOS it may install colima and start a VM). Set `PLATFORM_AUTO_INSTALL=0` to disable. One machine is enough.
 
-```bash
-cd deploy
-cp .env.example .env                 # set POSTGRES_PASSWORD; model keys can stay empty
-mkdir -p keys tokens data/postgres data/artifacts
-
-ssh-keygen -t ed25519 -N "" -f keys/scheduler
-ssh-keygen -t ed25519 -N "" -f keys/builder
-for os in 20 22 24 26; do cp keys/builder.pub "keys/builder$os.pub"; done
-
-docker compose -f compose.yaml --env-file .env up -d --build
-```
-
-Scheduler API: `http://<host>:8443`. Builder SSH: ports 2222–2225, key-only, root shell.
-
-### 2. Control plane (multi-host)
+| Host | Installed automatically | You install manually |
+|---|---|---|
+| Debian / Ubuntu | Node 22, Docker, Compose v2 | — |
+| Fedora / RHEL | Node 22, Docker (dnf) | Compose v2 if the repository lacks it |
+| macOS + Homebrew | Node 22, Docker (starts Docker Desktop, or installs colima) | Docker Desktop licence / first-run setup if used |
+| macOS without Homebrew | — | Node 22, Docker Desktop or colima |
+| Other Linux | Node 22 (official tarball) | Docker + Compose v2 |
+| Windows | — | Run under WSL2 and follow the Ubuntu row |
 
 ```bash
-cd pcs-issuer
-npm install
-npm run keygen
-npm run migrate
-
-umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
-PCS_HOST=0.0.0.0 \
-PCS_RUNTIME_URL=http://pcs.example:7901 \
-PCS_CREDENTIAL_KEY_FILE=$HOME/.config/platform/pcs-credential.key \
-PCS_IMAGE_ALLOWLIST=docker.io/library/ \
-npm start
+scripts/deploy.sh
 ```
 
-Add a local or SSH host in the admin app, start its runtime, then deploy schedulers and builders. Full steps: [docs/deployment.md](docs/deployment.md) and [deploy/README.md](deploy/README.md).
+The script is idempotent. It starts a local PostgreSQL container, generates the PCS signing keys and the SSH credential key, builds the admin app and the deployment payload, prepares the host cache, migrates the database, and starts PCS — which serves the UI itself.
 
-### 3. Admin app
+Then open `http://127.0.0.1:7901`:
 
-```bash
-cd admin-app
-npm install
-npm run dev
-```
+1. **Register the first account** — it becomes the administrator; later registrations wait for approval.
+2. **Add this machine as a local host** and start its runtime.
+3. **Deploy a scheduler, then builders** — all from the UI.
 
-The dev server proxies `/api/pcs` to `127.0.0.1:7901` and `/api/scheduler` to `127.0.0.1:8443`. Open the page and **register the first account** — it becomes the administrator; later registrations wait for approval. Sessions are HttpOnly cookies with a CSRF token; there is no shared token in `.env.local` anymore.
+PCS runs in the foreground; Ctrl+C stops it and the PostgreSQL container keeps running (stop it with `docker stop osacp-postgres`). For remote hosts, start it with `PCS_HOST=0.0.0.0 PCS_RUNTIME_URL=http://<lan-ip>:7901` and add them over SSH.
 
-`PCS_REGISTRATION=approval|open|closed` controls later sign-ups, and `PCS_SESSION_HOURS` sets the session lifetime. The CLI token remains available for automation:
+Accounts are enforced by PCS: scrypt password hashes, HttpOnly sessions with CSRF protection, role presets plus custom scopes, and an audit log attributed to the signed-in account. Passwords must be longer than 8 characters and include an uppercase letter, a lowercase letter and a symbol. `PCS_REGISTRATION=approval|open|closed` controls later sign-ups and `PCS_SESSION_HOURS` sets the session lifetime. The CLI token remains available for automation:
 
 ```bash
 npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 ```
 
-### 4. Optional: drive a host from another device
+### Access from other systems
 
-Create a token in the studio (**Attach sideload**), then run a project with files in both directions:
+Sideload is an access method, not a deployment path: create a token in the studio (**Attach sideload**) and let one device drive one host's builders with `curl` or a script. It is scoped to that host, revocable, and never learns the scheduler address.
 
 ```bash
 SIDELOAD_TOKEN='sdl_…' PCS_URL='http://pcs.example:7901' \

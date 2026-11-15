@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { t } from "../i18n";
 import { getLiveConnection } from "../live/config";
 import { errorMessage, pcs } from "../live/client";
-import { useAuth, type Account, type AccountRole } from "../auth";
+import { useAuth, strongPassword, type Account, type AccountRole } from "../auth";
 import { Badge, Button, Callout, Card, Empty, Field, Modal, PageHead, Tag } from "../components/ui";
 
 /** Every permission an account can carry; keep in sync with pcs-issuer/src/jwt.ts. */
@@ -249,8 +249,8 @@ function AccountModal({
   }
 
   const valid = value
-    ? displayName.trim().length <= 64 && (!password || password.length >= 10)
-    : /^[a-zA-Z0-9._-]{3,32}$/.test(username.trim()) && password.length >= 10;
+    ? displayName.trim().length <= 64 && (!password || strongPassword(password))
+    : /^[a-zA-Z0-9._-]{3,32}$/.test(username.trim()) && strongPassword(password);
 
   return (
     <Modal
@@ -278,7 +278,11 @@ function AccountModal({
         </Field>
         <Field
           label={value ? t("重置密码") : t("初始密码")}
-          hint={value ? t("留空则不修改；修改后这个账号的所有会话会失效") : t("至少 10 位")}
+          hint={
+            value
+              ? t("留空则不修改；修改后这个账号的所有会话会失效，且需满足复杂度")
+              : t("长度大于 8，包含大小写字母和符号")
+          }
         >
           <input
             className="input"
