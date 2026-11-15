@@ -1122,12 +1122,32 @@ function releaseHostAdmission(socketPath, grantId) {
 // host-runtime/src/metrics.ts
 import fs5 from "node:fs";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
+function darwinAvailableBytes() {
+  try {
+    const out = spawnSync("vm_stat", [], { encoding: "utf8", timeout: 3e3 }).stdout ?? "";
+    const page = /page size of (\d+) bytes/.exec(out);
+    if (!page) return null;
+    const pages = (name) => {
+      const match = new RegExp(`${name}:\\s+(\\d+)\\.`).exec(out);
+      return match ? Number(match[1]) : 0;
+    };
+    const usable = pages("Pages free") + pages("Pages inactive") + pages("Pages speculative") + pages("Pages purgeable");
+    return usable * Number(page[1]);
+  } catch {
+    return null;
+  }
+}
 function memAvailableBytes() {
   try {
     const text = fs5.readFileSync("/proc/meminfo", "utf8");
     const line = text.split("\n").find((l) => l.startsWith("MemAvailable:"));
     if (line) return Number(line.replace(/\D+/g, "")) * 1024;
   } catch {
+  }
+  if (process.platform === "darwin") {
+    const available = darwinAvailableBytes();
+    if (available !== null) return available;
   }
   return os.freemem();
 }

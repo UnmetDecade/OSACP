@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -96,8 +96,22 @@ function publicAccount(row: AccountRow): AccountRow {
   };
 }
 
-/** First non-loopback IPv4 of this machine: containers reach host-published ports through it. */
+/** Address containers use to reach host-published ports. */
 function localAddress(): string {
+  // Docker Desktop/colima on macOS: the host LAN address is not routable from
+  // containers; the Docker bridge gateway is. PCS itself still uses 127.0.0.1.
+  if (process.platform === "darwin") {
+    try {
+      const out = spawnSync("docker", ["network", "inspect", "bridge", "-f", "{{(index .IPAM.Config 0).Gateway}}"], {
+        encoding: "utf8",
+        timeout: 5000,
+      }).stdout?.trim();
+      if (out) return out;
+    } catch {
+      // Fall through to the default below.
+    }
+    return "172.17.0.1";
+  }
   for (const entries of Object.values(os.networkInterfaces())) {
     for (const entry of entries ?? []) {
       if (entry.family === "IPv4" && !entry.internal) return entry.address;
@@ -2894,14 +2908,31 @@ export class PcsService {
    */
   /** First active root scheduler: the UI's default `/api/scheduler` proxy target. */
   async defaultSchedulerUrl(): Promise<string | null> {
-    const r = await query<{ scheduler_url: string | null }>(
-      `SELECT scheduler_url FROM pcs_deployments
-        WHERE role_id='scheduler' AND status <> 'REMOVED'
-          AND scheduler_url IS NOT NULL AND scheduler_role='root'
-        ORDER BY (actual_state='RUNNING') DESC, created_at ASC
+    const r = await query<{
+      scheduler_url: string | null;
+      ports: PortMapping[];
+      is_local: boolean;
+    }>(
+      `SELECT d.scheduler_url, d.ports,
+              EXISTS (
+                SELECT 1 FROM pcs_host_credentials c
+                 WHERE c.host_id=d.host_id AND c.transport='local'
+              ) AS is_local
+         FROM pcs_deployments d
+        WHERE d.role_id='scheduler' AND d.status <> 'REMOVED'
+          AND d.scheduler_url IS NOT NULL AND d.scheduler_role='root'
+        ORDER BY (d.actual_state='RUNNING') DESC, d.created_at ASC
         LIMIT 1`,
     );
-    return r.rows[0]?.scheduler_url ?? null;
+    const row = r.rows[0];
+    if (!row) return null;
+    // PCS runs on the same machine as a local host: use loopback, not the
+    // container-facing address stored in scheduler_url (172.17.0.1 on macOS).
+    if (row.is_local) {
+      const port = (row.ports ?? []).find((p) => Number(p.container) === 8443)?.host;
+      if (port) return `http://127.0.0.1:${Number(port)}`;
+    }
+    return row.scheduler_url ?? null;
   }
 
   private async schedulerUrlFor(hostId: string, ports: PortMapping[]): Promise<string | null> {
@@ -3678,6 +3709,16 @@ export class PcsService {
     if (dep.role_id !== "scheduler") {
       throw new PcsError(400, "NOT_A_SCHEDULER", "only scheduler deployments can use this proxy");
     }
+    // For a local host PCS runs on the same machine: the stored address is for
+    // containers (172.17.0.1 on macOS) and is not routable from PCS itself.
+    const local = await query(
+      `SELECT 1 FROM pcs_host_credentials WHERE host_id=$1 AND transport='local' LIMIT 1`,
+      [dep.host_id],
+    );
+    if (local.rowCount) {
+      const port = (dep.ports ?? []).find((p) => Number(p.container) === 8443)?.host;
+      if (port) return `http://127.0.0.1:${Number(port)}`;
+    }
     const base =
       String(dep.scheduler_url ?? "").trim() ||
       this.cfg.schedulerUrls[dep.host_id] ||
@@ -4306,7 +4347,9 @@ export class PcsService {
       },
     ];
     if (input.role_id === "builder") {
-      const schedulerUrl = env.SCHEDULER_URL || this.cfg.schedulerUrl;
+      // SCHEDULER_URL is injected into the instance env from the selected
+      // scheduler; the input env alone does not carry it.
+      const schedulerUrl = builderSchedulerUrl || env.SCHEDULER_URL || this.cfg.schedulerUrl;
       checks.push({
         id: "scheduler_url",
         ok: Boolean(schedulerUrl),
@@ -4945,17 +4988,34 @@ export class PcsService {
     );
     const row = r.rows[0];
     if (!row) return;
-    const active = await query<{ scheduler_url: string | null }>(
-      `SELECT DISTINCT scheduler_url FROM pcs_deployments
+    const active = await query<{ scheduler_url: string | null; ports: PortMapping[] }>(
+      `SELECT scheduler_url, ports FROM pcs_deployments
         WHERE host_id=$1 AND role_id='scheduler' AND scheduler_url IS NOT NULL
           AND status IN ('STARTING','HEALTHY')`,
       [hostId],
     );
-    const bases = new Set<string>(
-      active.rows.map((x) => String(x.scheduler_url ?? "").trim()).filter(Boolean),
-    );
+    const localHost = (
+      await query(
+        `SELECT 1 FROM pcs_host_credentials WHERE host_id=$1 AND transport='local' LIMIT 1`,
+        [hostId],
+      )
+    ).rowCount
+      ? true
+      : false;
+    const bases = new Set<string>();
+    for (const row of active.rows) {
+      if (localHost) {
+        // PCS runs on this machine: talk to the host port on loopback, not the
+        // container-facing address used inside the Docker network.
+        const port = (row.ports ?? []).find((p) => Number(p.container) === 8443)?.host;
+        if (port) bases.add(`http://127.0.0.1:${Number(port)}`);
+      } else {
+        const url = String(row.scheduler_url ?? "").trim();
+        if (url) bases.add(url);
+      }
+    }
     const fallback =
-      this.cfg.schedulerUrls[hostId] ?? this.cfg.schedulerSyncUrl ?? this.cfg.schedulerUrl;
+      (localHost ? null : this.cfg.schedulerUrls[hostId]) ?? this.cfg.schedulerSyncUrl ?? this.cfg.schedulerUrl;
     if (bases.size === 0 && fallback) bases.add(fallback);
     if (bases.size === 0) return;
     const res = (row.resources ?? {}) as Record<string, unknown>;

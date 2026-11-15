@@ -1,14 +1,41 @@
 import fs from "node:fs";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 
-/** Real-time host metrics. Linux reads /proc; other platforms fall back to the os API. */
+/**
+ * macOS only counts free pages in os.freemem(); inactive pages are reclaimable
+ * and are what a container can actually use. Parse vm_stat so a busy but
+ * healthy Mac is not reported as nearly out of memory.
+ */
+function darwinAvailableBytes(): number | null {
+  try {
+    const out = spawnSync("vm_stat", [], { encoding: "utf8", timeout: 3000 }).stdout ?? "";
+    const page = /page size of (\d+) bytes/.exec(out);
+    if (!page) return null;
+    const pages = (name: string): number => {
+      const match = new RegExp(`${name}:\\s+(\\d+)\\.`).exec(out);
+      return match ? Number(match[1]) : 0;
+    };
+    const usable =
+      pages("Pages free") + pages("Pages inactive") + pages("Pages speculative") + pages("Pages purgeable");
+    return usable * Number(page[1]);
+  } catch {
+    return null;
+  }
+}
+
+/** Real-time host metrics. Linux reads /proc; macOS reads vm_stat; other platforms fall back to the os API. */
 export function memAvailableBytes(): number {
   try {
     const text = fs.readFileSync("/proc/meminfo", "utf8");
     const line = text.split("\n").find((l) => l.startsWith("MemAvailable:"));
     if (line) return Number(line.replace(/\D+/g, "")) * 1024;
   } catch {
-    // Not Linux; use the fallback
+    // Not Linux
+  }
+  if (process.platform === "darwin") {
+    const available = darwinAvailableBytes();
+    if (available !== null) return available;
   }
   return os.freemem();
 }
@@ -108,7 +135,9 @@ export function sampleHost(prevCpu?: CpuTimes | null): { sample: HostSample; cpu
   const [load1 = 0, load5 = 0, load15 = 0] = os.loadavg();
   const mem = readMeminfo();
   const totalMem = mem.MemTotal ?? os.totalmem();
-  const available = mem.MemAvailable ?? os.freemem();
+  const available =
+    mem.MemAvailable ??
+    (process.platform === "darwin" ? darwinAvailableBytes() ?? os.freemem() : os.freemem());
   const swapTotal = mem.SwapTotal ?? 0;
   const swapFree = mem.SwapFree ?? 0;
   const cpu = readCpuTimes();
