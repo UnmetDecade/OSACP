@@ -279,6 +279,13 @@ export function TaskShow() {
       task.payload.command ??
       "",
   );
+  // The mandate reference is attached by PCS at intake; it explains why the task
+  // was authorized and which policy version covered it.
+  const mandate = (
+    task.payload.requirements as
+      | { mandate?: { source?: string; actor?: string; policy_version?: string; strength?: string } }
+      | undefined
+  )?.mandate;
   // The newest failed attempt explains why the task is queued for a retry or dead-lettered; a later success supersedes it.
   const lastFailure =
     task.state === "QUEUED" || task.state === "FAILED"
@@ -442,6 +449,13 @@ export function TaskShow() {
             )}
             {task.outcome && (
               <KeyVal label={t("结果")}>{t(OUTCOME_LABELS[task.outcome] ?? task.outcome)}</KeyVal>
+            )}
+            {mandate && (
+              <KeyVal label={t("授权")}>
+                {`${mandate.source ?? "-"} · ${mandate.actor ?? "-"} · ${t("策略 v{version}", {
+                  version: mandate.policy_version ?? "-",
+                })}`}
+              </KeyVal>
             )}
             {task.parent_task_id && (
               <KeyVal label={t("父任务")}>

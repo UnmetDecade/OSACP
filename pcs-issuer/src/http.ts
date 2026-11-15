@@ -12,6 +12,7 @@ import type {
   CreateDeploymentPlanInput,
   EnrollInput,
   PcsService,
+  MandateRow,
   SideloadRow,
   SideloadScope,
 } from "./service.js";
@@ -97,6 +98,18 @@ function bearer(req: http.IncomingMessage): string {
 function intParam(value: string | null, fallback: number): number {
   const n = Number(value ?? fallback);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** The mandate reference stored in task requirements; the full record stays in PCS. */
+function mandateRef(m: MandateRow) {
+  return {
+    mandate_id: m.mandate_id,
+    policy_version: m.policy_version,
+    source: m.source,
+    actor: m.actor,
+    strength: m.strength,
+    scopes: m.scopes,
+  };
 }
 
 function readCookie(header: string | undefined, name: string): string | undefined {
@@ -592,11 +605,31 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         if (String(body.task_type ?? "").startsWith("task.console.")) {
           requireSideloadScope(s, "console:run");
         }
-        return send(
-          res,
-          201,
-          await service.proxySideloadRequest(s, "POST", "/v1/tasks", "", body),
-        );
+        const decision = await service.admitTask({
+          source: "sideload",
+          sourceId: s.sideload_id,
+          actor: s.name,
+          scopes: s.scopes,
+          hostId: s.host_id,
+          taskType: String(body.task_type ?? ""),
+          target: { host_id: s.host_id },
+        });
+        if (!decision.allowed) {
+          throw new PcsError(403, "ADMISSION_DENIED", decision.reason, {
+            policy_version: decision.policyVersion,
+          });
+        }
+        const requirements =
+          body.requirements && typeof body.requirements === "object"
+            ? (body.requirements as Record<string, unknown>)
+            : {};
+        const out = await service.proxySideloadRequest(s, "POST", "/v1/tasks", "", {
+          ...body,
+          requirements: { ...requirements, mandate: mandateRef(decision.mandate) },
+        });
+        const taskId = (out as { task_id?: unknown } | null)?.task_id;
+        if (taskId) await service.attachMandateTask(decision.mandate.mandate_id, String(taskId));
+        return send(res, 201, out);
       }
 
       // Input files: upload first, then reference the returned URLs in requirements.console.attachments
@@ -713,7 +746,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       // ---- Scheduler proxy: forward task requests to the scheduler (root or node) that owns the target instance
       const schedProxy = /^\/api\/v1\/platform\/schedulers\/([^/]+)\/proxy(\/.*)$/.exec(path);
       if (schedProxy && (method === "GET" || method === "POST")) {
-        await admin(method === "GET" ? "deployment:read" : "deployment:write");
+        const claims = await admin(method === "GET" ? "deployment:read" : "deployment:write");
         // Artifact bytes are raw; the JSON proxy would corrupt them (and base64-bloat a 64 MiB file).
         const artifactDownload = /^\/v1\/artifacts\/([^/]+)\/download$/.exec(schedProxy[2]);
         if (method === "GET" && artifactDownload) {
@@ -728,18 +761,50 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
             "x-artifact-name": encodeURIComponent(out.name),
           });
         }
-        const body = method === "GET" ? undefined : await readJson(req);
-        return send(
-          res,
-          200,
-          await service.proxySchedulerDeployment(
-            decodeURIComponent(schedProxy[1]),
-            method,
-            schedProxy[2],
-            url.search,
-            body,
-          ),
+        let body = method === "GET" ? undefined : await readJson(req);
+        let mandateId: string | null = null;
+        // Task creation carries a mandate: the immutable record of why this
+        // source may create work, under which policy version.
+        if (method === "POST" && /^\/v1\/tasks$/.test(schedProxy[2])) {
+          const deploymentId = decodeURIComponent(schedProxy[1]);
+          const dep = await service.getDeployment(deploymentId);
+          const decision = await service.admitTask({
+            source: "admin",
+            sourceId: claims.account_id,
+            actor: String(claims.operator_id ?? claims.sub),
+            scopes: claims.scopes ?? [],
+            hostId: dep?.host_id,
+            taskType: String((body as { task_type?: unknown } | null)?.task_type ?? ""),
+            target: { deployment_id: deploymentId },
+          });
+          if (!decision.allowed) {
+            throw new PcsError(403, "ADMISSION_DENIED", decision.reason, {
+              policy_version: decision.policyVersion,
+            });
+          }
+          mandateId = decision.mandate.mandate_id;
+          const req = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+          const requirements =
+            req.requirements && typeof req.requirements === "object"
+              ? (req.requirements as Record<string, unknown>)
+              : {};
+          body = {
+            ...req,
+            requirements: { ...requirements, mandate: mandateRef(decision.mandate) },
+          };
+        }
+        const out = await service.proxySchedulerDeployment(
+          decodeURIComponent(schedProxy[1]),
+          method,
+          schedProxy[2],
+          url.search,
+          body,
         );
+        if (mandateId) {
+          const taskId = (out as { task_id?: unknown } | null)?.task_id;
+          if (taskId) await service.attachMandateTask(mandateId, String(taskId));
+        }
+        return send(res, 200, out);
       }
 
       // ---- Host onboarding (v4.1): SSH hosts and local hosts
@@ -1231,6 +1296,32 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           : url.searchParams.get("account_id") ?? undefined;
         return send(res, 200, {
           audit_logs: await service.listAudit(intParam(url.searchParams.get("limit"), 100), accountId),
+        });
+      }
+
+      if (method === "GET" && path === "/api/v1/platform/policy") {
+        await admin("audit:read");
+        return send(res, 200, await service.getPolicy());
+      }
+
+      if (method === "GET" && path === "/api/v1/platform/mandates") {
+        await admin("audit:read");
+        return send(res, 200, {
+          mandates: await service.listMandates(
+            intParam(url.searchParams.get("limit"), 100),
+            url.searchParams.get("task_id") ?? undefined,
+          ),
+        });
+      }
+
+      const mandateRevoke = /^\/api\/v1\/platform\/mandates\/([^/]+)\/revoke$/.exec(path);
+      if (method === "POST" && mandateRevoke) {
+        const claims = await admin("account:write");
+        return send(res, 200, {
+          mandate: await service.revokeMandate(
+            decodeURIComponent(mandateRevoke[1]),
+            String(claims.operator_id ?? claims.sub),
+          ),
         });
       }
 
