@@ -6,14 +6,26 @@ All notable changes to OSACP are recorded here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-11-15
+
 ### Added
 
-- Static GitHub Pages landing pages under `docs/` (English and Chinese) with links to the interactive architecture diagrams; README links point at the Pages URLs.
-- Admin app tests for the live client, sync mapping, action payloads, task creation, sideloads, host task scoping and UI primitives (100 tests).
+- One-command demo (`scripts/demo.sh`) with the example-project storyline, rebuild/stop flags and documented stop commands.
+- Deployment capability toggles (SSH/terminal and chat) that survive redeploys and can be edited from the instance detail page.
+- Account login and registration: the first account becomes the administrator, later registrations await approval; role presets and custom scopes; session + CSRF protection; per-account audit history; password complexity policy.
+- Explicit human-attention stages on tasks (`answer`, `review`, `blocked`, `waiting`) with list filtering and detail callouts.
+- Versioned admission policy and immutable per-task mandates covering admin and sideload intake, with policy and mandate views.
+- Threads: tasks and messages grouped into a conversation; posting a message creates a continuation task that inherits the target, profile and autonomy, plus per-thread outbox subscriptions with a cursor.
+- Outbox effects: named pull consumers with a durable cursor, optional event-type filter, ack/nack retry accounting, pause/resume and lag statistics.
+- Dedicated `策略` (Policy) page in the admin app; policy and authorization records moved out of Accounts.
 
 ### Changed
 
-- Admin app coverage thresholds raised from 5%/2% to 21% statements, 20% branches, 18% functions and 22% lines, with stricter per-file floors for the live client, sync, host tree/task scoping and shared UI primitives.
+- The single deployment path (PCS + admin UI) is the only supported deployment, and the scripts deploy it end to end.
+- Node and Docker are installed automatically on Debian/Ubuntu, Fedora and macOS; the README documents automatic versus manual installation.
+- macOS hosts are supported: containers use the Docker bridge gateway, available memory comes from `vm_stat`, and Linux agents are installed for containers.
+- Admin app layout: fixed-height builder, task and log pages; task detail tabs (`overview / thread / events`); clearer segmented controls; no page-level scrolling.
+- README: demo mode restored with stop commands, plus a warning not to expose the admin app publicly and to use sideload tokens instead.
 
 ## [4.5.1] - 2026-11-14
 
@@ -61,7 +73,8 @@ All notable changes to OSACP are recorded here. The format follows [Keep a Chang
 
 - First public release: PCS control plane, host runtime, recursive schedulers, federation, relay, builders, agent adapters, admin app, Compose deployment and acceptance tooling.
 
-[Unreleased]: https://github.com/UnmetDecade/OSACP/compare/v4.5.1...HEAD
+[Unreleased]: https://github.com/UnmetDecade/OSACP/compare/v4.6.0...HEAD
+[4.6.0]: https://github.com/UnmetDecade/OSACP/compare/v4.5.1...v4.6.0
 [4.5.1]: https://github.com/UnmetDecade/OSACP/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/UnmetDecade/OSACP/compare/v4.4.0...v4.5.0
 [4.4.0]: https://github.com/UnmetDecade/OSACP/compare/v4.3.1...v4.4.0
