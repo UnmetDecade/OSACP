@@ -37,18 +37,22 @@ import {
 } from "./ssh.js";
 import { buildBootstrapScript, buildEnvSetupScript, runLocalBootstrap } from "./bootstrap.js";
 import { ensureRuntimeBundle, runtimeSourceAvailable } from "./runtime-bundle.js";
+import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords.js";
 import { resolveCapability, type CapabilityDetail } from "./capability.js";
 import { query, tx, type Client } from "./db.js";
 import {
+  ACCOUNT_SCOPES,
   ADMIN_AUDIENCE,
   ADMIN_SCOPES,
   HOST_SCOPES,
   ISSUER,
+  ROLE_PRESETS,
   RUNTIME_AUDIENCE,
   SCHEDULER_AUDIENCE,
   requireClaimScope,
   signJwt,
   verifyJwt,
+  type AccountRole,
   type JwtClaims,
 } from "./jwt.js";
 
@@ -57,6 +61,75 @@ function jsonObject(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+export type AccountRow = {
+  account_id: string;
+  username: string;
+  display_name: string;
+  role: AccountRole;
+  scopes: string[];
+  status: "PENDING" | "ACTIVE" | "DISABLED";
+  created_at: string;
+  updated_at: string;
+  approved_by: string | null;
+  last_login_at: string | null;
+};
+
+export type IssuedSession = { token: string; csrf: string; expires_at: string };
+
+const ACCOUNT_PUBLIC_COLUMNS =
+  "account_id, username, display_name, role, scopes, status, created_at, updated_at, approved_by, last_login_at";
+
+function publicAccount(row: AccountRow): AccountRow {
+  return {
+    account_id: row.account_id,
+    username: row.username,
+    display_name: row.display_name,
+    role: row.role,
+    scopes: row.scopes,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    approved_by: row.approved_by,
+    last_login_at: row.last_login_at,
+  };
+}
+
+const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
+
+function normalizeUsername(raw: unknown): string {
+  const username = String(raw ?? "").trim().toLowerCase();
+  if (!USERNAME_RE.test(username)) {
+    throw new PcsError(400, "USERNAME_INVALID", "username must be 3-32 characters: a-z, 0-9, dot, underscore or dash");
+  }
+  return username;
+}
+
+function normalizePassword(raw: unknown): string {
+  const password = String(raw ?? "");
+  if (password.length < 10 || password.length > 200) {
+    throw new PcsError(400, "PASSWORD_INVALID", "password must be between 10 and 200 characters");
+  }
+  return password;
+}
+
+function normalizeAccountRole(raw: unknown): AccountRole {
+  const role = String(raw ?? "");
+  if (role !== "admin" && role !== "operator" && role !== "viewer" && role !== "custom") {
+    throw new PcsError(400, "ROLE_INVALID", "role must be admin, operator, viewer or custom");
+  }
+  return role;
+}
+
+function normalizeAccountScopes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) throw new PcsError(400, "SCOPES_INVALID", "scopes must be an array");
+  const list = raw.map((s) => String(s));
+  const unknown = list.filter((s) => !(ACCOUNT_SCOPES as readonly string[]).includes(s));
+  if (unknown.length) {
+    throw new PcsError(400, "SCOPE_UNKNOWN", `unknown permission: ${unknown.join(", ")}`);
+  }
+  return [...new Set(list)];
 }
 
 export type HostRow = {
@@ -754,7 +827,7 @@ export class PcsService {
 
   // ---------------------------------------------------------------- Identity
 
-  /** Admin tokens are issued by the CLI with the same JWT private key; the PCS only verifies the signature and checks scopes. */
+  /** Bearer-only verification: CLI tokens and automation keep the original synchronous path. */
   authenticateAdmin(token: string, scope: string): JwtClaims {
     const claims = verifyJwt(token, this.jwtPublicKey, {
       audience: ADMIN_AUDIENCE,
@@ -814,6 +887,391 @@ export class PcsService {
       },
       this.jwtPrivateKey,
     );
+  }
+
+  // ---------------------------------------------------------------- Accounts & sessions
+
+  /**
+   * Verify either a CLI admin JWT or a browser session cookie and check one scope.
+   *
+   * Cookie sessions are opaque, hashed at rest, expire absolutely and require a
+   * CSRF header on state-changing requests. Bearer tokens keep the CLI and
+   * automation working exactly as before.
+   */
+  async authenticateRequest(
+    input: {
+      bearer?: string;
+      session?: string;
+      csrf?: string;
+      mutating?: boolean;
+      ip?: string;
+    },
+    scope: string,
+  ): Promise<JwtClaims & { account_id?: string }> {
+    if (input.bearer) {
+      const claims = verifyJwt(input.bearer, this.jwtPublicKey, {
+        audience: ADMIN_AUDIENCE,
+        typ: "admin",
+      });
+      requireClaimScope(claims, scope);
+      return claims;
+    }
+    if (!input.session) throw new PcsError(401, "LOGIN_REQUIRED", "login required");
+    const row = (
+      await query<{
+        session_id: string;
+        csrf_hash: string;
+        expires_at: string;
+        revoked_at: string | null;
+        last_seen_at: string;
+        account_id: string;
+        username: string;
+        role: string;
+        scopes: string[];
+        status: string;
+      }>(
+        `SELECT s.session_id, s.csrf_hash, s.expires_at, s.revoked_at, s.last_seen_at,
+                a.account_id, a.username, a.role, a.scopes, a.status
+           FROM pcs_sessions s JOIN pcs_accounts a USING (account_id)
+          WHERE s.token_hash=$1`,
+        [sha256(input.session)],
+      )
+    ).rows[0];
+    if (!row || row.revoked_at || new Date(row.expires_at).getTime() <= nowMs()) {
+      throw new PcsError(401, "LOGIN_REQUIRED", "session expired or invalid");
+    }
+    if (row.status !== "ACTIVE") {
+      throw new PcsError(403, "ACCOUNT_INACTIVE", "this account is not active");
+    }
+    if (input.mutating) {
+      const expected = Buffer.from(row.csrf_hash);
+      const actual = Buffer.from(sha256(String(input.csrf ?? "")));
+      if (!input.csrf || expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+        throw new PcsError(403, "CSRF_INVALID", "missing or invalid CSRF token");
+      }
+    }
+    requireClaimScope({ scopes: row.scopes } as JwtClaims, scope);
+    if (nowMs() - new Date(row.last_seen_at).getTime() > 60_000) {
+      void query(`UPDATE pcs_sessions SET last_seen_at=now() WHERE session_id=$1`, [
+        row.session_id,
+      ]).catch(() => {});
+    }
+    return {
+      iss: ISSUER,
+      aud: ADMIN_AUDIENCE,
+      sub: `account:${row.account_id}`,
+      typ: "admin",
+      operator_id: row.username,
+      account_id: row.account_id,
+      scopes: row.scopes,
+    };
+  }
+
+  /**
+   * Self-service registration. The first account becomes an active administrator;
+   * later accounts follow PCS_REGISTRATION (approval by default): pending until an
+   * administrator approves, or active read-only when registration is open.
+   */
+  /** Registration attempts per client IP; ten per hour is enough for a self-hosted team. */
+  private registerAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  async registerAccount(input: {
+    username?: string;
+    password?: string;
+    display_name?: string;
+    ip?: string;
+    user_agent?: string;
+  }): Promise<{ account: AccountRow; session?: IssuedSession }> {
+    const username = normalizeUsername(input.username);
+    const password = normalizePassword(input.password);
+    const ipKey = input.ip ?? "unknown";
+    const now = nowMs();
+    const attempt = this.registerAttempts.get(ipKey);
+    if (attempt && attempt.resetAt > now && attempt.count >= 10) {
+      throw new PcsError(429, "REGISTRATION_RATE_LIMITED", "too many registrations; try again later");
+    }
+    if (attempt && attempt.resetAt > now) attempt.count += 1;
+    else this.registerAttempts.set(ipKey, { count: 1, resetAt: now + 3600_000 });
+    if (this.registerAttempts.size > 1_000) {
+      for (const [key, value] of this.registerAttempts) {
+        if (value.resetAt <= now) this.registerAttempts.delete(key);
+      }
+    }
+    const displayName = String(input.display_name ?? "").trim().slice(0, 64) || username;
+    const total = Number(
+      (await query<{ n: string }>(`SELECT count(*)::text AS n FROM pcs_accounts`)).rows[0]?.n ?? "0",
+    );
+    const first = total === 0;
+    if (!first && this.cfg.registrationMode === "closed") {
+      throw new PcsError(
+        403,
+        "REGISTRATION_CLOSED",
+        "registration is closed; ask an administrator to create the account",
+      );
+    }
+    const role: AccountRole = first ? "admin" : "viewer";
+    const scopes = first ? [...ACCOUNT_SCOPES] : [...ROLE_PRESETS.viewer];
+    const status = first || this.cfg.registrationMode === "open" ? "ACTIVE" : "PENDING";
+    const accountId = newId("acc");
+    try {
+      await query(
+        `INSERT INTO pcs_accounts
+           (account_id, username, display_name, password_hash, role, scopes, status, approved_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          accountId,
+          username,
+          displayName,
+          hashPassword(password),
+          role,
+          scopes,
+          status,
+          first ? "bootstrap" : null,
+        ],
+      );
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") {
+        throw conflict("USERNAME_TAKEN", "that username is not available");
+      }
+      throw e;
+    }
+    await this.auditAuth(accountId, username, "account.register", input.ip, { role, status });
+    const account = await this.getAccount(accountId);
+    const session =
+      status === "ACTIVE" ? await this.createSession(accountId, input.ip, input.user_agent) : undefined;
+    return { account, session };
+  }
+
+  /** Failed logins are counted per username+IP; five failures lock the pair for 15 minutes. */
+  private loginFailures = new Map<string, { count: number; resetAt: number }>();
+
+  async loginAccount(input: {
+    username?: string;
+    password?: string;
+    ip?: string;
+    user_agent?: string;
+  }): Promise<{ account: AccountRow; session: IssuedSession }> {
+    const username = String(input.username ?? "").trim().toLowerCase();
+    const password = String(input.password ?? "");
+    const key = `${username}|${input.ip ?? ""}`;
+    const now = nowMs();
+    const bucket = this.loginFailures.get(key);
+    if (bucket && bucket.resetAt > now && bucket.count >= 5) {
+      throw new PcsError(429, "LOGIN_RATE_LIMITED", "too many failed attempts; try again later");
+    }
+    if (bucket && bucket.resetAt <= now) this.loginFailures.delete(key);
+    const row = (
+      await query<AccountRow & { password_hash: string }>(
+        `SELECT * FROM pcs_accounts WHERE username=$1`,
+        [username],
+      )
+    ).rows[0];
+    const ok = Boolean(row) && verifyPassword(password, row.password_hash);
+    if (!ok) {
+      const next = this.loginFailures.get(key) ?? { count: 0, resetAt: now + 15 * 60_000 };
+      next.count += 1;
+      next.resetAt = now + 15 * 60_000;
+      this.loginFailures.set(key, next);
+      if (this.loginFailures.size > 5_000) {
+        for (const [k, v] of this.loginFailures) if (v.resetAt <= now) this.loginFailures.delete(k);
+      }
+      throw new PcsError(401, "INVALID_CREDENTIALS", "invalid username or password");
+    }
+    if (row.status === "PENDING") {
+      throw new PcsError(403, "ACCOUNT_PENDING", "this account is waiting for administrator approval");
+    }
+    if (row.status !== "ACTIVE") {
+      throw new PcsError(403, "ACCOUNT_INACTIVE", "this account is disabled");
+    }
+    this.loginFailures.delete(key);
+    await query(`UPDATE pcs_accounts SET last_login_at=now() WHERE account_id=$1`, [row.account_id]);
+    const session = await this.createSession(row.account_id, input.ip, input.user_agent);
+    await this.auditAuth(row.account_id, row.username, "account.login", input.ip, {});
+    return { account: publicAccount(row), session };
+  }
+
+  /** Resolve a session for /me; no CSRF check because this is a read. */
+  async sessionAccount(session: string): Promise<{ account: AccountRow; scopes: string[] }> {
+    const row = (
+      await query<AccountRow & { revoked_at: string | null; expires_at: string }>(
+        `SELECT a.account_id, a.username, a.display_name, a.role, a.scopes, a.status,
+                a.created_at, a.updated_at, a.approved_by, a.last_login_at,
+                s.revoked_at, s.expires_at
+           FROM pcs_sessions s JOIN pcs_accounts a USING (account_id)
+          WHERE s.token_hash=$1`,
+        [sha256(session)],
+      )
+    ).rows[0];
+    if (!row || row.revoked_at || new Date(row.expires_at).getTime() <= nowMs()) {
+      throw new PcsError(401, "LOGIN_REQUIRED", "session expired or invalid");
+    }
+    if (row.status !== "ACTIVE") throw new PcsError(403, "ACCOUNT_INACTIVE", "this account is not active");
+    return { account: publicAccount(row), scopes: row.scopes };
+  }
+
+  async logoutSession(session: string, ip?: string): Promise<void> {
+    const row = (
+      await query<{ account_id: string; username: string }>(
+        `UPDATE pcs_sessions s SET revoked_at=now()
+           FROM pcs_accounts a
+          WHERE s.account_id=a.account_id AND s.token_hash=$1 AND s.revoked_at IS NULL
+          RETURNING s.account_id, a.username`,
+        [sha256(session)],
+      )
+    ).rows[0];
+    if (row) await this.auditAuth(row.account_id, row.username, "account.logout", ip, {});
+  }
+
+  private async createSession(accountId: string, ip?: string, userAgent?: string): Promise<IssuedSession> {
+    const token = randomToken("sess");
+    const csrf = randomToken("csrf");
+    const expiresAt = new Date(nowMs() + this.cfg.sessionHours * 3600_000);
+    await query(
+      `INSERT INTO pcs_sessions (session_id, account_id, token_hash, csrf_hash, expires_at, ip, user_agent)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        newId("sess"),
+        accountId,
+        sha256(token),
+        sha256(csrf),
+        expiresAt.toISOString(),
+        ip ?? null,
+        (userAgent ?? "").slice(0, 256) || null,
+      ],
+    );
+    void query(`DELETE FROM pcs_sessions WHERE expires_at < now() - interval '1 day'`).catch(() => {});
+    return { token, csrf, expires_at: expiresAt.toISOString() };
+  }
+
+  async getAccount(accountId: string): Promise<AccountRow> {
+    const row = (
+      await query<AccountRow>(
+        `SELECT ${ACCOUNT_PUBLIC_COLUMNS} FROM pcs_accounts WHERE account_id=$1`,
+        [accountId],
+      )
+    ).rows[0];
+    if (!row) throw notFound("ACCOUNT_NOT_FOUND", "account not found");
+    return row;
+  }
+
+  async listAccounts(): Promise<AccountRow[]> {
+    return (
+      await query<AccountRow>(`SELECT ${ACCOUNT_PUBLIC_COLUMNS} FROM pcs_accounts ORDER BY created_at`)
+    ).rows;
+  }
+
+  async createAccount(
+    input: {
+      username?: string;
+      password?: string;
+      display_name?: string;
+      role?: AccountRole;
+      scopes?: unknown;
+    },
+    operator: string,
+  ): Promise<AccountRow> {
+    const username = normalizeUsername(input.username);
+    const password = normalizePassword(input.password);
+    const role = normalizeAccountRole(input.role ?? "viewer");
+    const scopes = input.scopes === undefined ? [...ROLE_PRESETS[role === "custom" ? "viewer" : role]] : normalizeAccountScopes(input.scopes);
+    const accountId = newId("acc");
+    try {
+      await query(
+        `INSERT INTO pcs_accounts
+           (account_id, username, display_name, password_hash, role, scopes, status, approved_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7)`,
+        [
+          accountId,
+          username,
+          String(input.display_name ?? "").trim().slice(0, 64) || username,
+          hashPassword(password),
+          role,
+          scopes,
+          operator,
+        ],
+      );
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") {
+        throw conflict("USERNAME_TAKEN", "that username is not available");
+      }
+      throw e;
+    }
+    await this.audit(operator, "account.create", accountId, null, { username, role, scopes });
+    return this.getAccount(accountId);
+  }
+
+  async updateAccount(
+    accountId: string,
+    patch: {
+      display_name?: string;
+      role?: AccountRole;
+      scopes?: unknown;
+      status?: "PENDING" | "ACTIVE" | "DISABLED";
+      password?: string;
+    },
+    operator: string,
+  ): Promise<AccountRow> {
+    const current = await this.getAccount(accountId);
+    const nextRole = patch.role ? normalizeAccountRole(patch.role) : current.role;
+    const nextStatus = patch.status ?? current.status;
+    const nextScopes =
+      patch.scopes !== undefined
+        ? normalizeAccountScopes(patch.scopes)
+        : patch.role
+          ? [...ROLE_PRESETS[nextRole === "custom" ? "viewer" : nextRole]]
+          : current.scopes;
+    const removedAdmin =
+      current.role === "admin" &&
+      (nextRole !== "admin" || nextStatus !== "ACTIVE");
+    if (removedAdmin) {
+      const others = Number(
+        (
+          await query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM pcs_accounts
+              WHERE role='admin' AND status='ACTIVE' AND account_id<>$1`,
+            [accountId],
+          )
+        ).rows[0]?.n ?? "0",
+      );
+      if (others === 0) {
+        throw conflict("LAST_ADMIN", "at least one active administrator must remain");
+      }
+    }
+    const passwordHash = patch.password ? hashPassword(normalizePassword(patch.password)) : null;
+    await query(
+      `UPDATE pcs_accounts
+          SET display_name=$2, role=$3, scopes=$4, status=$5,
+              password_hash=COALESCE($6, password_hash),
+              approved_by=CASE WHEN $5='ACTIVE' AND status='PENDING' THEN $7 ELSE approved_by END,
+              updated_at=now()
+        WHERE account_id=$1`,
+      [
+        accountId,
+        String(patch.display_name ?? current.display_name).trim().slice(0, 64) || current.username,
+        nextRole,
+        nextScopes,
+        nextStatus,
+        passwordHash,
+        operator,
+      ],
+    );
+    // A disabled account or a password reset must not keep old sessions alive.
+    if (nextStatus !== "ACTIVE" || passwordHash) {
+      await query(`UPDATE pcs_sessions SET revoked_at=now() WHERE account_id=$1 AND revoked_at IS NULL`, [
+        accountId,
+      ]);
+    }
+    await this.audit(operator, "account.update", accountId, null, {
+      status: nextStatus,
+      role: nextRole,
+      scopes: nextScopes,
+      password_reset: Boolean(passwordHash),
+    });
+    return this.getAccount(accountId);
+  }
+
+  async deleteAccount(accountId: string, operator: string): Promise<AccountRow> {
+    return this.updateAccount(accountId, { status: "DISABLED" }, operator);
   }
 
   // ---------------------------------------------------------------- Sideloads
@@ -2786,6 +3244,116 @@ export class PcsService {
     }
 
     return { deployment, command_id: commandRow };
+  }
+
+  /**
+   * Enable or disable SSH and chat for a builder/scheduler.
+   *
+   * A redeploy is the safe path: the control plane creates the next generation with
+   * the flags in env and the SSH port mapping added/removed, and host-runtime replaces
+   * the container (workspace volumes survive). The scheduler rejects widening
+   * allowed_task_types online, so re-registering through a new generation is required
+   * for chat either way.
+   */
+  async updateDeploymentFeatures(
+    deploymentId: string,
+    input: { ssh_enabled?: boolean; chat_enabled?: boolean },
+    operator: string,
+  ): Promise<DeploymentRow> {
+    const dep = (
+      await query<DeploymentRow>(`SELECT * FROM pcs_deployments WHERE deployment_id=$1`, [
+        deploymentId,
+      ])
+    ).rows[0];
+    if (!dep) throw notFound("DEPLOYMENT_NOT_FOUND", "deployment not found");
+    if (dep.status === "REMOVED") {
+      throw new PcsError(409, "DEPLOYMENT_REMOVED", "this deployment has been removed; redeploy instead");
+    }
+    if (dep.role_id !== "builder" && dep.role_id !== "scheduler") {
+      throw new PcsError(400, "ROLE_NOT_SUPPORTED", "only builder and scheduler deployments expose these switches");
+    }
+    const env = { ...(dep.env ?? {}) };
+    const sshEnabled = input.ssh_enabled ?? env.SSH_ENABLED !== "0";
+    const chatEnabled = input.chat_enabled ?? env.CHAT_ENABLED !== "0";
+    env.SSH_ENABLED = sshEnabled ? "1" : "0";
+    env.CHAT_ENABLED = chatEnabled ? "1" : "0";
+
+    // SSH lives on container port 22 for schedulers and 2222 for builders.
+    const sshContainer = dep.role_id === "scheduler" ? 22 : 2222;
+    const ports = (dep.ports ?? [])
+      .map((p) => ({ container: Number(p.container), host: Number(p.host) }))
+      .filter((p) => p.container !== sshContainer || sshEnabled);
+    if (sshEnabled && !ports.some((p) => p.container === sshContainer)) {
+      ports.push({ container: sshContainer, host: await this.nextFreeSshPort(dep.host_id, dep.role_id, sshContainer) });
+    }
+
+    // Files and agent_env are part of the signed spec but not columns on the deployment row;
+    // reuse them from the command that created this generation.
+    const command = (
+      await query<{ payload: CommandPayload }>(
+        `SELECT payload FROM pcs_commands WHERE deployment_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        [deploymentId],
+      )
+    ).rows[0];
+    const spec = command?.payload?.instance as
+      | { files?: Array<{ path: string; content: string }>; agent_env?: string[] }
+      | undefined;
+
+    const out = await this.createDeployment({
+      host_id: dep.host_id,
+      instance_id: dep.instance_id,
+      role_id: dep.role_id,
+      display_name: dep.display_name ?? undefined,
+      execution: (dep.execution ?? "container") as "container" | "native",
+      image: dep.image,
+      resource_profile: dep.resource_profile,
+      env,
+      volumes: dep.volumes,
+      ports,
+      network_policy: dep.network_policy,
+      config_version: Number(dep.config_version) + 1,
+      ...(dep.command ? { command: dep.command } : {}),
+      ...(spec?.files ? { files: spec.files } : {}),
+      ...(spec?.agent_env ? { agent_env: spec.agent_env } : {}),
+      capability_score: dep.capability_score,
+      capability_detail: dep.capability_detail,
+      ...(dep.role_id === "scheduler"
+        ? {
+            scheduler_role: dep.scheduler_role ?? "root",
+            ...(dep.parent_deployment_id ? { parent_scheduler_id: dep.parent_deployment_id } : {}),
+            scheduling_mode: env.SCHEDULING_MODE === "dynamic" ? ("dynamic" as const) : ("static" as const),
+          }
+        : {}),
+      ...(dep.role_id === "builder" && dep.scheduler_deployment_id
+        ? { scheduler_id: dep.scheduler_deployment_id }
+        : {}),
+      created_by: operator,
+    });
+
+    await this.audit(operator, "deployment.features", deploymentId, dep.instance_id, {
+      ssh_enabled: sshEnabled,
+      chat_enabled: chatEnabled,
+      new_deployment_id: out.deployment.deployment_id,
+    });
+    return out.deployment;
+  }
+
+  /** Next free host port for SSH, continuing after every live deployment on the same host. */
+  private async nextFreeSshPort(hostId: string, roleId: string, containerPort: number): Promise<number> {
+    const rows = (
+      await query<{ ports: PortMapping[] }>(
+        `SELECT ports FROM pcs_deployments
+          WHERE host_id=$1 AND role_id=$2 AND status <> 'REMOVED'`,
+        [hostId, roleId],
+      )
+    ).rows;
+    let next = roleId === "scheduler" ? 2200 : 2222;
+    for (const row of rows) {
+      for (const p of row.ports ?? []) {
+        if (Number(p.container) === containerPort) next = Math.max(next, Number(p.host));
+      }
+    }
+    return next + 1;
   }
 
   /** Whether the target host already has the image; on probe failure treat it as "already present" and keep the original pull behavior. */
@@ -5074,18 +5642,47 @@ export class PcsService {
     instanceId: string | null,
     detail: Record<string, unknown>,
   ): Promise<void> {
+    // Link the row to an account when the operator is a username. CLI tokens may
+    // carry any string, so a miss simply leaves account_id null.
+    const account = (
+      await query<{ account_id: string }>(`SELECT account_id FROM pcs_accounts WHERE username=$1 LIMIT 1`, [
+        operator,
+      ])
+    ).rows[0];
     await query(
-      `INSERT INTO pcs_audit_logs (action, operator_id, subject, instance_id, detail)
-       VALUES ($1,$2,$3,$4,$5::jsonb)`,
-      [action, operator, subject, instanceId, JSON.stringify(detail)],
+      `INSERT INTO pcs_audit_logs (action, operator_id, subject, instance_id, detail, account_id)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6)`,
+      [action, operator, subject, instanceId, JSON.stringify(detail), account?.account_id ?? null],
     );
   }
 
-  async listAudit(limit = 100): Promise<unknown[]> {
-    const r = await query(
-      `SELECT * FROM pcs_audit_logs ORDER BY audit_id DESC LIMIT $1`,
-      [Math.max(1, Math.min(limit, 500))],
+  /** Authentication events carry their own account id and client IP; no username lookup needed. */
+  async auditAuth(
+    accountId: string | null,
+    operator: string,
+    action: string,
+    ip: string | undefined,
+    detail: Record<string, unknown>,
+  ): Promise<void> {
+    await query(
+      `INSERT INTO pcs_audit_logs (action, operator_id, subject, instance_id, detail, account_id, actor_ip)
+       VALUES ($1,$2,$3,NULL,$4::jsonb,$5,$6)`,
+      [action, operator, accountId ?? operator, JSON.stringify(detail), accountId, ip ?? null],
     );
+  }
+
+  /**
+   * List audit rows. Non-administrators pass their own account id and only see
+   * their history; administrators omit it and see everything.
+   */
+  async listAudit(limit = 100, accountId?: string): Promise<unknown[]> {
+    const cap = Math.max(1, Math.min(limit, 500));
+    const r = accountId
+      ? await query(
+          `SELECT * FROM pcs_audit_logs WHERE account_id=$2 ORDER BY audit_id DESC LIMIT $1`,
+          [cap, accountId],
+        )
+      : await query(`SELECT * FROM pcs_audit_logs ORDER BY audit_id DESC LIMIT $1`, [cap]);
     return r.rows;
   }
 

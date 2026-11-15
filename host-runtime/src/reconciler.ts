@@ -400,6 +400,7 @@ export class Reconciler {
       capabilityDetail = undefined;
     }
     const slots = Math.max(1, Number(env.MAX_CONCURRENCY ?? 1) || 1);
+    const chat = env.CHAT_ENABLED !== "0";
     const profiles = path.join(root, "profiles.json");
     return {
       scheduler_url: env.SCHEDULER_URL,
@@ -425,9 +426,9 @@ export class Reconciler {
           role_id: dep.spec.role_id,
           host_id: dep.host_id,
           agent_profile_id: env.AGENT_PROFILE_ID || "agp_builder",
-          task_types: ["task.build", "task.chat.builder", "task.console.builder"],
+          task_types: ["task.build", ...(chat ? ["task.chat.builder"] : []), "task.console.builder"],
           capabilities: {
-            healthy: ["code.build", "shell", "llm"],
+            healthy: chat ? ["code.build", "shell", "llm"] : ["code.build", "shell"],
             os: env.BUILDER_OS || process.platform,
           },
           ...(env.CAPABILITY_SCORE ? { capability_score: Number(env.CAPABILITY_SCORE) } : {}),

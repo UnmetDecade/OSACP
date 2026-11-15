@@ -21,6 +21,7 @@ import {
   streamFileDownload,
 } from "./files.js";
 import { issueTerminalTicket } from "./terminal.js";
+import type { AccountRole } from "./jwt.js";
 
 // The scheduler proxy forwards task-creation requests; task attachments go as base64, so 1MiB would hit the limit quickly.
 const MAX_BODY = 32 * 1024 * 1024;
@@ -97,22 +98,69 @@ function intParam(value: string | null, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function readCookie(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) {
+      try {
+        return decodeURIComponent(part.slice(eq + 1).trim());
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function serializeCookie(
+  name: string,
+  value: string,
+  opts: { maxAge: number; httpOnly: boolean; secure: boolean },
+): string {
+  return [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "SameSite=Strict",
+    `Max-Age=${Math.max(0, Math.floor(opts.maxAge))}`,
+    ...(opts.httpOnly ? ["HttpOnly"] : []),
+    ...(opts.secure ? ["Secure"] : []),
+  ].join("; ");
+}
+
 export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Server | https.Server {
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
       const path = url.pathname;
       const method = req.method ?? "GET";
-      const admin = (scope: string) => service.authenticateAdmin(bearer(req), scope);
+      const cookieSecure =
+        cfg.cookieSecure === "always" ||
+        (cfg.cookieSecure === "auto" &&
+          (Boolean((req.socket as { encrypted?: boolean }).encrypted) ||
+            req.headers["x-forwarded-proto"] === "https"));
+      const admin = (scope: string) =>
+        service.authenticateRequest(
+          {
+            bearer: bearerToken(req.headers.authorization) ?? undefined,
+            session: readCookie(req.headers.cookie, "pcs_session"),
+            csrf: String(req.headers["x-csrf-token"] ?? ""),
+            mutating: method !== "GET" && method !== "HEAD" && method !== "OPTIONS",
+            ip: req.socket.remoteAddress,
+          },
+          scope,
+        );
       const host = async () => service.authenticateHost(bearer(req));
 
       // The admin app is a browser / desktop WebView: only send CORS headers to explicitly configured origins.
       const origin = req.headers.origin;
       if (origin && cfg.adminOrigins.includes(origin)) {
         res.setHeader("access-control-allow-origin", origin);
+        res.setHeader("access-control-allow-credentials", "true");
         res.setHeader("vary", "origin");
-        res.setHeader("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
-        res.setHeader("access-control-allow-headers", "authorization,content-type");
+        res.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+        res.setHeader("access-control-allow-headers", "authorization,content-type,x-csrf-token");
         res.setHeader("access-control-max-age", "600");
       }
       if (method === "OPTIONS") {
@@ -122,6 +170,117 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       if (method === "GET" && path === "/healthz") {
         return send(res, 200, { ok: true, service: "platform-control", version: "0.2.0" });
+      }
+
+      // ---- Accounts: registration, login, logout and session introspection (no admin scope)
+      const sessionCookie = () => readCookie(req.headers.cookie, "pcs_session");
+      const setSessionCookies = (session: { token: string; csrf: string; expires_at: string }) => {
+        const maxAge = Math.max(0, (new Date(session.expires_at).getTime() - Date.now()) / 1000);
+        res.setHeader("set-cookie", [
+          serializeCookie("pcs_session", session.token, { maxAge, httpOnly: true, secure: cookieSecure }),
+          serializeCookie("pcs_csrf", session.csrf, { maxAge, httpOnly: false, secure: cookieSecure }),
+        ]);
+      };
+
+      if (method === "POST" && path === "/api/v1/auth/register") {
+        const body = await readJson(req);
+        const out = await service.registerAccount({
+          username: body.username as string | undefined,
+          password: body.password as string | undefined,
+          display_name: body.display_name as string | undefined,
+          ip: req.socket.remoteAddress,
+          user_agent: String(req.headers["user-agent"] ?? ""),
+        });
+        if (out.session) setSessionCookies(out.session);
+        return send(res, 201, { account: out.account, logged_in: Boolean(out.session) });
+      }
+
+      if (method === "POST" && path === "/api/v1/auth/login") {
+        const body = await readJson(req);
+        const out = await service.loginAccount({
+          username: body.username as string | undefined,
+          password: body.password as string | undefined,
+          ip: req.socket.remoteAddress,
+          user_agent: String(req.headers["user-agent"] ?? ""),
+        });
+        setSessionCookies(out.session);
+        return send(res, 200, { account: out.account, scopes: out.account.scopes });
+      }
+
+      if (method === "POST" && path === "/api/v1/auth/logout") {
+        const session = sessionCookie();
+        if (session) await service.logoutSession(session, req.socket.remoteAddress);
+        res.setHeader("set-cookie", [
+          serializeCookie("pcs_session", "", { maxAge: 0, httpOnly: true, secure: cookieSecure }),
+          serializeCookie("pcs_csrf", "", { maxAge: 0, httpOnly: false, secure: cookieSecure }),
+        ]);
+        return send(res, 200, { ok: true });
+      }
+
+      if (method === "GET" && path === "/api/v1/auth/me") {
+        const session = sessionCookie();
+        const bearerRaw = bearerToken(req.headers.authorization);
+        if (!session && bearerRaw) {
+          const claims = service.authenticateAdmin(bearerRaw, "host:read");
+          return send(res, 200, {
+            account: null,
+            scopes: claims.scopes ?? [],
+            operator: claims.operator_id ?? claims.sub ?? "operator",
+          });
+        }
+        if (!session) throw new PcsError(401, "LOGIN_REQUIRED", "login required");
+        const out = await service.sessionAccount(session);
+        return send(res, 200, { account: out.account, scopes: out.scopes, operator: out.account.username });
+      }
+
+      // ---- Account management (RBAC)
+      if (method === "GET" && path === "/api/v1/platform/accounts") {
+        await admin("account:read");
+        return send(res, 200, { accounts: await service.listAccounts() });
+      }
+
+      if (method === "POST" && path === "/api/v1/platform/accounts") {
+        const claims = await admin("account:write");
+        const body = await readJson(req);
+        const account = await service.createAccount(
+          {
+            username: body.username as string | undefined,
+            password: body.password as string | undefined,
+            display_name: body.display_name as string | undefined,
+            role: body.role as AccountRole | undefined,
+            scopes: body.scopes,
+          },
+          String(claims.operator_id ?? claims.sub),
+        );
+        return send(res, 201, { account });
+      }
+
+      const accountOne = /^\/api\/v1\/platform\/accounts\/([^/]+)$/.exec(path);
+      if (method === "PATCH" && accountOne) {
+        const claims = await admin("account:write");
+        const body = await readJson(req);
+        const account = await service.updateAccount(
+          decodeURIComponent(accountOne[1]),
+          {
+            display_name: body.display_name as string | undefined,
+            role: body.role as AccountRole | undefined,
+            scopes: body.scopes,
+            status: body.status as "PENDING" | "ACTIVE" | "DISABLED" | undefined,
+            password: body.password as string | undefined,
+          },
+          String(claims.operator_id ?? claims.sub),
+        );
+        return send(res, 200, { account });
+      }
+
+      if (method === "DELETE" && accountOne) {
+        const claims = await admin("account:write");
+        return send(res, 200, {
+          account: await service.deleteAccount(
+            decodeURIComponent(accountOne[1]),
+            String(claims.operator_id ?? claims.sub),
+          ),
+        });
       }
 
       // ---- Enrollment (with a one-time token, no Bearer)
@@ -148,7 +307,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // ---- Management plane
       if (method === "POST" && path === "/api/v1/platform/hosts") {
-        admin("host:admin");
+        await admin("host:admin");
         const body = await readJson(req);
         const out = await service.createHost({
           name: String(body.name ?? ""),
@@ -163,17 +322,17 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/hosts") {
-        admin("host:read");
+        await admin("host:read");
         return send(res, 200, { hosts: await service.listHosts() });
       }
 
       if (method === "GET" && path === "/api/v1/platform/fleet") {
-        admin("host:read");
+        await admin("host:read");
         return send(res, 200, await service.getFleetTree());
       }
 
       if (method === "POST" && path === "/api/v1/platform/attachments") {
-        admin("deployment:write");
+        await admin("deployment:write");
         const body = await readJson(req);
         return send(
           res,
@@ -188,7 +347,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // ---- Sideloads: per-host tokens so a device on the LAN can drive tasks with curl
       if (method === "POST" && path === "/api/v1/platform/sideloads") {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         const body = await readJson(req);
         const out = await service.createSideload({
           host_id: String(body.host_id ?? ""),
@@ -202,7 +361,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/sideloads") {
-        admin("host:read");
+        await admin("host:read");
         return send(res, 200, {
           sideloads: await service.listSideloads(url.searchParams.get("host_id") ?? undefined),
         });
@@ -210,7 +369,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const sideloadDelete = /^\/api\/v1\/platform\/sideloads\/([^/]+)$/.exec(path);
       if (method === "DELETE" && sideloadDelete) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         return send(res, 200, {
           sideload: await service.deleteSideload(
             decodeURIComponent(sideloadDelete[1]),
@@ -390,7 +549,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       // ---- Scheduler proxy: forward task requests to the scheduler (root or node) that owns the target instance
       const schedProxy = /^\/api\/v1\/platform\/schedulers\/([^/]+)\/proxy(\/.*)$/.exec(path);
       if (schedProxy && (method === "GET" || method === "POST")) {
-        admin(method === "GET" ? "deployment:read" : "deployment:write");
+        await admin(method === "GET" ? "deployment:read" : "deployment:write");
         // Artifact bytes are raw; the JSON proxy would corrupt them (and base64-bloat a 64 MiB file).
         const artifactDownload = /^\/v1\/artifacts\/([^/]+)\/download$/.exec(schedProxy[2]);
         if (method === "GET" && artifactDownload) {
@@ -421,7 +580,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // ---- Host onboarding (v4.1): SSH hosts and local hosts
       if (method === "POST" && path === "/api/v1/platform/hosts/ssh") {
-        admin("host:admin");
+        await admin("host:admin");
         const body = await readJson(req);
         const out = await service.createSshHost({
           name: body.name as string | undefined,
@@ -436,7 +595,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "POST" && path === "/api/v1/platform/hosts/local") {
-        admin("host:admin");
+        await admin("host:admin");
         const body = await readJson(req);
         return send(
           res,
@@ -447,13 +606,13 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const hostProbe = /^\/api\/v1\/platform\/hosts\/([^/]+)\/probe$/.exec(path);
       if (method === "POST" && hostProbe) {
-        admin("host:admin");
+        await admin("host:admin");
         return send(res, 200, { probe: await service.probeHost(decodeURIComponent(hostProbe[1])) });
       }
 
       const hostBootstrap = /^\/api\/v1\/platform\/hosts\/([^/]+)\/bootstrap$/.exec(path);
       if (method === "POST" && hostBootstrap) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         const out = await service.bootstrapHost(
           decodeURIComponent(hostBootstrap[1]),
           String(claims.operator_id ?? claims.sub),
@@ -464,7 +623,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       // Host merge / unmerge: only changes the federation tree; running schedulers are not restarted.
       const hostMerge = /^\/api\/v1\/platform\/hosts\/([^/]+)\/merge$/.exec(path);
       if (method === "POST" && hostMerge) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         const body = await readJson(req);
         return send(
           res,
@@ -479,7 +638,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const hostUnmerge = /^\/api\/v1\/platform\/hosts\/([^/]+)\/unmerge$/.exec(path);
       if (method === "POST" && hostUnmerge) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         return send(
           res,
           200,
@@ -492,7 +651,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const hostDetail = /^\/api\/v1\/platform\/hosts\/([^/]+)$/.exec(path);
       if (method === "GET" && hostDetail) {
-        admin("host:read");
+        await admin("host:read");
         const out = await service.getHostDetail(decodeURIComponent(hostDetail[1]));
         if (!out) throw new PcsError(404, "HOST_NOT_FOUND", "host not found");
         return send(res, 200, out);
@@ -500,7 +659,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // Update host access info: name, address, port, user, private key (leave blank to keep unchanged).
       if (method === "PATCH" && hostDetail) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         const body = await readJson(req);
         const out = await service.updateHost(
           decodeURIComponent(hostDetail[1]),
@@ -527,7 +686,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // Delete the host record outright: containers must be removed first, otherwise HOST_HAS_DEPLOYMENTS is returned.
       if (method === "DELETE" && hostDetail) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         return send(
           res,
           200,
@@ -540,7 +699,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const revoke = /^\/api\/v1\/platform\/hosts\/([^/]+)\/revoke$/.exec(path);
       if (method === "POST" && revoke) {
-        const claims = admin("host:admin");
+        const claims = await admin("host:admin");
         const out = await service.revokeHost(
           decodeURIComponent(revoke[1]),
           String(claims.operator_id ?? claims.sub),
@@ -551,7 +710,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       // Interactive root terminal: only exchanges a one-time ticket (30 seconds); the actual byte stream goes over a
       // WebSocket upgrade (see terminal.ts). The ticket never goes into the URL or the logs.
       if (method === "POST" && path === "/api/v1/platform/terminal-ticket") {
-        const claims = admin("deployment:read");
+        const claims = await admin("deployment:read");
         const body = await readJson(req);
         const out = await issueTerminalTicket(
           service,
@@ -570,11 +729,11 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         if (!hostId) throw new PcsError(400, "HOST_ID_REQUIRED", "host_id is required");
         const filePath = url.searchParams.get("path") ?? "";
         if (method === "GET") {
-          admin("host:read");
+          await admin("host:read");
           return send(res, 200, await listInstanceFiles(service, hostId, instanceId, filePath));
         }
         if (method === "DELETE") {
-          const claims = admin("host:admin");
+          const claims = await admin("host:admin");
           return send(
             res,
             200,
@@ -591,7 +750,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const fileDownload = /^\/api\/v1\/platform\/instances\/([^/]+)\/files\/download$/.exec(path);
       if (method === "POST" && fileDownload) {
-        admin("host:read");
+        await admin("host:read");
         const body = await readJson(req);
         const ticketHost = String(body.host_id ?? "").trim();
         if (!ticketHost) throw new PcsError(400, "HOST_ID_REQUIRED", "host_id is required");
@@ -612,7 +771,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "POST" && path === "/api/v1/platform/deployments") {
-        const claims = admin("deployment:write");
+        const claims = await admin("deployment:write");
         const body = await readJson(req);
         const out = await service.createDeployment({
           ...(body as unknown as CreateDeploymentInput),
@@ -622,7 +781,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/deployments") {
-        admin("deployment:read");
+        await admin("deployment:read");
         return send(res, 200, {
           deployments: await service.listDeployments(url.searchParams.get("host_id") ?? undefined),
         });
@@ -630,17 +789,32 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const depGet = /^\/api\/v1\/platform\/deployments\/([^/]+)$/.exec(path);
       if (method === "GET" && depGet) {
-        admin("deployment:read");
+        await admin("deployment:read");
         const dep = await service.getDeployment(decodeURIComponent(depGet[1]));
         if (!dep) throw new PcsError(404, "DEPLOYMENT_NOT_FOUND", "deployment not found");
         return send(res, 200, { deployment: dep });
+      }
+
+      const depFeatures = /^\/api\/v1\/platform\/deployments\/([^/]+)\/features$/.exec(path);
+      if (method === "PATCH" && depFeatures) {
+        const claims = await admin("deployment:write");
+        const body = await readJson(req);
+        const out = await service.updateDeploymentFeatures(
+          decodeURIComponent(depFeatures[1]),
+          {
+            ssh_enabled: typeof body.ssh_enabled === "boolean" ? body.ssh_enabled : undefined,
+            chat_enabled: typeof body.chat_enabled === "boolean" ? body.chat_enabled : undefined,
+          },
+          String(claims.operator_id ?? claims.sub),
+        );
+        return send(res, 200, { deployment: out });
       }
 
       const depAction = /^\/api\/v1\/platform\/deployments\/([^/]+)\/(start|stop|restart|remove)$/.exec(
         path,
       );
       if (method === "POST" && depAction) {
-        const claims = admin("deployment:write");
+        const claims = await admin("deployment:write");
         const out = await service.enqueueAction(
           decodeURIComponent(depAction[1]),
           depAction[2] as "start" | "stop" | "restart" | "remove",
@@ -651,7 +825,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // ---- Deployment plans (§4.6): preview generates plan_digest; apply recomputes it
       if (method === "POST" && path === "/api/v1/platform/deployment-plans") {
-        const claims = admin("deployment:write");
+        const claims = await admin("deployment:write");
         const body = await readJson(req);
         return send(
           res,
@@ -665,7 +839,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const planApply = /^\/api\/v1\/platform\/deployment-plans\/([^/]+)\/apply$/.exec(path);
       if (method === "POST" && planApply) {
-        const claims = admin("deployment:write");
+        const claims = await admin("deployment:write");
         const body = await readJson(req);
         return send(
           res,
@@ -680,7 +854,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // ---- Approval tokens (§5): MFA assertion + admin scope; tokens are never echoed to the logs
       if (method === "POST" && path === "/api/v1/platform/approval-tokens") {
-        const claims = admin("approval:issue");
+        const claims = await admin("approval:issue");
         const body = await readJson(req);
         return send(
           res,
@@ -691,7 +865,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       // ---- Agent / API Profile (P4); the tables hold only references, no secret values
       if (method === "POST" && path === "/api/v1/platform/agent-profiles") {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -704,13 +878,13 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/agent-profiles") {
-        admin("profile:read");
+        await admin("profile:read");
         return send(res, 200, { agent_profiles: await service.listAgentProfiles() });
       }
 
       const agentProfileEdit = /^\/api\/v1\/platform\/agent-profiles\/([^/]+)$/.exec(path);
       if (method === "PATCH" && agentProfileEdit) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -724,7 +898,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "DELETE" && agentProfileEdit) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         return send(
           res,
           200,
@@ -736,7 +910,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "POST" && path === "/api/v1/platform/api-profiles") {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -749,13 +923,13 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/api-profiles") {
-        admin("profile:read");
+        await admin("profile:read");
         return send(res, 200, { api_profiles: await service.listApiProfiles() });
       }
 
       const apiProfileEdit = /^\/api\/v1\/platform\/api-profiles\/([^/]+)$/.exec(path);
       if (method === "PATCH" && apiProfileEdit) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -770,7 +944,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const apiProfileSecret = /^\/api\/v1\/platform\/api-profiles\/([^/]+)\/secret$/.exec(path);
       if (method === "PUT" && apiProfileSecret) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -784,7 +958,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "DELETE" && apiProfileEdit) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         return send(
           res,
           200,
@@ -796,7 +970,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/bindings") {
-        admin("profile:read");
+        await admin("profile:read");
         return send(res, 200, { bindings: await service.listBindings() });
       }
 
@@ -815,7 +989,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const bindAgent = /^\/api\/v1\/platform\/instances\/([^/]+)\/bind-agent$/.exec(path);
       if (method === "POST" && bindAgent) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -830,7 +1004,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         );
       }
       if (method === "DELETE" && bindAgent) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         return send(
           res,
           200,
@@ -844,7 +1018,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const bindApi = /^\/api\/v1\/platform\/instances\/([^/]+)\/bind-api$/.exec(path);
       if (method === "POST" && bindApi) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         const body = await readJson(req);
         return send(
           res,
@@ -860,7 +1034,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const unbindApi = /^\/api\/v1\/platform\/instances\/([^/]+)\/bind-api\/([^/]+)$/.exec(path);
       if (method === "DELETE" && unbindApi) {
-        const claims = admin("profile:write");
+        const claims = await admin("profile:write");
         return send(
           res,
           200,
@@ -875,7 +1049,7 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
 
       const resolve = /^\/api\/v1\/platform\/instances\/([^/]+)\/resolve$/.exec(path);
       if (method === "GET" && resolve) {
-        admin("profile:read");
+        await admin("profile:read");
         const out = await service.resolveInstance(
           requireHostId(url.searchParams.get("host_id")),
           decodeURIComponent(resolve[1]),
@@ -885,9 +1059,14 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
       }
 
       if (method === "GET" && path === "/api/v1/platform/audit-logs") {
-        admin("profile:read");
+        const claims = await admin("audit:read");
+        // Only account managers see everyone's history; everyone else sees their own.
+        const ownOnly = claims.account_id && !(claims.scopes ?? []).includes("account:read");
+        const accountId = ownOnly
+          ? claims.account_id
+          : url.searchParams.get("account_id") ?? undefined;
         return send(res, 200, {
-          audit_logs: await service.listAudit(intParam(url.searchParams.get("limit"), 100)),
+          audit_logs: await service.listAudit(intParam(url.searchParams.get("limit"), 100), accountId),
         });
       }
 

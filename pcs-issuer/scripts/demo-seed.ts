@@ -168,11 +168,30 @@ async function seedSideloads(service: PcsService): Promise<void> {
   }
 }
 
+async function seedAdmin(service: PcsService): Promise<void> {
+  const password = process.env.DEMO_ADMIN_PASSWORD;
+  if (!password) return;
+  const existing = await query(`SELECT count(*)::text AS n FROM pcs_accounts`);
+  if (Number(existing.rows[0]?.n ?? "0") > 0) return;
+  await service.createAccount(
+    {
+      username: "admin",
+      password,
+      display_name: "管理员",
+      role: "admin",
+    },
+    "demo",
+  );
+  console.log("[demo-seed] admin account ready");
+}
+
 async function main(): Promise<void> {
   await seedHosts();
   await seedDeployments();
-  await seedSideloads(new PcsService(loadConfig()));
-  console.log("[demo-seed] hosts, deployments and sideloads ready");
+  const service = new PcsService(loadConfig());
+  await seedSideloads(service);
+  await seedAdmin(service);
+  console.log("[demo-seed] hosts, deployments, sideloads and admin ready");
 }
 
 main()

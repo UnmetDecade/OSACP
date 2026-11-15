@@ -13,15 +13,20 @@ chmod 700 /root/.ssh
 # keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
-if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
-  cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
-elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
-  printf '%s\n' "$SSH_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
-fi
-chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+# SSH is optional: skip the authorized keys and sshd when the deployment disables it.
+if [[ "${SSH_ENABLED:-1}" != "0" ]]; then
+  if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
+    cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
+  elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
+    printf '%s\n' "$SSH_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
+  fi
+  chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
 
-ssh-keygen -A >/dev/null
-/usr/sbin/sshd -e
+  ssh-keygen -A >/dev/null
+  /usr/sbin/sshd -e
+else
+  echo "[scheduler] SSH_ENABLED=0: sshd is not started"
+fi
 
 cd /opt/platform/scheduler
 
@@ -65,6 +70,7 @@ done
 
 node -e '
 const fs = require("node:fs");
+const chat = process.env.CHAT_ENABLED !== "0";
 const cfg = {
   scheduler_url: "http://127.0.0.1:" + (process.env.PORT || "8443"),
   heartbeat_seconds: 10,
@@ -83,8 +89,8 @@ const cfg = {
     role_id: "scheduler",
     host_id: process.env.SCHEDULER_HOST_ID || "docker-host-01",
     agent_profile_id: process.env.SCHEDULER_AGENT_PROFILE_ID || "agp_scheduler",
-    task_types: ["task.chat.scheduler", "task.console.scheduler"],
-    capabilities: { healthy: ["queue", "lease", "shell", "llm"] },
+    task_types: [...(chat ? ["task.chat.scheduler"] : []), "task.console.scheduler"],
+    capabilities: { healthy: chat ? ["queue", "lease", "shell", "llm"] : ["queue", "lease", "shell"] },
     slots: 1,
     slot_memory_bytes: 536870912,
   }],

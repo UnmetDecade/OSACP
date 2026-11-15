@@ -2,8 +2,23 @@ import { t } from "../i18n";
 import type { LiveConnection } from "./config";
 import type { JsonObject } from "./rows";
 
-export class ApiError extends Error {
-  readonly status: number;
+/** Read a non-HttpOnly cookie (the CSRF token) without adding a dependency. */
+function readCookie(name: string): string {
+  for (const part of document.cookie.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) {
+      try {
+        return decodeURIComponent(part.slice(eq + 1).trim());
+      } catch {
+        return "";
+      }
+    }
+  }
+  return "";
+}
+
+export class ApiError extends Error {  readonly status: number;
   readonly code: string;
   readonly detail: unknown;
 
@@ -37,6 +52,12 @@ async function request<T>(
   const headers: Record<string, string> = { accept: "application/json" };
   if (body !== undefined) headers["content-type"] = "application/json";
   if (auth && connection.adminToken) headers.authorization = `Bearer ${connection.adminToken}`;
+  // Session auth is cookie-based; state-changing requests also carry the CSRF token
+  // that was issued next to the session cookie.
+  if (auth && method !== "GET" && !connection.adminToken) {
+    const csrf = readCookie("pcs_csrf");
+    if (csrf) headers["x-csrf-token"] = csrf;
+  }
 
   let res: Response;
   try {
@@ -44,6 +65,7 @@ async function request<T>(
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "same-origin",
       cache: "no-store",
     });
   } catch (e) {
@@ -65,6 +87,11 @@ async function request<T>(
   }
   const bodyRecord = data && typeof data === "object" ? (data as JsonObject) : {};
   if (!res.ok) {
+    // A lost or expired session drops the app back to the login page. Bearer-token
+    // calls are unaffected (the CLI keeps working).
+    if (res.status === 401 && auth && !connection.adminToken) {
+      window.dispatchEvent(new Event("pcs-unauthorized"));
+    }
     const err = (bodyRecord.error ?? {}) as { message?: unknown; code?: unknown; detail?: unknown };
     // When the proxy/gateway drops, the response body may be empty or HTML; fall back to a readable status code.
     const bodyText =

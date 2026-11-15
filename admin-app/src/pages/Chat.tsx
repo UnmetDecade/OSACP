@@ -75,12 +75,19 @@ export function ChatPage() {
   const { host } = useHostScope();
   // Like the builder / scheduler pages, scope to the host subtree: folded hosts must be able to chat too.
   const scopedHostIds = hostTreeIds(host?.id);
+  // Deployments can disable chat; those instances never appear in the roster.
   const builders = db.instances.filter(
-    (i) => i.role === "builder" && (!host || scopedHostIds.has(i.host_id)),
+    (i) =>
+      i.role === "builder" &&
+      i.chat_enabled !== false &&
+      (!host || scopedHostIds.has(i.host_id)),
   );
   // A host can have multiple schedulers (root + nodes); the chat list must show them all.
   const schedulers = db.instances.filter(
-    (i) => i.role === "scheduler" && (!host || scopedHostIds.has(i.host_id)),
+    (i) =>
+      i.role === "scheduler" &&
+      i.chat_enabled !== false &&
+      (!host || scopedHostIds.has(i.host_id)),
   );
   const roster = [...schedulers, ...builders];
   const initial = (() => {

@@ -159,9 +159,15 @@ export async function createBuilder(
     /** Which scheduler to register with (deployment_id). */
     scheduler_id?: string;
     capability_detail?: CapabilityDetail;
+    /** Optional capabilities: no SSH port/sshd, and/or no task.chat.builder. */
+    ssh_enabled?: boolean;
+    chat_enabled?: boolean;
   },
 ): Promise<void> {
   if (!connection.pcsUrl) throw new Error(t("未配置控制面地址，无法创建构建机"));
+  const ports = (input.ports ?? []).filter(
+    (p) => input.ssh_enabled !== false || Number(p.container) !== 2222,
+  );
   const plan = await pcs(connection, "/api/v1/platform/deployment-plans", {
     method: "POST",
     body: {
@@ -174,7 +180,11 @@ export async function createBuilder(
       api_profile_ids: input.api_profile_ids,
       image: input.image,
       builder_os: input.os,
-      ports: input.ports ?? [],
+      ports,
+      env: {
+        SSH_ENABLED: input.ssh_enabled === false ? "0" : "1",
+        CHAT_ENABLED: input.chat_enabled === false ? "0" : "1",
+      },
       ...(input.scheduler_id ? { scheduler_id: input.scheduler_id } : {}),
       // The environment persists across deployments: the state volume is isolated per instance, while the apt deb cache is shared per host.
       volumes: [
@@ -222,6 +232,9 @@ export async function createScheduler(
     mem_mb: number;
     /** Inherited by the schedulers and builders deployed under this root; node schedulers always inherit. */
     scheduling_mode?: "static" | "dynamic";
+    /** Optional capabilities: no SSH port/sshd, and/or no task.chat.scheduler. */
+    ssh_enabled?: boolean;
+    chat_enabled?: boolean;
   },
 ): Promise<void> {
   if (!connection.pcsUrl) throw new Error(t("未配置控制面地址，无法部署调度机"));
@@ -239,12 +252,14 @@ export async function createScheduler(
       agent_profile_id: input.agent_profile_id,
       api_profile_ids: input.api_profile_ids,
       ports: [
-        { container: 22, host: input.ssh_port },
+        ...(input.ssh_enabled === false ? [] : [{ container: 22, host: input.ssh_port }]),
         { container: 8443, host: input.port },
       ],
       env: {
         HOST: "0.0.0.0",
         PORT: "8443",
+        SSH_ENABLED: input.ssh_enabled === false ? "0" : "1",
+        CHAT_ENABLED: input.chat_enabled === false ? "0" : "1",
         // SCHEDULER_INSTANCE_ID is injected by the control plane from the derived instance id and is not sent here.
         SCHEDULER_HOST_ID: input.host_id,
       },

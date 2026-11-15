@@ -27,10 +27,7 @@ The dev server proxies `/api/pcs` to `http://127.0.0.1:7901` and `/api/scheduler
 `VITE_SCHEDULER_TARGET`). The page has no connection-address field; the status button in the lower-left shows "Disconnected / Live / Connection failed"
 and can be clicked to resync immediately.
 
-The admin token is injected by the dev proxy, so the browser never holds it: write `PCS_ADMIN_TOKEN=...` into
-`admin-app/.env.local` (covered by `.gitignore`'s `*.local`, mode 600), or set the same environment variable before starting
-`npm run dev`. The proxy only adds the header when the request does not already carry `Authorization`,
-so a token in `sessionStorage` still wins. The token never enters the frontend bundle, URLs or localStorage.
+Sign-in is account-based: register the first account (it becomes the administrator; later registrations need approval), and the browser keeps an HttpOnly session cookie plus a CSRF token. No shared token is written to `.env.local`. The CLI admin token still works for automation.
 
 API prefixes include `/api`: `/scheduler` itself is a page route, so using it as a proxy prefix forwards
 navigation requests to the scheduler on refresh, and you see `{"code":"ROUTE_NOT_FOUND"}`.

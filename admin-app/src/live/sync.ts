@@ -602,6 +602,10 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       last_heartbeat:
         str(row?.last_heartbeat_at) || str(dep?.updated_at) || new Date().toISOString(),
       image,
+      // Capabilities are deployment intent, not registration state: read them from the
+      // deployment env so the switches stay correct before the instance re-registers.
+      ssh_enabled: str(record(dep?.env).SSH_ENABLED) !== "0",
+      chat_enabled: str(record(dep?.env).CHAT_ENABLED) !== "0",
       capability_score: num(row?.capability_score ?? dep?.capability_score),
       capability_detail: Object.keys(deploymentDetail).length
         ? (dep?.capability_detail as CapabilityDetail)

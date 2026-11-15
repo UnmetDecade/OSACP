@@ -32,6 +32,12 @@ export interface PcsConfig {
   tickMs: number;
   /** MFA assertion for issuing approval tokens (stand-in for the reference dev implementation); when unset, the issue endpoint fails closed */
   approvalMfaCode: string | null;
+  /** Who may create accounts: the first account is always an admin; later ones depend on this mode. */
+  registrationMode: "open" | "approval" | "closed";
+  /** Session lifetime in hours; sessions expire absolutely and are revoked on logout. */
+  sessionHours: number;
+  /** Cookie Secure flag: auto (TLS or X-Forwarded-Proto), always, or never (plain-HTTP LAN demos). */
+  cookieSecure: "auto" | "always" | "never";
   /** Admin app origin allowlist; when empty, no CORS headers are sent */
   adminOrigins: string[];
   /** P6: direct TLS. Certificate and private key must be configured together; when unset, stays on HTTP (local development only). */
@@ -175,6 +181,17 @@ export function loadConfig(overrides: Partial<PcsConfig> = {}): PcsConfig {
     hostOfflineSeconds: intEnv("PCS_HOST_OFFLINE_SECONDS", 90),
     tickMs: intEnv("PCS_TICK_MS", 15000),
     approvalMfaCode: (process.env.PCS_APPROVAL_MFA_CODE ?? "").trim() || null,
+    registrationMode:
+      process.env.PCS_REGISTRATION === "open" || process.env.PCS_REGISTRATION === "closed"
+        ? process.env.PCS_REGISTRATION
+        : "approval",
+    sessionHours: intEnv("PCS_SESSION_HOURS", 168),
+    cookieSecure:
+      process.env.PCS_COOKIE_SECURE === "0" || process.env.PCS_COOKIE_SECURE === "never"
+        ? "never"
+        : process.env.PCS_COOKIE_SECURE === "1" || process.env.PCS_COOKIE_SECURE === "always"
+          ? "always"
+          : "auto",
     adminOrigins: (process.env.PCS_ADMIN_ORIGINS ?? "http://127.0.0.1:5173,http://localhost:5173")
       .split(",")
       .map((s) => s.trim())

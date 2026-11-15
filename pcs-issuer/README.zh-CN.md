@@ -12,7 +12,7 @@ PCS 是平台控制面：主机名册、部署计划、签名命令、Agent/API 
 - 私钥只在这里（`keys/private.pem`、`keys/command-private.pem`，0600），
   **不进调度机、不进 Host Runtime、不进角色容器、不进日志**。
 - Host Runtime 只拿 `command-public.pem` 验部署意图；调度机只拿 `public.pem` 验 JWT。
-- 没有用户登录、没有 OIDC、没有审批中心 UI；管理应用用 `PCS_ADMIN_TOKEN` 访问管理面。
+- 账号体系与按权限分配、审计归属到账号；没有 OIDC、没有审批中心 UI。CLI 管理员令牌仍可用于自动化。
 - 没有 JWKS 端点与密钥轮换；公钥以文件形式分发。
 - 单控制面、非 HA；PostgreSQL 只监听本机，不暴露到 WAN。
 - 已支持原生 TLS 与可选 mTLS（客户端证书）；Bearer `host_token` / admin JWT 仍逐请求校验，

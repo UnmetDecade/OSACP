@@ -84,8 +84,9 @@ if it is not configured, only the local host can be onboarded. Generate it once:
 umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
 ```
 
-Admin tokens are issued with `npm run pcs -- admin-token --operator <name>`, and the admin app uses one via
-`PCS_ADMIN_TOKEN`.
+Admin tokens are issued with `npm run pcs -- admin-token --operator <name>`; they remain available for automation.
+The admin app itself signs in with accounts: the first registered account becomes the administrator, later
+registrations wait for approval (`PCS_REGISTRATION=approval`, the default).
 
 ### 3.2 Onboard a Host
 
@@ -115,12 +116,13 @@ Node, Claude Code, and the openssh debs are placed in the host cache `~/.platfor
 ```bash
 cd admin-app
 npm install
-printf 'PCS_ADMIN_TOKEN=%s\n' '<admin-jwt>' > .env.local   # 0600, already gitignored
 npm run dev
 ```
 
-The dev proxy forwards `/api/pcs` to `http://127.0.0.1:7901` and `/api/scheduler` to
-`http://127.0.0.1:8443`; override with `VITE_PCS_TARGET` / `VITE_SCHEDULER_TARGET`.
+Open the page and register the first account; it becomes the administrator. Sessions are HttpOnly cookies
+with a CSRF token, so no shared token is written to `.env.local`. The dev proxy forwards `/api/pcs` to
+`http://127.0.0.1:7901` and `/api/scheduler` to `http://127.0.0.1:8443`; override with
+`VITE_PCS_TARGET` / `VITE_SCHEDULER_TARGET`.
 For a production build, run `npm run build` and have a reverse proxy serve the static files and forward the two API prefixes.
 
 ---

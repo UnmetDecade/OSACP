@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
+import { useAuth } from "../auth";
 import { Icon } from "./Icon";
 
 // Copy is translated at render time: module-level constants are evaluated once, so calling t() here would freeze the startup language.
@@ -29,7 +30,12 @@ export function Layout() {
   const { hosts, host, setHostId } = useHostScope();
   const { lang, setLang } = useI18n();
   const live = useLive();
+  const auth = useAuth();
   const navigate = useNavigate();
+  // Account management is only shown to principals that may read accounts.
+  const nav = auth.hasScope("account:read")
+    ? [...NAV, { to: "/accounts", label: "账号", icon: "user" }]
+    : NAV;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -56,7 +62,7 @@ export function Layout() {
         </div>
 
         <nav>
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -99,6 +105,21 @@ export function Layout() {
               </NavLink>
             </div>
           )}
+
+          <div className="side-user">
+            <Icon name="user" size={14} />
+            <span className="side-user-name" title={auth.account?.username ?? t("命令行令牌")}>
+              {auth.account?.display_name || auth.account?.username || t("命令行令牌")}
+            </span>
+            <button
+              className="icon-btn"
+              title={t("退出登录")}
+              aria-label={t("退出登录")}
+              onClick={() => void auth.logout()}
+            >
+              <Icon name="close" size={13} />
+            </button>
+          </div>
 
           <button className="host-switch" title={host?.name ?? t("选择主机")} onClick={() => setHostOpen((v) => !v)}>
             <i className={`dot ${host?.state === "ONLINE" ? "dot-ok" : "dot-idle"}`} />

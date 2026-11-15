@@ -1,5 +1,5 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig, loadEnv, type ProxyOptions } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 
 // In development, proxy the admin app's same-origin paths to PCS / the scheduler
 // so internal addresses never end up in the UI defaults. Ports must match the
@@ -13,18 +13,6 @@ export default defineConfig(({ mode }) => {
   // The scheduler is deployed as a container and listens on 8443 inside it
   // (the host maps the same port).
   const SCHEDULER_TARGET = env.VITE_SCHEDULER_TARGET || 'http://127.0.0.1:8443'
-  // Used by the dev proxy only: the browser never holds the admin token.
-  // The token comes from the shell environment or .env.local (gitignored via *.local).
-  const adminToken = (env.PCS_ADMIN_TOKEN ?? '').trim()
-  const injectToken: Pick<ProxyOptions, 'configure'> = {
-    configure(proxy) {
-      proxy.on('proxyReq', (proxyReq) => {
-        if (adminToken && !proxyReq.getHeader('authorization')) {
-          proxyReq.setHeader('authorization', `Bearer ${adminToken}`)
-        }
-      })
-    },
-  }
 
   return {
   plugins: [react()],
@@ -41,7 +29,6 @@ export default defineConfig(({ mode }) => {
         // this same proxy and rewrite.
         ws: true,
         rewrite: (path) => path.replace(/^\/api\/pcs/, ''),
-        ...injectToken,
       },
       '/api/scheduler': {
         target: SCHEDULER_TARGET,
@@ -53,7 +40,6 @@ export default defineConfig(({ mode }) => {
         target: PCS_TARGET,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/pcs/, ''),
-        ...injectToken,
       },
     },
   },

@@ -29,6 +29,7 @@ export function LogsPage() {
             <thead>
               <tr>
                 <th>{t("时间")}</th>
+                <th>{t("操作人")}</th>
                 <th>{t("动作")}</th>
                 <th>{t("对象")}</th>
                 <th>{t("结果")}</th>
@@ -39,6 +40,7 @@ export function LogsPage() {
               {logs.map((l) => (
                 <tr key={l.id}>
                   <td className="muted small">{new Date(l.at).toLocaleString("zh-CN")}</td>
+                  <td>{l.actor || "-"}</td>
                   <td><code>{l.action}</code></td>
                   <td>{l.object}</td>
                   <td><Badge value={l.result === "OK" ? "SUCCEEDED" : "FAILED"} /></td>

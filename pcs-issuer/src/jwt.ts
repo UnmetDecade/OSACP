@@ -21,7 +21,22 @@ export const ADMIN_SCOPES = [
   "profile:read",
   "profile:write",
   "approval:issue",
+  "audit:read",
+  "account:read",
+  "account:write",
 ];
+
+/** Every permission an account can be granted. Roles below are presets over this list. */
+export const ACCOUNT_SCOPES = ADMIN_SCOPES;
+
+export type AccountRole = "admin" | "operator" | "viewer" | "custom";
+
+/** Presets shown in the account editor; custom keeps whatever was checked by hand. */
+export const ROLE_PRESETS: Record<Exclude<AccountRole, "custom">, string[]> = {
+  admin: [...ADMIN_SCOPES],
+  operator: ["host:read", "deployment:read", "deployment:write", "profile:read", "profile:write", "audit:read"],
+  viewer: ["host:read", "deployment:read", "profile:read", "audit:read"],
+};
 
 export interface JwtClaims {
   iss?: string;

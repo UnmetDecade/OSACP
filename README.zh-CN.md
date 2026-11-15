@@ -76,6 +76,14 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 平台内建的只有调度机和开发机，其他参与者都是侧载客户端；因此所有人都走同一套任务、租约、fencing 和审计路径——不需要新增容器、角色或派发规则。
 
+## 暴露面：管理端只留在内网
+
+管理界面、PCS（7901）、调度机 API（8443）以及容器的 SSH 端口都属于**受信任的控制面**。把它们绑定在回环地址、内网或 VPN 上——**绝不要把管理界面的端口发布到公网**，即使前面加了认证也不行。
+
+内网之外的系统需要跑任务时，请改为签发**侧载令牌**（工作室 → 接入侧载）。侧载只属于一份主机，权限是封闭集合（`tasks:read`、`tasks:write`、`queue:read`、`builders:read`、`console:run`），可以随时吊销，也不会拿到调度机地址；它走的是与控制台相同的任务、租约、fencing 和审计链路。
+
+如果运维人员确实需要远程访问控制台，请把它放在 TLS 反向代理**和** VPN / 认证网关之后，并把网关——而不是应用自身——当作安全边界。完整部署检查清单见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
+
 ## 界面
 
 <img src="docs/assets/studio-zh.gif" alt="AI Agent 工作室动画 — 任务信号沿在线链路流动" width="100%">
@@ -95,7 +103,9 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 要求：Node 22+、PostgreSQL 16（或 Docker）、Docker 24+。
 
-> **只想看看效果？** 运行 `scripts/demo.sh`，它会自动构建并启动 PostgreSQL + PCS + 调度机 + 示例工程故事线（界面 / 中间层 / 驱动构建机，折叠的内核主机，以及侧载客户端）+ 本界面，然后输出 `http://127.0.0.1:18080`（可用 `DEMO_PORT` 改端口）。密钥、管理令牌和数据库密码都会自动生成；首次运行需要几分钟。
+> **只想看看效果？** 运行 `scripts/demo.sh`，它会自动构建并启动 PostgreSQL + PCS + 调度机 + 示例工程故事线（界面 / 中间层 / 驱动构建机，折叠的内核主机，以及侧载客户端）+ 本界面，然后输出 `http://127.0.0.1:18080` 和预置的 `admin` 密码（可用 `DEMO_PORT` 改端口）。密钥、管理员密码和数据库密码都会自动生成；首次运行需要几分钟。
+>
+> **绝不要把管理界面发布到公网。** 演示里它只绑定 `127.0.0.1` 是有意为之；原因见[暴露面](#暴露面管理端只留在内网)。
 
 ### 1. 单机 Compose
 
@@ -136,11 +146,12 @@ npm start
 ```bash
 cd admin-app
 npm install
-printf 'PCS_ADMIN_TOKEN=%s\n' '<admin-jwt>' > .env.local   # 0600，已被 gitignore
 npm run dev
 ```
 
-开发代理把 `/api/pcs` 转到 `127.0.0.1:7901`、`/api/scheduler` 转到 `127.0.0.1:8443`。管理员令牌这样签发：
+开发代理把 `/api/pcs` 转到 `127.0.0.1:7901`、`/api/scheduler` 转到 `127.0.0.1:8443`。打开页面后**注册第一个账号**——它会成为管理员；之后的注册需要管理员审批。会话是 HttpOnly Cookie + CSRF 令牌，`.env.local` 里不再需要共享令牌。
+
+`PCS_REGISTRATION=approval|open|closed` 控制后续注册，`PCS_SESSION_HOURS` 控制会话有效期。自动化仍可使用 CLI 令牌：
 
 ```bash
 npm --prefix pcs-issuer run pcs -- admin-token --operator <name>

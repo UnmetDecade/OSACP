@@ -76,6 +76,14 @@ A concrete shape you can run today:
 
 Only the scheduler and development machines are built in. Everyone else is a sideload client, so the same task, lease, fencing and audit path applies to every participant — no new container, role or dispatch rule.
 
+## Exposure: keep the admin surface private
+
+The admin app, PCS (7901), the scheduler API (8443) and container SSH ports are the **trusted control plane**. Bind them to loopback, your LAN or a VPN — **never publish the admin app's port to the public internet**, even with authentication in front of it.
+
+When something outside the trusted network needs to run work, issue a **sideload token** instead (studio → Attach sideload). A sideload is scoped to one host, has a closed permission set (`tasks:read`, `tasks:write`, `queue:read`, `builders:read`, `console:run`), is revocable, and never learns the scheduler address. It reaches the same task, lease, fencing and audit path as the console.
+
+If remote operators really must reach the console, put it behind a TLS reverse proxy **and** a VPN or an authenticated gateway, and treat that gateway — not the app itself — as the security boundary. See [SECURITY.md](SECURITY.md) for the full deployment checklist.
+
 ## Product tour
 
 <img src="docs/assets/studio-en.gif" alt="Animated AI Agent Studio — task signals flowing along live scheduler links" width="100%">
@@ -95,7 +103,9 @@ The studio is the main screen: root scheduler on top, node schedulers and builde
 
 Requirements: Node 22+, PostgreSQL 16 (or Docker), Docker 24+.
 
-> **Just want to look?** `scripts/demo.sh` builds and starts PostgreSQL + PCS + scheduler + the example-project storyline (UI / middle-layer / driver builders, a folded kernel host, and sideload clients) + this UI, then prints `http://127.0.0.1:18080` (override with `DEMO_PORT`). Keys, the admin token and the database password are generated automatically; the first run takes a few minutes.
+> **Just want to look?** `scripts/demo.sh` builds and starts PostgreSQL + PCS + scheduler + the example-project storyline (UI / middle-layer / driver builders, a folded kernel host, and sideload clients) + this UI, then prints `http://127.0.0.1:18080` and the seeded `admin` password (override the port with `DEMO_PORT`). Keys, the admin password and the database password are generated automatically; the first run takes a few minutes.
+>
+> **Never expose the admin app to the public internet.** It is bound to `127.0.0.1` in the demo on purpose; see [Exposure](#exposure-keep-the-admin-surface-private).
 
 ### 1. Single-machine Compose
 
@@ -136,11 +146,12 @@ Add a local or SSH host in the admin app, start its runtime, then deploy schedul
 ```bash
 cd admin-app
 npm install
-printf 'PCS_ADMIN_TOKEN=%s\n' '<admin-jwt>' > .env.local   # 0600, gitignored
 npm run dev
 ```
 
-The dev server proxies `/api/pcs` to `127.0.0.1:7901` and `/api/scheduler` to `127.0.0.1:8443`. Issue an admin token with:
+The dev server proxies `/api/pcs` to `127.0.0.1:7901` and `/api/scheduler` to `127.0.0.1:8443`. Open the page and **register the first account** — it becomes the administrator; later registrations wait for approval. Sessions are HttpOnly cookies with a CSRF token; there is no shared token in `.env.local` anymore.
+
+`PCS_REGISTRATION=approval|open|closed` controls later sign-ups, and `PCS_SESSION_HOURS` sets the session lifetime. The CLI token remains available for automation:
 
 ```bash
 npm --prefix pcs-issuer run pcs -- admin-token --operator <name>

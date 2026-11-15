@@ -27,10 +27,8 @@ node scripts/capture-readme.mjs --lang en    # 生成 README 截图/动画到 ..
 `VITE_SCHEDULER_TARGET` 覆盖）。页面不填连接地址；左下角状态按钮显示「未连接 / 实时 / 连接失败」，
 点击可立即重新同步。
 
-管理员令牌由开发代理注入，浏览器不需要持有：把 `PCS_ADMIN_TOKEN=...` 写进
-`admin-app/.env.local`（已被 `.gitignore` 的 `*.local` 覆盖，权限 600），或在启动
-`npm run dev` 前设置同名环境变量。代理只在请求没有自带 `Authorization` 时补上，
-所以 `sessionStorage` 里的令牌仍然优先。令牌不会进入前端包、URL 或 localStorage。
+登录改为账号体系：注册第一个账号（它会成为管理员；之后的注册需要审批），浏览器只保存
+HttpOnly 会话 Cookie 和 CSRF 令牌，`.env.local` 里不再写共享令牌。CLI 管理员令牌仍可用于自动化。
 
 API 前缀带 `/api`：`/scheduler` 本身是页面路由，拿它当代理前缀时刷新该页面会把
 导航请求转发给调度机，看到的是 `{"code":"ROUTE_NOT_FOUND"}`。

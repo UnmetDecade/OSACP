@@ -12,7 +12,7 @@ See [../docs/federation.md](../docs/federation.md) and [../docs/architecture.md]
 - Private keys live only here (`keys/private.pem`, `keys/command-private.pem`, 0600) and
   **never enter the scheduler, Host Runtime, role containers or logs**.
 - Host Runtime only receives `command-public.pem` to verify deployment intents; the scheduler only receives `public.pem` to verify JWTs.
-- No user login, no OIDC, no approval-center UI; the admin app uses `PCS_ADMIN_TOKEN` to reach the admin side.
+- Accounts with scoped permissions and account-attributed audit; no OIDC and no approval-center UI. The CLI admin token still works for automation.
 - No JWKS endpoint or key rotation; public keys are distributed as files.
 - Single control plane, not HA; PostgreSQL listens on localhost only and is not exposed to the WAN.
 - Native TLS and optional mTLS (client certificates) are supported; Bearer `host_token` / admin JWT are still validated on every request —

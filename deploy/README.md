@@ -37,6 +37,10 @@ scheduler instance and builder, and three sideload clients (development, test,
 after-sales). The script submits a few Shell tasks so the studio has running,
 finished and queued work.
 
+Sign in with the `admin` account and the password printed by the script (also
+stored in `deploy/.env.demo`, mode 0600). In a real deployment the first
+registration becomes the administrator; the demo seeds one for you.
+
 Stop with `scripts/demo.sh --down` (add `--volumes` to drop the data too).
 
 The demo does not bundle host-runtime or mount the Docker socket, so host

@@ -8,9 +8,9 @@ import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { Character } from "../components/Character";
 import { InstanceProfilesModal } from "../components/InstanceProfiles";
-import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Tag } from "../components/ui";
+import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Switch, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
-import { builderAction, sshCommand } from "../api";
+import { builderAction, sshCommand, updateDeploymentFeatures } from "../api";
 import type { Instance } from "../types";
 
 /** Single scheduler details: queue, running tasks, bound Agents and configuration. */
@@ -115,6 +115,20 @@ export function SchedulerShow() {
     return db.instances.find((i) => i.key === t.instance_id || i.id === t.instance_id);
   }
 
+  /** Toggling a capability recreates the container with the next generation; volumes survive. */
+  async function toggleFeature(key: "ssh_enabled" | "chat_enabled", next: boolean) {
+    setBusy(key);
+    setError("");
+    try {
+      const features = key === "ssh_enabled" ? { ssh_enabled: next } : { chat_enabled: next };
+      await updateDeploymentFeatures(s.id, features, live.refresh);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return (
     <div className="page page-sched">
       <Link className="back" to="/scheduler"><Icon name="back" size={13} />{t("调度机")}</Link>
@@ -142,14 +156,18 @@ export function SchedulerShow() {
         }
         actions={
           <>
-            <Link className="btn" to={`/terminal?instance=${encodeURIComponent(s.key)}`}>
-              <Icon name="terminal" size={14} />
-              {t("终端")}
-            </Link>
-            <Link className="btn" to={`/chat?instance=${encodeURIComponent(s.key)}`}>
-              <Icon name="chat" size={14} />
-              {t("问派令")}
-            </Link>
+            {s.ssh_enabled !== false && (
+              <Link className="btn" to={`/terminal?instance=${encodeURIComponent(s.key)}`}>
+                <Icon name="terminal" size={14} />
+                {t("终端")}
+              </Link>
+            )}
+            {s.chat_enabled !== false && (
+              <Link className="btn" to={`/chat?instance=${encodeURIComponent(s.key)}`}>
+                <Icon name="chat" size={14} />
+                {t("问派令")}
+              </Link>
+            )}
             <Button onClick={() => setProfilesOpen(true)}>
               <Icon name="agent" size={14} />
               {t("配置 Agent")}
@@ -188,9 +206,30 @@ export function SchedulerShow() {
             </KeyVal>
             <KeyVal label={t("构建机")}>{t("{count} 构建机 · ΣW {w}", { count: owned.length, w })}</KeyVal>
             <KeyVal label="SSH">
-              {s.ssh_port ? sshCommand(s.ssh_host, s.ssh_port, s.ssh_user) : "-"}
+              {s.ssh_enabled === false
+                ? t("已在部署中关闭")
+                : s.ssh_port
+                  ? sshCommand(s.ssh_host, s.ssh_port, s.ssh_user)
+                  : "-"}
             </KeyVal>
             <KeyVal label={t("镜像")}><code className="digest">{s.image}</code></KeyVal>
+          </div>
+          <div className="stack" style={{ marginTop: 12 }}>
+            <Switch
+              checked={s.ssh_enabled !== false}
+              disabled={busy !== ""}
+              onChange={() => void toggleFeature("ssh_enabled", s.ssh_enabled === false)}
+              label={t("SSH 访问（sshd 与端口映射）")}
+            />
+            <Switch
+              checked={s.chat_enabled !== false}
+              disabled={busy !== ""}
+              onChange={() => void toggleFeature("chat_enabled", s.chat_enabled === false)}
+              label={t("对话（task.chat.scheduler）")}
+            />
+            <div className="muted">
+              {t("切换后控制面会重建这个容器；工作区卷保留，正在运行的任务会中断。")}
+            </div>
           </div>
         </Card>
 

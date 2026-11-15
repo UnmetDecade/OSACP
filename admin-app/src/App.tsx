@@ -1,4 +1,5 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider, useAuth } from "./auth";
 import { Layout } from "./components/Layout";
 import { HostScopeProvider } from "./host-context";
 import { LiveProvider } from "./live/context";
@@ -15,12 +16,28 @@ import { TerminalPage } from "./pages/Terminal";
 import { ChatPage } from "./pages/Chat";
 import { LogsPage } from "./pages/Logs";
 import { FilesPage } from "./pages/Files";
+import { LoginPage } from "./pages/Login";
+import { RegisterPage } from "./pages/Register";
+import { AccountsPage } from "./pages/Accounts";
 
-export default function App() {
+/** Login/registration stand alone; every other route mounts behind a live session. */
+function Shell() {
+  const auth = useAuth();
+  if (auth.status === "loading") {
+    return <div className="auth-loading">…</div>;
+  }
+  if (auth.status === "anonymous") {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
   return (
-    <BrowserRouter>
-      <LiveProvider>
-        <HostScopeProvider>
+    <LiveProvider>
+      <HostScopeProvider>
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Dashboard />} />
@@ -37,10 +54,21 @@ export default function App() {
             <Route path="terminal" element={<TerminalPage />} />
             <Route path="chat" element={<ChatPage />} />
             <Route path="logs" element={<LogsPage />} />
+            <Route path="accounts" element={<AccountsPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
-        </HostScopeProvider>
-      </LiveProvider>
+      </HostScopeProvider>
+    </LiveProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Shell />
+      </AuthProvider>
     </BrowserRouter>
   );
 }

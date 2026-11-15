@@ -41,29 +41,37 @@ chmod 700 /root/.ssh
 # keys is usually mounted as a read-only volume, so chmod returns EROFS; the permissions are decided on the host side.
 chmod 700 /opt/platform/keys 2>/dev/null || true
 
-# The pure ubuntu image has no ssh/sshd: install offline from host-cached debs (the cache must match the image version).
-if ! command -v sshd >/dev/null || ! command -v ssh >/dev/null; then
-  if compgen -G "$CACHE/openssh/*.deb" >/dev/null; then
-    DEBIAN_FRONTEND=noninteractive dpkg -i "$CACHE"/openssh/*.deb
-  else
-    echo "ssh/sshd is missing and the host cache has no $CACHE/openssh/*.deb" >&2
-    exit 1
+# SSH is optional: deployments can run builders with no inbound shell at all.
+# When disabled, skip the openssh install and never start sshd; the console task
+# type still works through the scheduler, chat optionally.
+SSH_ENABLED="${SSH_ENABLED:-1}"
+if [[ "$SSH_ENABLED" != "0" ]]; then
+  # The pure ubuntu image has no ssh/sshd: install offline from host-cached debs (the cache must match the image version).
+  if ! command -v sshd >/dev/null || ! command -v ssh >/dev/null; then
+    if compgen -G "$CACHE/openssh/*.deb" >/dev/null; then
+      DEBIAN_FRONTEND=noninteractive dpkg -i "$CACHE"/openssh/*.deb
+    else
+      echo "ssh/sshd is missing and the host cache has no $CACHE/openssh/*.deb" >&2
+      exit 1
+    fi
   fi
-fi
 
-if [[ -f "$APP/sshd_config" ]]; then
-  cp "$APP/sshd_config" /etc/ssh/sshd_config.d/00-platform.conf
-fi
-# Authorized public keys: prefer the mounted keys directory, then SSH_PUBKEY_FILE / SSH_AUTHORIZED_KEY.
-if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
-  cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
-elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
-  printf '%s\n' "$SSH_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
-fi
-chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+  if [[ -f "$APP/sshd_config" ]]; then
+    cp "$APP/sshd_config" /etc/ssh/sshd_config.d/00-platform.conf
+  fi
+  # Authorized public keys: prefer the mounted keys directory, then SSH_PUBKEY_FILE / SSH_AUTHORIZED_KEY.
+  if [[ -n "${SSH_PUBKEY_FILE:-}" && -f "$SSH_PUBKEY_FILE" ]]; then
+    cp "$SSH_PUBKEY_FILE" /root/.ssh/authorized_keys
+  elif [[ -n "${SSH_AUTHORIZED_KEY:-}" ]]; then
+    printf '%s\n' "$SSH_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
+  fi
+  chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
 
-ssh-keygen -A >/dev/null
-/usr/sbin/sshd -e
+  ssh-keygen -A >/dev/null
+  /usr/sbin/sshd -e
+else
+  echo "[builder] SSH_ENABLED=0: sshd is not started"
+fi
 
 # ---- Installed package persistence ----
 # The builder is a one-off container, but installed environments should not disappear on every redeploy:
@@ -132,6 +140,9 @@ let capabilityDetail;
 try {
   capabilityDetail = process.env.CAPABILITY_DETAIL ? JSON.parse(process.env.CAPABILITY_DETAIL) : undefined;
 } catch { capabilityDetail = undefined; }
+// Chat is optional per deployment: without task.chat.builder the scheduler never
+// dispatches a chat task here, and the console hides the entry point.
+const chat = process.env.CHAT_ENABLED !== "0";
 const cfg = {
   scheduler_url: process.env.SCHEDULER_URL,
   heartbeat_seconds: 10,
@@ -151,8 +162,11 @@ const cfg = {
     role_id: process.env.ROLE_ID || "builder",
     host_id: process.env.HOST_ID || "docker-host-01",
     agent_profile_id: process.env.AGENT_PROFILE_ID || "agp_builder",
-    task_types: ["task.build", "task.chat.builder", "task.console.builder"],
-    capabilities: { healthy: ["code.build", "shell", "llm"], os: process.env.BUILDER_OS || "ubuntu24.04" },
+    task_types: ["task.build", ...(chat ? ["task.chat.builder"] : []), "task.console.builder"],
+    capabilities: {
+      healthy: chat ? ["code.build", "shell", "llm"] : ["code.build", "shell"],
+      os: process.env.BUILDER_OS || "ubuntu24.04",
+    },
     ...(process.env.CAPABILITY_SCORE ? { capability_score: Number(process.env.CAPABILITY_SCORE) } : {}),
     ...(capabilityDetail ? { capability_detail: capabilityDetail } : {}),
     slots: Number(process.env.MAX_CONCURRENCY || 1),
