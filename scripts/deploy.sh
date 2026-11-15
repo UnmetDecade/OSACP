@@ -103,7 +103,15 @@ if [ -z "${PCS_DATABASE_URL:-}" ]; then
   # they reach PostgreSQL through the host's LAN address, not 127.0.0.1.
   LAN_IP="$(node -e 'const os=require("node:os");for(const l of Object.values(os.networkInterfaces()))for(const i of l||[])if(i.family==="IPv4"&&!i.internal){console.log(i.address);process.exit(0)}')"
   LAN_IP="${LAN_IP:-127.0.0.1}"
-  PCS_SCHEDULER_DATABASE_URL="postgres://postgres:${PG_PASSWORD}@${LAN_IP}:${PG_PORT}/scheduler"
+  # Scheduler containers reach host-published ports through a container-visible
+  # address; on macOS that is the Docker bridge gateway, not the host LAN IP.
+  if [ "$(uname -s)" = "Darwin" ]; then
+    CONTAINER_HOST_IP="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+    CONTAINER_HOST_IP="${CONTAINER_HOST_IP:-172.17.0.1}"
+  else
+    CONTAINER_HOST_IP="$LAN_IP"
+  fi
+  PCS_SCHEDULER_DATABASE_URL="postgres://postgres:${PG_PASSWORD}@${CONTAINER_HOST_IP}:${PG_PORT}/scheduler"
   export PCS_SCHEDULER_DATABASE_URL
 fi
 export PCS_DATABASE_URL
@@ -180,12 +188,29 @@ if ! compgen -G "$HOME/.platform/cache/openssh/*.deb" >/dev/null; then
     'apt-get update -qq && apt-get install -y -qq --download-only --no-install-recommends openssh-server >/dev/null && cp /var/cache/apt/archives/*.deb /out/' \
     || die "could not download the openssh packages"
 fi
-for cli in claude codex; do
-  if command -v "$cli" >/dev/null 2>&1 && [ ! -x "$HOME/.platform/cache/agents/$cli" ]; then
-    cp "$(command -v "$cli")" "$HOME/.platform/cache/agents/$cli"
-    chmod 755 "$HOME/.platform/cache/agents/$cli"
+if [ "$(uname -s)" = "Linux" ]; then
+  # On Linux the host CLI binary runs unchanged inside the containers.
+  for cli in claude codex; do
+    if command -v "$cli" >/dev/null 2>&1 && [ ! -x "$HOME/.platform/cache/agents/$cli" ]; then
+      cp "$(command -v "$cli")" "$HOME/.platform/cache/agents/$cli"
+      chmod 755 "$HOME/.platform/cache/agents/$cli"
+    fi
+  done
+else
+  # macOS host CLIs are Mach-O binaries and cannot run in the Linux builders.
+  # Install a Linux Claude Code build into the cache once.
+  AGENT_CLI_VERSION="${AGENT_CLI_VERSION:-2.1.322}"
+  if [ ! -x "$HOME/.platform/cache/agents/claude" ] || file "$HOME/.platform/cache/agents/claude" 2>/dev/null | grep -q 'Mach-O'; then
+    say "installing a Linux Claude Code ${AGENT_CLI_VERSION} build into the host cache"
+    docker run --rm -v "$HOME/.platform/cache:/cache" node:22-bookworm-slim sh -c "
+      set -e
+      rm -f /cache/agents/claude
+      npm i -g --no-fund --no-audit --registry=https://registry.npmmirror.com --prefix /cache/agents @anthropic-ai/claude-code@${AGENT_CLI_VERSION} >/dev/null
+      printf '#!/bin/sh\nexec /opt/platform/cache/agents/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \"\$@\"\n' > /cache/agents/claude
+      chmod 755 /cache/agents/claude" \
+      || die "could not install the Linux Claude Code build into the host cache"
   fi
-done
+fi
 
 # ---------------------------------------------------------------- migrate and start
 say "migrating the database"
