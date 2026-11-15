@@ -71,4 +71,6 @@ await runFile("009_agent_control.sql");
 await runFile("010_failure_recovery.sql");
 // 011 artifact names: the file channel needs the original name for downloads and file lists.
 await runFile("011_artifact_names.sql");
+// 012 sources/threads/subscriptions: group tasks into conversations and track outbox cursors.
+await runFile("012_threads.sql");
 process.exit(0);

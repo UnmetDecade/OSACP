@@ -7,8 +7,8 @@ import { tasksForHost } from "../host-tasks";
 import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { getLiveConnection } from "../live/config";
-import { fetchFailureSignatures, fetchTaskDetail, fetchTaskEvents } from "../live/sync";
-import type { FailureSignature, Task, TaskAttempt, TaskChild, TaskEvent } from "../types";
+import { createTaskThread, fetchFailureSignatures, fetchTaskDetail, fetchTaskEvents, fetchThread, postThreadMessage } from "../live/sync";
+import type { FailureSignature, Task, TaskAttempt, TaskChild, TaskEvent, ThreadDetail } from "../types";
 import { Character } from "../components/Character";
 import { CreateTaskModal } from "../components/CreateTask";
 import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Tag } from "../components/ui";
@@ -30,6 +30,13 @@ const ATTENTION_TONES: Record<string, "warn" | "bad" | "accent"> = {
   review: "accent",
   blocked: "bad",
   waiting: "warn",
+};
+
+/** How a task relates to its thread. */
+const TASK_RELATION_LABELS: Record<string, string> = {
+  owner: "初始任务",
+  followup: "续接任务",
+  context: "相关任务",
 };
 
 const OUTCOME_LABELS: Record<string, string> = {
@@ -236,6 +243,10 @@ export function TaskShow() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [answer, setAnswer] = useState("");
+  const [thread, setThread] = useState<ThreadDetail | null>(null);
+  const [threadBusy, setThreadBusy] = useState("");
+  const [threadError, setThreadError] = useState("");
+  const [followUp, setFollowUp] = useState("");
 
   useEffect(() => {
     setEvents(task?.events ?? []);
@@ -255,8 +266,16 @@ export function TaskShow() {
     fetchFailureSignatures(conn, task.scheduler_deployment_id)
       .then((items) => { if (alive) setSignatures(items); })
       .catch(() => {});
+    // A thread is optional; only load it when the task was grouped into one.
+    if (task.thread_id) {
+      fetchThread(conn, task.thread_id, task.scheduler_deployment_id)
+        .then((detail) => { if (alive) setThread(detail); })
+        .catch(() => { if (alive) setThread(null); });
+    } else {
+      setThread(null);
+    }
     return () => { alive = false; };
-  }, [task?.id, task?.events, task?.state, task?.attempts]);
+  }, [task?.id, task?.events, task?.state, task?.attempts, task?.thread_id]);
 
   if (!task) {
     return (
@@ -323,6 +342,42 @@ export function TaskShow() {
       setError(errorMessage(e));
     } finally {
       setBusy("");
+    }
+  }
+
+  async function startThread() {
+    const conn = getLiveConnection();
+    if (!conn) return;
+    setThreadBusy("create");
+    setThreadError("");
+    try {
+      const threadId = await createTaskThread(conn, task!.id, task!.title, task!.scheduler_deployment_id);
+      setThread(await fetchThread(conn, threadId, task!.scheduler_deployment_id));
+      await live.refresh();
+    } catch (e) {
+      setThreadError(errorMessage(e));
+    } finally {
+      setThreadBusy("");
+    }
+  }
+
+  /** A follow-up message becomes a new task in the same thread; the scheduler copies the target and profile. */
+  async function sendFollowUp() {
+    const conn = getLiveConnection();
+    const threadId = thread?.thread_id;
+    const text = followUp.trim();
+    if (!conn || !threadId || !text) return;
+    setThreadBusy("send");
+    setThreadError("");
+    try {
+      await postThreadMessage(conn, threadId, text, task!.scheduler_deployment_id);
+      setFollowUp("");
+      setThread(await fetchThread(conn, threadId, task!.scheduler_deployment_id));
+      await live.refresh();
+    } catch (e) {
+      setThreadError(errorMessage(e));
+    } finally {
+      setThreadBusy("");
     }
   }
 
@@ -406,6 +461,62 @@ export function TaskShow() {
           </div>
         </Card>
       )}
+
+      {/* A thread groups the task with follow-up messages; each message becomes a new task
+          in the same thread, so a conversation does not require resubmitting the configuration. */}
+      <Card style={{ marginBottom: 16 }}>
+        <CardTitle extra={thread ? <Tag>{thread.thread_id}</Tag> : undefined}>{t("线程")}</CardTitle>
+        {threadError && <Callout tone="bad">{threadError}</Callout>}
+        {!thread ? (
+          <div className="row" style={{ gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+            <span className="muted">{t("把这次任务放进一个线程，后续消息会生成续接任务。")}</span>
+            <Button onClick={() => void startThread()} disabled={threadBusy === "create"}>
+              {threadBusy === "create" ? t("创建中…") : t("开启会话")}
+            </Button>
+          </div>
+        ) : (
+          <div className="stack">
+            <div className="muted small">{t("线程内的任务与消息；发送消息会自动创建续接任务。")}</div>
+            {thread.tasks.map((tt) => (
+              <div key={tt.task_id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                <Badge value={tt.status} />
+                <Link className="link" to={`/tasks/${tt.task_id}`}>{tt.title ?? tt.task_id}</Link>
+                <Tag>{t(TASK_RELATION_LABELS[tt.relation] ?? tt.relation)}</Tag>
+                {tt.attention && tt.attention !== "none" && (
+                  <Tag tone={ATTENTION_TONES[tt.attention] ?? "warn"}>
+                    {t(ATTENTION_LABELS[tt.attention] ?? tt.attention)}
+                  </Tag>
+                )}
+              </div>
+            ))}
+            {thread.messages.map((m) => (
+              <div key={m.message_id} className="question-box" style={{ marginTop: 6 }}>
+                <div className="muted small">
+                  {m.actor ?? m.role} · {new Date(m.created_at).toLocaleString("zh-CN")}
+                </div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
+              </div>
+            ))}
+            <textarea
+              className="input"
+              rows={3}
+              value={followUp}
+              onChange={(e) => setFollowUp(e.target.value)}
+              placeholder={t("继续这个线程：消息会创建一个新的续接任务")}
+              style={{ width: "100%", resize: "vertical", marginTop: 6 }}
+            />
+            <div className="actions">
+              <Button
+                variant="primary"
+                onClick={() => void sendFollowUp()}
+                disabled={threadBusy === "send" || !followUp.trim()}
+              >
+                {threadBusy === "send" ? t("提交中…") : t("发送并创建续接任务")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
 
       {lastFailure && (
         <Callout tone="bad">

@@ -8994,6 +8994,8 @@ async function createTask(input) {
 async function getTask(taskId) {
   const task = await q1(
     `SELECT t.*,
+            (SELECT tt.thread_id FROM thread_tasks tt WHERE tt.task_id = t.task_id
+              ORDER BY tt.created_at, tt.thread_id LIMIT 1) AS thread_id,
             CASE
               WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
               WHEN t.status = 'BLOCKED' THEN 'blocked'
@@ -9054,6 +9056,8 @@ async function listTasks(filter) {
     `SELECT t.*, td.target_role,
             a.instance_id AS current_instance_id,
             a.attempt_number AS current_attempt_number,
+            (SELECT tt.thread_id FROM thread_tasks tt WHERE tt.task_id = t.task_id
+              ORDER BY tt.created_at, tt.thread_id LIMIT 1) AS thread_id,
             CASE
               WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
               WHEN t.status = 'BLOCKED' THEN 'blocked'
@@ -9230,6 +9234,228 @@ async function answerTask(taskId, answer, actor = "operator") {
       payload: { question_chars: question ? String(question).length : 0, answer_chars: text.length }
     });
     return updated.rows[0];
+  });
+}
+
+// scheduler/src/repo/threads.ts
+function requireText(value, field, max = 16e3) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw new ApiError(422, "BAD_REQUEST", `${field} must not be empty`);
+  return text.slice(0, max);
+}
+function firstLine(text, max = 120) {
+  const line = text.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  return line.slice(0, max) || text.slice(0, max);
+}
+async function requireThread(c, threadId) {
+  const row = (await c.query(`SELECT * FROM threads WHERE thread_id = $1`, [threadId])).rows[0];
+  if (!row) throw new ApiError(404, "NOT_FOUND", `thread not found: ${threadId}`);
+  return row;
+}
+async function createThread(input) {
+  return tx(async (c) => {
+    const threadId = newId("thr");
+    const row = (await c.query(
+      `INSERT INTO threads (thread_id, title, source, created_by, metadata)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [
+        threadId,
+        input.title?.trim().slice(0, 200) || null,
+        input.source?.trim().slice(0, 40) || "api",
+        input.created_by?.trim().slice(0, 80) || null,
+        JSON.stringify(input.metadata ?? {})
+      ]
+    )).rows[0];
+    if (input.task_id) {
+      const exists = await c.query(`SELECT 1 FROM tasks WHERE task_id = $1`, [input.task_id]);
+      if (!exists.rowCount) throw new ApiError(404, "NOT_FOUND", `task not found: ${input.task_id}`);
+      await c.query(
+        `INSERT INTO thread_tasks (thread_id, task_id, relation) VALUES ($1, $2, 'owner')
+         ON CONFLICT DO NOTHING`,
+        [threadId, input.task_id]
+      );
+    }
+    return row;
+  });
+}
+async function listThreads(limit = 50) {
+  return q(
+    `SELECT th.*,
+            (SELECT count(*) FROM thread_tasks tt WHERE tt.thread_id = th.thread_id) AS task_count,
+            (SELECT max(tt.created_at) FROM thread_tasks tt WHERE tt.thread_id = th.thread_id) AS last_task_at
+       FROM threads th
+      ORDER BY th.updated_at DESC
+      LIMIT $1`,
+    [Math.min(Math.max(limit, 1), 200)]
+  );
+}
+async function getThread(threadId) {
+  const thread = await q1(`SELECT * FROM threads WHERE thread_id = $1`, [threadId]);
+  if (!thread) throw new ApiError(404, "NOT_FOUND", `thread not found: ${threadId}`);
+  const tasks = await q(
+    `SELECT t.task_id, t.task_type, t.status, t.outcome, t.created_at, t.updated_at,
+            tt.relation,
+            t.requirements->'build'->>'title' AS title,
+            CASE
+              WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
+              WHEN t.status = 'BLOCKED' THEN 'blocked'
+              WHEN t.status = 'WAITING_CHILDREN' THEN 'waiting'
+              WHEN wr.status = 'WAITING_APPROVAL' THEN 'review'
+              ELSE 'none'
+            END AS attention
+       FROM thread_tasks tt
+       JOIN tasks t ON t.task_id = tt.task_id
+       LEFT JOIN workflow_runs wr ON wr.workflow_run_id = t.workflow_run_id
+      WHERE tt.thread_id = $1
+      ORDER BY tt.created_at, t.task_id`,
+    [threadId]
+  );
+  const messages = await q(
+    `SELECT message_id, role, actor, body, task_id, created_at
+       FROM thread_messages WHERE thread_id = $1 ORDER BY created_at, message_id`,
+    [threadId]
+  );
+  const subscriptions = await q(
+    `SELECT subscription_id, subscriber, kind, cursor, created_at, last_seen_at
+       FROM thread_subscriptions WHERE thread_id = $1 ORDER BY created_at`,
+    [threadId]
+  );
+  return { ...thread, tasks, messages, subscriptions };
+}
+async function attachThreadTask(threadId, taskId, relation = "owner") {
+  const thread = await q1(`SELECT 1 FROM threads WHERE thread_id = $1`, [threadId]);
+  if (!thread) throw new ApiError(404, "NOT_FOUND", `thread not found: ${threadId}`);
+  const task = await q1(`SELECT 1 FROM tasks WHERE task_id = $1`, [taskId]);
+  if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
+  await q(
+    `INSERT INTO thread_tasks (thread_id, task_id, relation) VALUES ($1, $2, $3)
+     ON CONFLICT (thread_id, task_id) DO UPDATE SET relation = EXCLUDED.relation`,
+    [threadId, taskId, relation]
+  );
+  await q(`UPDATE threads SET updated_at = now() WHERE thread_id = $1`, [threadId]);
+  return { thread_id: threadId, task_id: taskId, relation };
+}
+function followUpInput(base, input, threadId, messageId) {
+  const text = requireText(input.body, "body");
+  const baseReq = base.requirements && typeof base.requirements === "object" ? base.requirements : {};
+  const targetInstanceId = input.target_instance_id ?? (typeof baseReq.target_instance_id === "string" ? baseReq.target_instance_id : void 0);
+  const taskType = input.task_type ?? (base.task_type.startsWith("task.chat.") ? base.task_type : "task.build");
+  const requirements = {
+    ...targetInstanceId ? { target_instance_id: targetInstanceId } : {},
+    thread: { thread_id: threadId, message_id: messageId, previous_task_id: base.task_id },
+    ...input.requirements ?? {}
+  };
+  if (taskType.startsWith("task.chat.")) {
+    requirements.chat = { message: text };
+  } else {
+    requirements.build = { title: input.title?.trim().slice(0, 200) || firstLine(text), instruction: text };
+  }
+  return {
+    task_type: taskType,
+    priority_class: base.priority_class,
+    difficulty: base.difficulty ?? 0,
+    approval_mode: input.approval_mode ?? base.approval_mode,
+    resource_profile_id: base.resource_profile_id,
+    max_attempts: base.max_attempts,
+    requirements,
+    trace_id: `thread_${threadId}`
+  };
+}
+async function addThreadMessage(threadId, input) {
+  const text = requireText(input.body, "body");
+  return tx(async (c) => {
+    const thread = await requireThread(c, threadId);
+    const base = (await c.query(
+      `SELECT t.task_id, t.task_type, t.priority_class, t.difficulty, t.approval_mode,
+                t.resource_profile_id, t.max_attempts, t.requirements
+           FROM thread_tasks tt
+           JOIN tasks t ON t.task_id = tt.task_id
+          WHERE tt.thread_id = $1
+            AND t.task_type NOT LIKE 'task.console.%'
+            AND t.task_type NOT LIKE 'task.chat.scheduler'
+          ORDER BY tt.created_at DESC, t.created_at DESC
+          LIMIT 1`,
+      [threadId]
+    )).rows[0];
+    const messageId = newId("tmsg");
+    let task = null;
+    let followup = null;
+    if (input.create_task !== false && base) {
+      followup = followUpInput(base, { ...input, body: text }, threadId, messageId);
+      task = await insertTask(c, followup);
+      await c.query(
+        `INSERT INTO thread_tasks (thread_id, task_id, relation) VALUES ($1, $2, 'followup')
+         ON CONFLICT DO NOTHING`,
+        [threadId, task.task_id]
+      );
+    }
+    const message = (await c.query(
+      `INSERT INTO thread_messages (message_id, thread_id, role, actor, body, task_id)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [
+        messageId,
+        threadId,
+        input.role ?? "user",
+        input.actor?.trim().slice(0, 80) || null,
+        text,
+        task?.task_id ?? null
+      ]
+    )).rows[0];
+    await c.query(`UPDATE threads SET updated_at = now() WHERE thread_id = $1`, [threadId]);
+    return { thread: { ...thread, updated_at: /* @__PURE__ */ new Date() }, message, task, followup };
+  });
+}
+async function subscribeThread(threadId, subscriber, kind = "poll") {
+  const who = requireText(subscriber, "subscriber", 80);
+  const exists = await q1(`SELECT 1 FROM threads WHERE thread_id = $1`, [threadId]);
+  if (!exists) throw new ApiError(404, "NOT_FOUND", `thread not found: ${threadId}`);
+  const row = await q1(
+    `INSERT INTO thread_subscriptions (subscription_id, thread_id, subscriber, kind)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (thread_id, subscriber) DO UPDATE SET kind = EXCLUDED.kind
+     RETURNING *`,
+    [newId("sub"), threadId, who, kind]
+  );
+  return row;
+}
+async function unsubscribeThread(threadId, subscriptionId) {
+  const row = await q1(
+    `DELETE FROM thread_subscriptions WHERE subscription_id = $1 AND thread_id = $2 RETURNING *`,
+    [subscriptionId, threadId]
+  );
+  if (!row) throw new ApiError(404, "NOT_FOUND", `subscription not found: ${subscriptionId}`);
+  return row;
+}
+async function pollSubscription(threadId, subscriptionId, opts = {}) {
+  return tx(async (c) => {
+    const sub = (await c.query(
+      `SELECT * FROM thread_subscriptions WHERE subscription_id = $1 AND thread_id = $2 FOR UPDATE`,
+      [subscriptionId, threadId]
+    )).rows[0];
+    if (!sub) throw new ApiError(404, "NOT_FOUND", `subscription not found: ${subscriptionId}`);
+    const after = Number.isFinite(opts.after) && Number(opts.after) >= 0 ? Number(opts.after) : Number(sub.cursor);
+    const limit = Math.min(Math.max(Number(opts.limit) || 100, 1), 500);
+    const items = (await c.query(
+      `SELECT o.*
+           FROM outbox_events o
+           JOIN thread_tasks tt ON tt.task_id = o.aggregate_id
+          WHERE tt.thread_id = $1 AND o.event_id > $2
+          ORDER BY o.event_id
+          LIMIT $3`,
+      [threadId, after, limit]
+    )).rows;
+    const nextCursor = items.length ? Number(items[items.length - 1].event_id) : after;
+    if (opts.ack && items.length) {
+      await c.query(
+        `UPDATE thread_subscriptions SET cursor = $2, last_seen_at = now() WHERE subscription_id = $1`,
+        [subscriptionId, nextCursor]
+      );
+    } else {
+      await c.query(`UPDATE thread_subscriptions SET last_seen_at = now() WHERE subscription_id = $1`, [
+        subscriptionId
+      ]);
+    }
+    return { subscription_id: subscriptionId, after, next_cursor: nextCursor, items };
   });
 }
 
@@ -10251,8 +10477,14 @@ route(
   )
 );
 route("POST", "/v1/tasks", async (c) => {
-  const input = bodyAs(c.body);
+  const body = bodyAs(c.body);
+  const { thread_id, ...input } = body;
+  if (thread_id) {
+    const thread = await q1(`SELECT 1 FROM threads WHERE thread_id = $1`, [thread_id]);
+    if (!thread) throw new ApiError(404, "NOT_FOUND", `thread not found: ${thread_id}`);
+  }
   const task = await createTask(input);
+  if (thread_id) await attachThreadTask(thread_id, task.task_id, "owner");
   const relayed = await maybeRelayTask(task, input);
   return relayed ? { ...task, relay: relayed } : task;
 });
@@ -10287,6 +10519,44 @@ route(
   "POST",
   "/v1/tasks/:id/retry",
   (c) => retryTask(c.params.id, String(c.body.actor ?? "operator"))
+);
+route("GET", "/v1/threads", async (c) => ({
+  items: await listThreads(c.query.get("limit") ? Number(c.query.get("limit")) : void 0)
+}));
+route(
+  "POST",
+  "/v1/threads",
+  (c) => createThread(
+    bodyAs(
+      c.body
+    )
+  )
+);
+route("GET", "/v1/threads/:id", (c) => getThread(c.params.id));
+route("POST", "/v1/threads/:id/messages", async (c) => {
+  const out = await addThreadMessage(c.params.id, bodyAs(c.body));
+  const { followup, ...rest } = out;
+  if (!out.task || !followup) return rest;
+  const relayed = await maybeRelayTask(out.task, followup);
+  return relayed ? { ...rest, task: { ...out.task, relay: relayed } } : rest;
+});
+route("POST", "/v1/threads/:id/subscribe", (c) => {
+  const body = bodyAs(c.body);
+  return subscribeThread(c.params.id, String(body.subscriber ?? ""), body.kind ?? "poll");
+});
+route(
+  "DELETE",
+  "/v1/threads/:id/subscriptions/:subscriptionId",
+  (c) => unsubscribeThread(c.params.id, c.params.subscriptionId)
+);
+route(
+  "GET",
+  "/v1/threads/:id/subscriptions/:subscriptionId/events",
+  (c) => pollSubscription(c.params.id, c.params.subscriptionId, {
+    after: c.query.get("after") !== null ? Number(c.query.get("after")) : void 0,
+    limit: c.query.get("limit") ? Number(c.query.get("limit")) : void 0,
+    ack: c.query.get("ack") === "true"
+  })
 );
 route(
   "POST",

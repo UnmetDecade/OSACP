@@ -315,6 +315,54 @@ export type PolicyDocument = {
   >;
 };
 
+/** A conversation thread: an index over tasks and messages, not an execution unit. */
+export type Thread = {
+  thread_id: string;
+  title: string | null;
+  source: string;
+  created_by: string | null;
+  status: "OPEN" | "ARCHIVED";
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ThreadTask = {
+  task_id: string;
+  task_type: string;
+  status: TaskState;
+  outcome?: string | null;
+  title?: string | null;
+  relation: "owner" | "followup" | "context";
+  attention?: TaskAttention;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ThreadMessage = {
+  message_id: string;
+  role: "user" | "agent" | "system";
+  actor: string | null;
+  body: string;
+  task_id: string | null;
+  created_at: string;
+};
+
+export type ThreadSubscription = {
+  subscription_id: string;
+  subscriber: string;
+  kind: "poll" | "outbox";
+  cursor: string | number;
+  created_at: string;
+  last_seen_at: string | null;
+};
+
+export type ThreadDetail = Thread & {
+  tasks: ThreadTask[];
+  messages: ThreadMessage[];
+  subscriptions: ThreadSubscription[];
+};
+
 export type Task = {
   id: string;
   title: string;
@@ -328,6 +376,8 @@ export type Task = {
   state: TaskState;
   /** What a person must do next, if anything. */
   attention: TaskAttention;
+  /** Thread this task belongs to, if it was grouped into a conversation. */
+  thread_id?: string | null;
   instance_id?: string;
   attempts: number;
   block_reason?: string;

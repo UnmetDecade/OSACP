@@ -33,6 +33,17 @@ import {
   listWorkflowRuns,
 } from "../core/workflow.js";
 import { answerTask, cancelTask, createTask, getTask, listEvents, listTasks, retryTask } from "../repo/tasks.js";
+import {
+  addThreadMessage,
+  attachThreadTask,
+  createThread,
+  getThread,
+  listThreads,
+  pollSubscription,
+  subscribeThread,
+  unsubscribeThread,
+  type ThreadMessageInput,
+} from "../repo/threads.js";
 import { splitTask } from "../core/fanout.js";
 import { listFailureSignatures } from "../repo/failures.js";
 import { latestEventId, listOutbox } from "../repo/outbox.js";
@@ -308,8 +319,15 @@ route("POST", "/v1/tasks/:id/answer", (c) =>
 // of the instance may be a deeper scheduler, so the task must continue down the tree.
 // Push-down failure is only logged; the task stays in the local queue and the submission itself does not fail.
 route("POST", "/v1/tasks", async (c) => {
-  const input = bodyAs<Parameters<typeof createTask>[0]>(c.body);
+  const body = bodyAs<Parameters<typeof createTask>[0] & { thread_id?: string }>(c.body);
+  const { thread_id, ...input } = body;
+  // Validate the thread before creating the task, so an unknown thread cannot leave an orphan task.
+  if (thread_id) {
+    const thread = await q1(`SELECT 1 FROM threads WHERE thread_id = $1`, [thread_id]);
+    if (!thread) throw new ApiError(404, "NOT_FOUND", `thread not found: ${thread_id}`);
+  }
   const task = await createTask(input);
+  if (thread_id) await attachThreadTask(thread_id, task.task_id, "owner");
   const relayed = await maybeRelayTask(task, input);
   return relayed ? { ...task, relay: relayed } : task;
 });
@@ -346,6 +364,42 @@ route("POST", "/v1/tasks/:id/cancel", async (c) => {
 });
 route("POST", "/v1/tasks/:id/retry", (c) =>
   retryTask(c.params.id, String(c.body.actor ?? "operator")),
+);
+
+// ---------------- Threads / subscriptions
+// A thread indexes tasks and messages; posting a message creates the continuation task in the
+// same transaction. Subscriptions read the outbox for the thread's tasks with a stored cursor.
+route("GET", "/v1/threads", async (c) => ({
+  items: await listThreads(c.query.get("limit") ? Number(c.query.get("limit")) : undefined),
+}));
+route("POST", "/v1/threads", (c) =>
+  createThread(
+    bodyAs<{ title?: string; source?: string; created_by?: string; task_id?: string; metadata?: Record<string, unknown> }>(
+      c.body,
+    ),
+  ),
+);
+route("GET", "/v1/threads/:id", (c) => getThread(c.params.id));
+route("POST", "/v1/threads/:id/messages", async (c) => {
+  const out = await addThreadMessage(c.params.id, bodyAs<ThreadMessageInput>(c.body));
+  const { followup, ...rest } = out;
+  if (!out.task || !followup) return rest;
+  const relayed = await maybeRelayTask(out.task, followup);
+  return relayed ? { ...rest, task: { ...out.task, relay: relayed } } : rest;
+});
+route("POST", "/v1/threads/:id/subscribe", (c) => {
+  const body = bodyAs<{ subscriber?: string; kind?: "poll" | "outbox" }>(c.body);
+  return subscribeThread(c.params.id, String(body.subscriber ?? ""), body.kind ?? "poll");
+});
+route("DELETE", "/v1/threads/:id/subscriptions/:subscriptionId", (c) =>
+  unsubscribeThread(c.params.id, c.params.subscriptionId),
+);
+route("GET", "/v1/threads/:id/subscriptions/:subscriptionId/events", (c) =>
+  pollSubscription(c.params.id, c.params.subscriptionId, {
+    after: c.query.get("after") !== null ? Number(c.query.get("after")) : undefined,
+    limit: c.query.get("limit") ? Number(c.query.get("limit")) : undefined,
+    ack: c.query.get("ack") === "true",
+  }),
 );
 
 // ---------------- Artifacts (§7.8)

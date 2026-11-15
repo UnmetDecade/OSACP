@@ -16,6 +16,8 @@ export async function createTask(input: CreateTaskInput) {
 export async function getTask(taskId: string) {
   const task = await q1(
     `SELECT t.*,
+            (SELECT tt.thread_id FROM thread_tasks tt WHERE tt.task_id = t.task_id
+              ORDER BY tt.created_at, tt.thread_id LIMIT 1) AS thread_id,
             CASE
               WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
               WHEN t.status = 'BLOCKED' THEN 'blocked'
@@ -86,6 +88,8 @@ export async function listTasks(filter: {
     `SELECT t.*, td.target_role,
             a.instance_id AS current_instance_id,
             a.attempt_number AS current_attempt_number,
+            (SELECT tt.thread_id FROM thread_tasks tt WHERE tt.task_id = t.task_id
+              ORDER BY tt.created_at, tt.thread_id LIMIT 1) AS thread_id,
             CASE
               WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
               WHEN t.status = 'BLOCKED' THEN 'blocked'

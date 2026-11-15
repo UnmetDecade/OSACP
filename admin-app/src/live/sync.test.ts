@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "../store";
 import { defaultConnection, type LiveConnection } from "./config";
 import {
+  createTaskThread,
   fetchFailureSignatures,
   fetchTaskAttempts,
   fetchTaskDetail,
   fetchTaskEvents,
+  fetchThread,
+  postThreadMessage,
   syncLive,
   taskAttention,
 } from "./sync";
@@ -30,7 +33,7 @@ type Route = unknown | (() => Response | Promise<Response>);
  * An unknown URL returns an empty object, mirroring an endpoint with no rows.
  */
 function routeFetch(routes: Record<string, Route>) {
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     const key = Object.keys(routes).find((fragment) => url.includes(fragment));
     if (!key) return json({});
@@ -714,6 +717,132 @@ describe("task detail fetchers", () => {
       { at: "2026-01-01T00:00:00Z", type: "state", message: '{"from":"QUEUED"}' },
       { at: "2026-01-01T00:01:00Z", type: "state", message: "QUEUED → RUNNING" },
     ]);
+  });
+});
+
+describe("thread fetchers", () => {
+  it("maps a thread with its tasks, messages and subscriptions", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routeFetch({
+        "/v1/threads/thr_1": {
+          thread_id: "thr_1",
+          title: "Fix the parser",
+          source: "admin",
+          created_by: "ops",
+          status: "ARCHIVED",
+          metadata: { origin: "admin" },
+          created_at: NOW,
+          updated_at: NOW,
+          tasks: [
+            {
+              task_id: "t1",
+              task_type: "task.build",
+              status: "NEEDS_INPUT",
+              relation: "owner",
+              title: "first",
+              attention: "answer",
+              created_at: NOW,
+              updated_at: NOW,
+            },
+            {
+              task_id: "t2",
+              task_type: "task.build",
+              status: "RUNNING",
+              relation: "followup",
+              outcome: "completed",
+            },
+            {
+              task_id: "t3",
+              task_type: "task.build",
+              status: "SUCCEEDED",
+              relation: "context",
+            },
+            {
+              task_id: "t4",
+              task_type: "task.build",
+              status: "QUEUED",
+              relation: "bogus",
+            },
+          ],
+          messages: [
+            {
+              message_id: "m1",
+              role: "agent",
+              actor: "builder",
+              body: "done",
+              task_id: "t1",
+              created_at: NOW,
+            },
+            { message_id: "m2", role: "system", body: "notice", task_id: null, created_at: NOW },
+            { message_id: "m3", role: "weird", body: "hi", created_at: NOW },
+          ],
+          subscriptions: [
+            {
+              subscription_id: "s1",
+              subscriber: "ops",
+              kind: "outbox",
+              cursor: "7",
+              created_at: NOW,
+              last_seen_at: NOW,
+            },
+            { subscription_id: "s2", subscriber: "bot", kind: "poll", cursor: 0, created_at: NOW },
+          ],
+        },
+      }),
+    );
+
+    const detail = await fetchThread(connection, "thr_1", "dep-root");
+    expect(detail).toMatchObject({
+      thread_id: "thr_1",
+      title: "Fix the parser",
+      source: "admin",
+      created_by: "ops",
+      status: "ARCHIVED",
+    });
+    expect(detail.tasks.map((t) => t.relation)).toEqual(["owner", "followup", "context", "owner"]);
+    expect(detail.tasks[0].attention).toBe("answer");
+    expect(detail.tasks[1]).toMatchObject({ status: "RUNNING", outcome: "completed" });
+    expect(detail.messages.map((m) => m.role)).toEqual(["agent", "system", "user"]);
+    expect(detail.messages[0].task_id).toBe("t1");
+    expect(detail.messages[1].task_id).toBeNull();
+    expect(detail.subscriptions[0]).toMatchObject({ kind: "outbox", cursor: "7", last_seen_at: NOW });
+    expect(detail.subscriptions[1]).toMatchObject({ kind: "poll", last_seen_at: null });
+  });
+
+  it("creates a thread for a task and posts a follow-up message", async () => {
+    const fetchMock = routeFetch({
+      "/v1/threads/thr_x/messages": { message: { message_id: "m1" }, task: { task_id: "t2" } },
+      "/v1/threads": { thread_id: "thr_x" },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const threadId = await createTaskThread(connection, "t1", " My title ", "dep-root");
+    expect(threadId).toBe("thr_x");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "t1",
+      title: "My title",
+      source: "admin",
+      created_by: "ops",
+    });
+
+    const out = await postThreadMessage(connection, "thr_x", "continue", "dep-root");
+    expect(out).toEqual({ message_id: "m1", task_id: "t2" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      body: "continue",
+      actor: "ops",
+    });
+  });
+
+  it("treats a message without a created task as note-only", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routeFetch({
+        "/v1/threads/thr_x/messages": { message: { message_id: "m1" }, task: null },
+      }),
+    );
+    const out = await postThreadMessage(connection, "thr_x", "note", "dep-root");
+    expect(out.task_id).toBeNull();
   });
 });
 
