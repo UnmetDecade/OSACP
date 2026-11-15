@@ -243,17 +243,20 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .seg.active { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
 .segmented {
   display: inline-flex; align-items: center; gap: 2px; padding: 2px;
-  background: var(--surface-2); border-radius: 7px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
 }
 .segment {
-  height: 26px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent;
+  height: 26px; padding: 0 10px; border: 1px solid transparent; border-radius: 5px; background: transparent;
   color: var(--text-2); font-size: 12px; display: inline-flex; align-items: center; gap: 6px;
   flex: none; white-space: nowrap;
 }
-.segment:hover { color: var(--text); }
-.segment.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.segment:hover { color: var(--text); background: var(--surface); }
+.segment.active {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+  box-shadow: var(--shadow); font-weight: 550;
+}
 .segment em { font-style: normal; font-size: 10.5px; color: var(--text-3); }
-.segment.active em { color: var(--text-2); }
+.segment.active em { color: var(--accent); }
 
 /* ---------- card ---------- */
 .card {
@@ -544,6 +547,22 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .page-task { flex: 1 1 auto; min-height: 0; }
 .page-task .events-card { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; }
 .page-task .events-card .events-scroll { flex: 1 1 0; min-height: 0; max-height: none; }
+/* The thread card is optional and must not push the page past the viewport, so its
+   task/message list scrolls inside a capped body. */
+.thread-body { max-height: 240px; overflow-y: auto; padding-right: 4px; }
+/* On the thread tab the card owns the remaining height and only its body scrolls. */
+.page-task .thread-card.is-thread { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+.page-task .thread-card.is-thread .thread-body { flex: 1 1 auto; min-height: 0; max-height: none; }
+.task-tabs { margin-bottom: 12px; flex: none; align-self: flex-start; padding: 3px; border-radius: 9px; }
+.task-tabs .segment { height: 30px; padding: 0 14px; font-size: 12.5px; }
+.thread-task-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.thread-task-row .link { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-task-row .status, .thread-task-row .tag { flex: none; }
+.thread-message { margin-top: 6px; }
+
+.page-logs { flex: 1 1 0; min-height: 460px; }
+.page-logs > .card { flex: 1 1 auto; min-height: 0; margin-top: 0; overflow-y: auto; }
+.page-logs > .card .table-wrap { overflow: visible; }
 
 /* ---------- character ---------- */
 .character { display: block; flex: none; overflow: visible; }
@@ -867,6 +886,9 @@ select.input { width: auto; min-width: 130px; padding-right: 26px; }
 .page-sched .sched-split { flex: 1 1 0; min-height: 160px; }
 .page-sched .sched-split > .card { min-height: 0; }
 .page-sched .sched-split .rail-list { min-height: 0; overflow-y: auto; }
+/* One full-width card below the top row: the list grows with the remaining height. */
+.page-sched .sched-split.sched-single { display: flex; }
+.page-sched .sched-split.sched-single > .card { flex: 1; min-height: 0; }
 .scheduler-metrics div { display: flex; flex-direction: column; gap: 2px; }
 .scheduler-metrics span { font-size: 11px; color: var(--text-3); }
 .scheduler-metrics b { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }

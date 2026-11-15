@@ -210,20 +210,19 @@ export function BuilderShow() {
               </div>
             </>
           )}
-        </Card>
-      </div>
-
-      <div className="grid-2 sched-split" style={{ marginTop: 12 }}>
-        <Card>
-          <CardTitle>{t("负载")}</CardTitle>
+          {/* Load lives in this card so the top row has no empty column; the bottom row is
+              reserved for the recent-task list and takes the remaining viewport height. */}
+          <div className="muted small" style={{ margin: "14px 0 6px" }}>{t("负载")}</div>
           <div className="metric-row"><span>CPU</span><div className="meter"><div className="meter-fill meter-ok" style={{ width: `${running ? 62 : 7}%` }} /></div><em>{running ? "62%" : "7%"}</em></div>
           <div className="metric-row"><span>{t("内存")}</span><div className="meter"><div className="meter-fill meter-ok" style={{ width: `${running ? 48 : 21}%` }} /></div><em>{running ? "48%" : "21%"}</em></div>
           <div className="metric-row"><span>{t("磁盘")}</span><div className="meter"><div className="meter-fill meter-ok" style={{ width: "30%" }} /></div><em>30%</em></div>
-          <div className="instance-now" style={{ marginTop: 12 }}>
+          <div className="instance-now" style={{ marginTop: 10 }}>
             {running ? <><span className="dot dot-ok" />{running.title}</> : <span className="muted">{t("空闲")}</span>}
           </div>
         </Card>
+      </div>
 
+      <div className="sched-split sched-single" style={{ marginTop: 12 }}>
         <Card>
           <CardTitle extra={<Link className="link" to="/tasks">{t("全部任务")}</Link>}>{t("最近任务")}</CardTitle>
           <div className="rail-list">

@@ -247,6 +247,8 @@ export function TaskShow() {
   const [threadBusy, setThreadBusy] = useState("");
   const [threadError, setThreadError] = useState("");
   const [followUp, setFollowUp] = useState("");
+  // The detail page is split into tabs so it never scrolls: overview, thread and event log.
+  const [tab, setTab] = useState<"overview" | "thread" | "events">("overview");
 
   useEffect(() => {
     setEvents(task?.events ?? []);
@@ -462,9 +464,23 @@ export function TaskShow() {
         </Card>
       )}
 
+      {/* One tab per concern: the page itself stays fixed height and only the tab content changes. */}
+      <div className="segmented task-tabs">
+        <button className={`segment${tab === "overview" ? " active" : ""}`} onClick={() => setTab("overview")}>
+          {t("概览")}
+        </button>
+        <button className={`segment${tab === "thread" ? " active" : ""}`} onClick={() => setTab("thread")}>
+          {t("线程")}{thread ? <em>{thread.tasks.length}</em> : null}
+        </button>
+        <button className={`segment${tab === "events" ? " active" : ""}`} onClick={() => setTab("events")}>
+          {t("事件")}<em>{events.length}</em>
+        </button>
+      </div>
+
       {/* A thread groups the task with follow-up messages; each message becomes a new task
           in the same thread, so a conversation does not require resubmitting the configuration. */}
-      <Card style={{ marginBottom: 16 }}>
+      {tab === "thread" && (
+      <Card className={`thread-card${thread ? " is-thread" : ""}`}>
         <CardTitle extra={thread ? <Tag>{thread.thread_id}</Tag> : undefined}>{t("线程")}</CardTitle>
         {threadError && <Callout tone="bad">{threadError}</Callout>}
         {!thread ? (
@@ -475,10 +491,10 @@ export function TaskShow() {
             </Button>
           </div>
         ) : (
-          <div className="stack">
+          <div className="stack thread-body">
             <div className="muted small">{t("线程内的任务与消息；发送消息会自动创建续接任务。")}</div>
             {thread.tasks.map((tt) => (
-              <div key={tt.task_id} className="row" style={{ gap: 8, alignItems: "center" }}>
+              <div key={tt.task_id} className="thread-task-row">
                 <Badge value={tt.status} />
                 <Link className="link" to={`/tasks/${tt.task_id}`}>{tt.title ?? tt.task_id}</Link>
                 <Tag>{t(TASK_RELATION_LABELS[tt.relation] ?? tt.relation)}</Tag>
@@ -490,7 +506,7 @@ export function TaskShow() {
               </div>
             ))}
             {thread.messages.map((m) => (
-              <div key={m.message_id} className="question-box" style={{ marginTop: 6 }}>
+              <div key={m.message_id} className="question-box thread-message">
                 <div className="muted small">
                   {m.actor ?? m.role} · {new Date(m.created_at).toLocaleString("zh-CN")}
                 </div>
@@ -499,11 +515,11 @@ export function TaskShow() {
             ))}
             <textarea
               className="input"
-              rows={3}
+              rows={4}
               value={followUp}
               onChange={(e) => setFollowUp(e.target.value)}
               placeholder={t("继续这个线程：消息会创建一个新的续接任务")}
-              style={{ width: "100%", resize: "vertical", marginTop: 6 }}
+              style={{ width: "100%", minHeight: 96, resize: "vertical", marginTop: 6 }}
             />
             <div className="actions">
               <Button
@@ -517,6 +533,7 @@ export function TaskShow() {
           </div>
         )}
       </Card>
+      )}
 
       {lastFailure && (
         <Callout tone="bad">
@@ -546,6 +563,8 @@ export function TaskShow() {
         </Callout>
       )}
 
+      {tab === "overview" && (
+        <>
       <div className="detail-grid">
         <Card>
           <CardTitle>{t("执行信息")}</CardTitle>
@@ -627,9 +646,14 @@ export function TaskShow() {
           )}
         </Card>
       )}
+        </>
+      )}
 
+      {tab === "events" && (
       <Card className="events-card" style={{ marginTop: 16 }}>
-        <CardTitle>{t("事件")}</CardTitle>
+        <CardTitle extra={<span className="muted small">{t("{count} 个事件", { count: events.length })}</span>}>
+          {t("事件")}
+        </CardTitle>
         {events.length ? (
           // The event trail grows for the whole task lifetime; scroll it inside the card instead of stretching the page.
           <div className="events-scroll">
@@ -651,6 +675,7 @@ export function TaskShow() {
           <Empty text={t("还没有事件。实时模式下会从调度机拉取。")} />
         )}
       </Card>
+      )}
     </div>
   );
 }

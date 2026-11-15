@@ -9,7 +9,7 @@ import { Badge, Card, Empty, PageHead } from "../components/ui";
 export function LogsPage() {
   const logs = db.logs;
   return (
-    <div className="page">
+    <div className="page page-logs">
       <PageHead
         title={t("日志")}
         meta={

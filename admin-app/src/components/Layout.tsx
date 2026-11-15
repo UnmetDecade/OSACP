@@ -32,10 +32,16 @@ export function Layout() {
   const live = useLive();
   const auth = useAuth();
   const navigate = useNavigate();
-  // Account management is only shown to principals that may read accounts.
-  const nav = auth.hasScope("account:read")
-    ? [...NAV, { to: "/accounts", label: "账号", icon: "user" }]
-    : NAV;
+  // Policy and account management are only shown to principals that may read them.
+  const nav = [
+    ...NAV,
+    ...(auth.hasScope("audit:read")
+      ? [{ to: "/policy", label: "策略", icon: "shield" }]
+      : []),
+    ...(auth.hasScope("account:read")
+      ? [{ to: "/accounts", label: "账号", icon: "user" }]
+      : []),
+  ];
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
