@@ -19,6 +19,7 @@ import { FilesPage } from "./pages/Files";
 import { LoginPage } from "./pages/Login";
 import { RegisterPage } from "./pages/Register";
 import { AccountsPage } from "./pages/Accounts";
+import { PolicyPage } from "./pages/Policy";
 
 /** Login/registration stand alone; every other route mounts behind a live session. */
 function Shell() {
@@ -55,6 +56,7 @@ function Shell() {
             <Route path="chat" element={<ChatPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="accounts" element={<AccountsPage />} />
+            <Route path="policy" element={<PolicyPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

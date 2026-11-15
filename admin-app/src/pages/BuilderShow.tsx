@@ -74,7 +74,7 @@ export function BuilderShow() {
   }
 
   return (
-    <div className="page">
+    <div className="page page-sched">
       <Link className="back" to="/builders"><Icon name="back" size={13} />{t("构建机")}</Link>
       <PageHead
         title={
@@ -133,18 +133,18 @@ export function BuilderShow() {
 
       {error && <Callout tone="bad">{error}</Callout>}
 
-      <div className="detail-grid">
+      {/* Same fixed-height layout as the scheduler page: runtime info and capability switches
+          share the left card, the Agent/SSH card fills the right, and the bottom row takes the
+          remaining height so the page itself never scrolls. */}
+      <div className="sched-top">
         <Card>
-          <CardTitle>{t("运行信息")}</CardTitle>
+          <CardTitle extra={<Tag tone="warn">{t("修改会重建容器")}</Tag>}>{t("运行信息")}</CardTitle>
           <div className="kv-list">
             <KeyVal label={t("实例 ID")}>{builder.id}</KeyVal>
             <KeyVal label={t("基础系统")}>{osLabel(builder.os)}</KeyVal>
             <KeyVal label={t("镜像")}><code className="digest">{builder.image}</code></KeyVal>
-            <KeyVal label="Agent">{agent ? `${agent.name} · v${agent.version}` : t("未绑定")}</KeyVal>
-            <KeyVal label="API">
-              {builder.api_profile_ids
-                .map((id) => db.apis.find((a) => a.id === id)?.name ?? id)
-                .join(" · ") || "-"}
+            <KeyVal label={t("资源")}>
+              {builder.cpu_limit}C / {Math.round(builder.mem_limit_mb / 1024)} GiB / {builder.disk_gb}G
             </KeyVal>
             <KeyVal label={t("工作目录")}>
               <Link className="link" to={`/builders/${builder.id}/files`}>
@@ -154,39 +154,7 @@ export function BuilderShow() {
             <KeyVal label={t("最后心跳")}>{new Date(builder.last_heartbeat).toLocaleString("zh-CN")}</KeyVal>
             <KeyVal label={t("创建时间")}>{new Date(builder.created_at).toLocaleString("zh-CN")}</KeyVal>
           </div>
-        </Card>
-
-        <Card>
-          <CardTitle
-            extra={
-              builder.ssh_enabled !== false && (
-                <Button size="sm" onClick={copySsh}>
-                  <Icon name={copied ? "check" : "copy"} size={13} />
-                  {copied ? t("已复制") : t("复制")}
-                </Button>
-              )
-            }
-          >
-            {t("SSH 访问")}
-          </CardTitle>
-          {builder.ssh_enabled === false ? (
-            <Callout tone="warn">{t("SSH 已在部署中关闭：容器内不启动 sshd，也没有端口映射。在下方「能力」里开启会重建容器。")}</Callout>
-          ) : (
-            <>
-              <pre className="code-block ssh-block">{ssh}</pre>
-              <div className="kv-list" style={{ marginTop: 10 }}>
-                <KeyVal label={t("主机")}>{builder.ssh_host ?? "-"}</KeyVal>
-                <KeyVal label={t("端口")}>{builder.ssh_port ?? "-"}</KeyVal>
-                <KeyVal label={t("用户")}>root</KeyVal>
-                <KeyVal label={t("认证")}>{builder.state === "OFFLINE" ? t("容器未运行") : t("密钥 / 密码（由平台下发）")}</KeyVal>
-              </div>
-            </>
-          )}
-        </Card>
-
-        <Card>
-          <CardTitle extra={<Tag tone="warn">{t("修改会重建容器")}</Tag>}>{t("能力")}</CardTitle>
-          <div className="stack">
+          <div className="stack" style={{ marginTop: 12 }}>
             {builder.execution !== "native" && (
               <Switch
                 checked={builder.ssh_enabled !== false}
@@ -206,21 +174,57 @@ export function BuilderShow() {
             </div>
           </div>
         </Card>
-      </div>
 
-      <div className="grid-2" style={{ marginTop: 16 }}>
         <Card>
-          <CardTitle>{t("负载")}</CardTitle>
+          <CardTitle
+            extra={
+              builder.ssh_enabled !== false && (
+                <Button size="sm" onClick={copySsh}>
+                  <Icon name={copied ? "check" : "copy"} size={13} />
+                  {copied ? t("已复制") : t("复制")}
+                </Button>
+              )
+            }
+          >
+            {t("构建 Agent 与 SSH")}
+          </CardTitle>
+          <div className="kv-list">
+            <KeyVal label="Agent">{agent ? `${agent.name} · v${agent.version}` : t("未绑定")}</KeyVal>
+            <KeyVal label={t("适配器")}><code>{agent?.adapter ?? "-"}</code></KeyVal>
+            <KeyVal label="API">
+              {builder.api_profile_ids
+                .map((id) => db.apis.find((a) => a.id === id)?.name ?? id)
+                .join(" · ") || "-"}
+            </KeyVal>
+          </div>
+          {builder.ssh_enabled === false ? (
+            <Callout tone="warn">{t("SSH 已在部署中关闭：容器内不启动 sshd，也没有端口映射。在左侧「运行信息」里开启会重建容器。")}</Callout>
+          ) : (
+            <>
+              <pre className="code-block ssh-block" style={{ marginTop: 10 }}>{ssh}</pre>
+              <div className="kv-list" style={{ marginTop: 10 }}>
+                <KeyVal label={t("主机")}>{builder.ssh_host ?? "-"}</KeyVal>
+                <KeyVal label={t("端口")}>{builder.ssh_port ?? "-"}</KeyVal>
+                <KeyVal label={t("用户")}>root</KeyVal>
+                <KeyVal label={t("认证")}>{builder.state === "OFFLINE" ? t("容器未运行") : t("密钥 / 密码（由平台下发）")}</KeyVal>
+              </div>
+            </>
+          )}
+          {/* Load lives in this card so the top row has no empty column; the bottom row is
+              reserved for the recent-task list and takes the remaining viewport height. */}
+          <div className="muted small" style={{ margin: "14px 0 6px" }}>{t("负载")}</div>
           <div className="metric-row"><span>CPU</span><div className="meter"><div className="meter-fill meter-ok" style={{ width: `${running ? 62 : 7}%` }} /></div><em>{running ? "62%" : "7%"}</em></div>
           <div className="metric-row"><span>{t("内存")}</span><div className="meter"><div className="meter-fill meter-ok" style={{ width: `${running ? 48 : 21}%` }} /></div><em>{running ? "48%" : "21%"}</em></div>
           <div className="metric-row"><span>{t("磁盘")}</span><div className="meter"><div className="meter-fill meter-ok" style={{ width: "30%" }} /></div><em>30%</em></div>
-          <div className="instance-now" style={{ marginTop: 12 }}>
+          <div className="instance-now" style={{ marginTop: 10 }}>
             {running ? <><span className="dot dot-ok" />{running.title}</> : <span className="muted">{t("空闲")}</span>}
           </div>
         </Card>
+      </div>
 
+      <div className="sched-split sched-single" style={{ marginTop: 12 }}>
         <Card>
-          <CardTitle>{t("最近任务")}</CardTitle>
+          <CardTitle extra={<Link className="link" to="/tasks">{t("全部任务")}</Link>}>{t("最近任务")}</CardTitle>
           <div className="rail-list">
             {recent.map((task) => (
               <Link className="rail-row" key={task.id} to={`/tasks/${task.id}`}>
