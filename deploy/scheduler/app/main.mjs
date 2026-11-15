@@ -9471,6 +9471,172 @@ async function latestEventId() {
   return Number(row?.id ?? 0);
 }
 
+// scheduler/src/repo/effects.ts
+function requireName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!/^[a-zA-Z0-9._-]{2,64}$/.test(name)) {
+    throw new ApiError(422, "BAD_REQUEST", "name must be 2-64 characters: letters, digits, dot, underscore, dash");
+  }
+  return name;
+}
+function requireCursor(value, field) {
+  const n2 = Number(value);
+  if (!Number.isInteger(n2) || n2 < 0) {
+    throw new ApiError(422, "BAD_REQUEST", `${field} must be a non-negative integer`);
+  }
+  return n2;
+}
+async function createEffect(input) {
+  const name = requireName(input.name);
+  const after = input.after === void 0 ? await latestEventId() : requireCursor(input.after, "after");
+  const eventType = input.event_type?.trim().slice(0, 120) || null;
+  const row = await q1(
+    `INSERT INTO outbox_effects (effect_id, name, event_type, cursor)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (name) DO NOTHING
+     RETURNING *`,
+    [newId("eff"), name, eventType, after]
+  );
+  if (!row) throw new ApiError(409, "EFFECT_EXISTS", `effect already exists: ${name}`);
+  return withLag(row);
+}
+async function listEffects() {
+  const rows = await q(
+    `SELECT e.*,
+            GREATEST(0, (SELECT max(event_id) FROM outbox_events) - e.cursor) AS lag
+       FROM outbox_effects e
+      ORDER BY e.created_at, e.name`
+  );
+  return rows.map(withLag);
+}
+function withLag(row) {
+  return {
+    ...row,
+    cursor: Number(row.cursor),
+    delivered_count: Number(row.delivered_count),
+    ...row.lag !== void 0 ? { lag: Number(row.lag) } : {}
+  };
+}
+async function requireEffect(c, effectId) {
+  const row = (await c.query(`SELECT * FROM outbox_effects WHERE effect_id = $1`, [effectId])).rows[0];
+  if (!row) throw new ApiError(404, "NOT_FOUND", `effect not found: ${effectId}`);
+  return row;
+}
+async function pullEffectEvents(effectId, limit = 100) {
+  const effect = await q1(`SELECT * FROM outbox_effects WHERE effect_id = $1`, [effectId]);
+  if (!effect) throw new ApiError(404, "NOT_FOUND", `effect not found: ${effectId}`);
+  if (effect.status === "PAUSED") {
+    throw new ApiError(409, "EFFECT_PAUSED", `effect is paused: ${effect.name}`);
+  }
+  const size = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const items = await q(
+    `SELECT * FROM outbox_events
+      WHERE event_id > $1
+        AND ($2::text IS NULL OR event_type = $2)
+      ORDER BY event_id
+      LIMIT $3`,
+    [Number(effect.cursor), effect.event_type, size]
+  );
+  return {
+    effect: withLag(effect),
+    items,
+    next_cursor: items.length ? Number(items[items.length - 1].event_id) : Number(effect.cursor)
+  };
+}
+async function ackEffect(effectId, after) {
+  const target = requireCursor(after, "after");
+  return tx(async (c) => {
+    const effect = await requireEffect(c, effectId);
+    const current = Number(effect.cursor);
+    if (target < current) {
+      throw new ApiError(409, "CURSOR_REGRESSION", `cursor is ${current}; cannot ack ${target}`);
+    }
+    if (target === current) return withLag(effect);
+    const latest = Number(
+      (await c.query(`SELECT COALESCE(max(event_id), 0) AS id FROM outbox_events`)).rows[0]?.id ?? 0
+    );
+    const cursor = Math.min(target, latest);
+    if (cursor === current) return withLag(effect);
+    const delivered = Number(
+      (await c.query(
+        `SELECT count(*) AS n FROM outbox_events
+            WHERE event_id > $1 AND event_id <= $2
+              AND ($3::text IS NULL OR event_type = $3)`,
+        [current, cursor, effect.event_type]
+      )).rows[0]?.n ?? 0
+    );
+    const row = (await c.query(
+      `UPDATE outbox_effects
+            SET cursor = $2, delivered_count = delivered_count + $3,
+                retry_count = 0, last_error = NULL,
+                last_attempt_at = now(), last_delivered_at = now(), updated_at = now()
+          WHERE effect_id = $1 RETURNING *`,
+      [effectId, cursor, delivered]
+    )).rows[0];
+    return withLag(row);
+  });
+}
+async function nackEffect(effectId, error) {
+  const message = typeof error === "string" ? error.trim().slice(0, 2e3) : "";
+  const row = await q1(
+    `UPDATE outbox_effects
+        SET retry_count = retry_count + 1, last_error = $2,
+            last_attempt_at = now(), updated_at = now()
+      WHERE effect_id = $1 RETURNING *`,
+    [effectId, message || "delivery failed"]
+  );
+  if (!row) throw new ApiError(404, "NOT_FOUND", `effect not found: ${effectId}`);
+  return withLag(row);
+}
+async function setEffectStatus(effectId, status) {
+  if (status !== "ACTIVE" && status !== "PAUSED") {
+    throw new ApiError(422, "BAD_REQUEST", "status must be ACTIVE or PAUSED");
+  }
+  const row = await q1(
+    `UPDATE outbox_effects SET status = $2, updated_at = now()
+      WHERE effect_id = $1 RETURNING *`,
+    [effectId, status]
+  );
+  if (!row) throw new ApiError(404, "NOT_FOUND", `effect not found: ${effectId}`);
+  return withLag(row);
+}
+async function deleteEffect(effectId) {
+  const row = await q1(
+    `DELETE FROM outbox_effects WHERE effect_id = $1 RETURNING *`,
+    [effectId]
+  );
+  if (!row) throw new ApiError(404, "NOT_FOUND", `effect not found: ${effectId}`);
+  return withLag(row);
+}
+async function outboxStats() {
+  const summary = (await q(
+    `SELECT COALESCE(max(event_id), 0) AS latest_id, COALESCE(min(event_id), 0) AS oldest_id,
+              count(*) AS total
+         FROM outbox_events`
+  ))[0] ?? { latest_id: 0, oldest_id: 0, total: 0 };
+  const types2 = await q(
+    `SELECT event_type, count(*) AS count, max(event_id) AS last_event_id
+       FROM outbox_events
+      GROUP BY event_type
+      ORDER BY count(*) DESC, event_type
+      LIMIT 50`
+  );
+  const effects = await listEffects();
+  const maxLag = effects.reduce((max, e) => Math.max(max, e.lag ?? 0), 0);
+  return {
+    latest_event_id: Number(summary.latest_id),
+    oldest_event_id: Number(summary.oldest_id),
+    total_events: Number(summary.total),
+    effect_count: effects.length,
+    max_lag: maxLag,
+    by_type: types2.map((t) => ({
+      event_type: t.event_type,
+      count: Number(t.count),
+      last_event_id: Number(t.last_event_id)
+    }))
+  };
+}
+
 // scheduler/src/repo/hosts.ts
 var STATES = /* @__PURE__ */ new Set(["NORMAL", "WARNING", "THROTTLED", "PROTECTING", "RECOVERING"]);
 var PRESSURE = /* @__PURE__ */ new Set(["NORMAL", "BUSY", "PRESSURE", "CRITICAL", "RECOVERING"]);
@@ -10558,6 +10724,34 @@ route(
     ack: c.query.get("ack") === "true"
   })
 );
+route("GET", "/v1/outbox/stats", () => outboxStats());
+route("GET", "/v1/effects", async () => ({ items: await listEffects() }));
+route(
+  "POST",
+  "/v1/effects",
+  (c) => createEffect(bodyAs(c.body))
+);
+route(
+  "GET",
+  "/v1/effects/:id/events",
+  (c) => pullEffectEvents(c.params.id, c.query.get("limit") ? Number(c.query.get("limit")) : void 0)
+);
+route(
+  "POST",
+  "/v1/effects/:id/ack",
+  (c) => ackEffect(c.params.id, Number(bodyAs(c.body).after))
+);
+route(
+  "POST",
+  "/v1/effects/:id/nack",
+  (c) => nackEffect(c.params.id, String(bodyAs(c.body).error ?? ""))
+);
+route(
+  "PATCH",
+  "/v1/effects/:id",
+  (c) => setEffectStatus(c.params.id, bodyAs(c.body).status ?? "ACTIVE")
+);
+route("DELETE", "/v1/effects/:id", (c) => deleteEffect(c.params.id));
 route(
   "POST",
   "/v1/artifacts",

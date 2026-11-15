@@ -157,9 +157,9 @@ wft_build = [ EXECUTE(task.build) ]
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/v1/tasks` | 提交任务 |
+| `POST` | `/v1/tasks` | 提交任务（带 `thread_id` 时归入线程） |
 | `GET` | `/v1/tasks` | 任务列表 |
-| `GET` | `/v1/tasks/:id` | 任务详情（含 attempts/events） |
+| `GET` | `/v1/tasks/:id` | 任务详情（含 attempts/events、`thread_id`） |
 | `POST` | `/v1/tasks/:id/cancel` | 取消 |
 | `GET` | `/v1/queue/stats` | 队列统计 |
 | `POST` | `/v1/instances/register` | 构建机注册 |
@@ -177,11 +177,31 @@ wft_build = [ EXECUTE(task.build) ]
 | `POST` | `/v1/builders` | 创建构建机（容器） |
 | `POST` | `/v1/builders/:id/:action` | start/stop/restart/remove |
 | `GET` | `/v1/events/stream` | SSE 事件流 |
+| `POST` | `/v1/threads` | 创建线程（可带 `task_id` 作为初始任务） |
+| `GET` | `/v1/threads` / `/v1/threads/:id` | 线程列表 / 线程详情（任务、消息、订阅） |
+| `POST` | `/v1/threads/:id/messages` | 追加消息并创建续接任务 |
+| `POST` | `/v1/threads/:id/subscribe` | 订阅线程的 outbox 事件 |
+| `GET` | `/v1/threads/:id/subscriptions/:sid/events` | 按游标轮询线程事件（`ack=true` 推进游标） |
+| `GET` | `/v1/effects` | 列出 outbox effect（游标、滞后、重试状态） |
+| `POST` | `/v1/effects` | 创建命名消费者（`name`，可选 `event_type`、`after`） |
+| `GET` | `/v1/effects/:id/events` | 查看未投递事件（不移动游标） |
+| `POST` | `/v1/effects/:id/ack` | 投递成功后推进游标 |
+| `POST` | `/v1/effects/:id/nack` | 记录投递失败，游标不动 |
+| `PATCH` | `/v1/effects/:id` | 暂停或恢复投递（`status`） |
+| `DELETE` | `/v1/effects/:id` | 删除消费者 |
+| `GET` | `/v1/outbox/stats` | outbox 总量、按类型计数、最慢消费者的滞后 |
 
 文件通道：构建机通过 artifact 通道写出产物（`POST /v1/artifacts` 声明摘要，
 `PUT /v1/artifacts/:id/content` 上传任意格式的原始字节，`POST /v1/artifacts/:id/complete` 由服务端重算
 SHA-256）。上面两条运维路由负责列出和下载这些文件，不需要实例凭证——与其他运维路由处于同一信任边界，
 由 PCS 负责认证调用方。
+
+线程：线程索引一次会话里的任务与消息。发送消息会在同一事务里创建续接任务，继承上一个构建任务的
+目标构建机、资源档、优先级与自主程度。线程只是索引，不是执行单元：运行中的任务不依赖线程行。
+
+Effect：outbox 是持久化的通知来源。effect 是带游标的命名拉取消费者。拉取返回游标之后的事件，
+`ack` 推进游标，`nack` 记录失败但不移动游标，因此投递语义是至少一次，重试可见。游标不会后退；
+ack 一个更旧的位置会得到 `CURSOR_REGRESSION` 冲突。
 
 认证：实例用 Bearer token；管理应用用可选的管理令牌。v4 不再区分 viewer/operator/approver。
 
@@ -194,6 +214,9 @@ SHA-256）。上面两条运维路由负责列出和下载这些文件，不需�
 | `tasks` | 任务主表 |
 | `task_attempts` | 每次领取 |
 | `task_events` | 状态事件 |
+| `threads` / `thread_tasks` / `thread_messages` | 任务之上的会话索引及其消息日志 |
+| `thread_subscriptions` | 每个线程的 outbox 游标 |
+| `outbox_effects` | 命名 outbox 消费者：游标、状态、投递/重试计数 |
 | `failure_signatures` | 规范化失败聚类（`kind:sha256[...]`、出现次数、首末时间） |
 | `role_instances` | 构建机/调度机实例 |
 | `leases` | 租约与 fencing |
