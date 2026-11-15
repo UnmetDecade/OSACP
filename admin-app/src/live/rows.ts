@@ -237,6 +237,7 @@ export type TaskRowData = {
   parent_task_id?: unknown;
   fanout_id?: unknown;
   fanout_depth?: unknown;
+  thread_id?: unknown;
 };
 
 export type TasksResponse = {

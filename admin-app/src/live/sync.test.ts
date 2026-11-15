@@ -33,7 +33,7 @@ type Route = unknown | (() => Response | Promise<Response>);
  * An unknown URL returns an empty object, mirroring an endpoint with no rows.
  */
 function routeFetch(routes: Record<string, Route>) {
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input);
     const key = Object.keys(routes).find((fragment) => url.includes(fragment));
     if (!key) return json({});

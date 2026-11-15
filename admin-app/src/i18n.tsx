@@ -751,7 +751,6 @@ const EN: Record<string, string> = {
   "相关任务": "Related task",
   "把这次任务放进一个线程，后续消息会生成续接任务。": "Group this task into a thread; later messages create follow-up tasks.",
   "开启会话": "Start thread",
-  "创建中…": "Creating…",
   "线程内的任务与消息；发送消息会自动创建续接任务。": "Tasks and messages in this thread; sending a message creates a follow-up task automatically.",
   "继续这个线程：消息会创建一个新的续接任务": "Continue this thread: the message creates a new follow-up task",
   "发送并创建续接任务": "Send and create follow-up task",
