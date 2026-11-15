@@ -45,6 +45,19 @@ type AuthValue = AuthState & {
 
 const AuthContext = createContext<AuthValue | null>(null);
 
+/**
+ * Password policy, mirrored by PCS: longer than 8 characters and contains an
+ * uppercase letter, a lowercase letter and a symbol.
+ */
+export function strongPassword(password: string): boolean {
+  return (
+    password.length > 8 &&
+    /[a-z]/.test(password) &&
+    /[A-Z]/.test(password) &&
+    /[^A-Za-z0-9]/.test(password)
+  );
+}
+
 async function authFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const base = getLiveConnection().pcsUrl;
   const res = await fetch(`${base}${path}`, {

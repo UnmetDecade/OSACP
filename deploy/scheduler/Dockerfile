@@ -6,7 +6,10 @@
 # The build context is the repository root:
 #   docker build -f deploy/scheduler/Dockerfile -t platform/scheduler:4.0 .
 
-FROM ubuntu:24.04
+# Optional registry prefix for networks where Docker Hub is unreachable,
+# e.g. REGISTRY=docker.m.daocloud.io/library/
+ARG REGISTRY=
+FROM ${REGISTRY}ubuntu:24.04
 
 ARG NODE_VERSION=22.20.0
 ARG CLAUDE_CODE_VERSION=2.1.322
@@ -34,7 +37,7 @@ RUN arch="$(dpkg --print-architecture)"; \
 
 # Agent CLI on the scheduler: when an Agent Profile is bound, task.chat.scheduler
 # launches Claude Code / Codex via stdio JSON-RPC through host-runtime.
-RUN npm install -g --no-fund --no-audit --registry=https://registry.npmmirror.com \
+RUN npm install -g --no-fund --no-audit --loglevel=http --registry=https://registry.npmmirror.com \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@openai/codex@${CODEX_VERSION}"
 
@@ -45,14 +48,14 @@ RUN mkdir -p /opt/platform/scheduler /opt/platform/artifacts /opt/platform/keys 
  && ssh-keygen -A
 
 COPY scheduler/package.json scheduler/package-lock.json /opt/platform/scheduler/
-RUN cd /opt/platform/scheduler && npm ci
+RUN cd /opt/platform/scheduler && npm ci --loglevel=http
 
 COPY scheduler /opt/platform/scheduler
 
 # The scheduler also runs its own host-runtime instance: it handles task.chat.scheduler / task.console.scheduler,
 # allowing the scheduler bot ("Relay") to chat and troubleshoot. It does not touch the Docker Socket and does not manage builder containers.
 COPY host-runtime/package.json host-runtime/package-lock.json /opt/platform/host-runtime/
-RUN cd /opt/platform/host-runtime && npm ci
+RUN cd /opt/platform/host-runtime && npm ci --loglevel=http
 COPY host-runtime /opt/platform/host-runtime
 COPY agents /opt/platform/agents
 COPY deploy/codex/config.toml /opt/platform/codex/config.toml

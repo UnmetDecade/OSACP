@@ -44,9 +44,24 @@ describe("storedLang", () => {
 
   it("prefers a saved explicit choice", () => {
     localStorage.setItem("app-lang", "zh");
+    localStorage.setItem("app-lang-explicit", "1");
     expect(storedLang()).toBe("zh");
     localStorage.setItem("app-lang", "en");
     expect(storedLang()).toBe("en");
+  });
+
+  it("ignores an auto-saved value that was not an explicit choice", () => {
+    localStorage.setItem("app-lang", "zh");
+    const original = globalThis.navigator;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { language: "en-US", languages: ["en-US"] },
+    });
+    try {
+      expect(storedLang()).toBe("en");
+    } finally {
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: original });
+    }
   });
 
   it("follows the browser language when nothing is saved", () => {

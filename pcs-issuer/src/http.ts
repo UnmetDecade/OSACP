@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import path from "node:path";
 import type { PcsConfig } from "./config.js";
 import { PcsError } from "./errors.js";
 import type {
@@ -129,11 +130,149 @@ function serializeCookie(
   ].join("; ");
 }
 
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".txt": "text/plain; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+};
+
+/**
+ * Serve the built admin app from PCS_WEB_DIR.
+ *
+ * API routes run first, so this only sees page and asset requests. Paths are
+ * resolved against the root and must stay inside it; unknown non-asset paths
+ * fall back to index.html so client-side routes survive a refresh.
+ */
+async function serveStatic(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  root: string,
+  pathname: string,
+): Promise<boolean> {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  if (pathname.startsWith("/api/") || pathname.startsWith("/healthz")) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  if (decoded.includes("\0")) return false;
+  const base = path.resolve(root);
+  const target = path.resolve(base, `.${decoded.startsWith("/") ? decoded : `/${decoded}`}`);
+  if (target !== base && !target.startsWith(`${base}${path.sep}`)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return true;
+  }
+  let file = target;
+  try {
+    const st = await fs.promises.stat(file);
+    if (st.isDirectory()) file = path.join(file, "index.html");
+  } catch {
+    file = "";
+  }
+  const ext = path.extname(file).toLowerCase();
+  if (!file || !fs.existsSync(file)) {
+    // Client-side routes (no extension) get the SPA shell; missing assets stay 404.
+    if (ext && ext !== ".html") return false;
+    file = path.join(base, "index.html");
+  }
+  if (!fs.existsSync(file)) return false;
+  const headers = {
+    "content-type": MIME_TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream",
+    "cache-control":
+      path.basename(file) === "index.html" ? "no-store" : "public, max-age=31536000, immutable",
+    "x-content-type-options": "nosniff",
+  };
+  if (req.method === "HEAD") {
+    res.writeHead(200, headers);
+    res.end();
+    return true;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const stream = fs.createReadStream(file);
+    stream.on("error", reject);
+    res.writeHead(200, headers);
+    stream.pipe(res);
+    stream.on("end", () => resolve());
+  });
+  return true;
+}
+
+/** Forward a scheduler API call and stream the response back (SSE included). */
+function proxyToScheduler(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  base: string,
+  rest: string,
+  search: string,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let target: URL;
+    try {
+      target = new URL(base);
+    } catch {
+      res.writeHead(502, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "SCHEDULER_URL_INVALID", message: "invalid scheduler URL" } }));
+      resolve();
+      return;
+    }
+    const isHttps = target.protocol === "https:";
+    const upstream = (isHttps ? https : http).request(
+      {
+        hostname: target.hostname,
+        port: target.port || (isHttps ? 443 : 80),
+        path: `${rest}${search}`,
+        method: req.method,
+        headers: { ...req.headers, host: target.host },
+      },
+      (up) => {
+        res.writeHead(up.statusCode ?? 502, up.headers);
+        up.pipe(res);
+        up.on("end", resolve);
+      },
+    );
+    upstream.on("error", () => {
+      if (!res.headersSent) {
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({ error: { code: "SCHEDULER_UNREACHABLE", message: "scheduler is not reachable" } }),
+        );
+      } else {
+        res.end();
+      }
+      resolve();
+    });
+    req.pipe(upstream);
+  });
+}
+
 export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Server | https.Server {
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-      const path = url.pathname;
+      // The UI always speaks to /api/pcs (the reverse-proxy prefix used by the dev
+      // server and the demo). Serving the app from PCS itself keeps the same URLs.
+      let path = url.pathname;
+      if (path === "/api/pcs" || path.startsWith("/api/pcs/")) {
+        path = path.slice("/api/pcs".length) || "/";
+      } else if (path === "/pcs" || path.startsWith("/pcs/")) {
+        path = path.slice("/pcs".length) || "/";
+      }
       const method = req.method ?? "GET";
       const cookieSecure =
         cfg.cookieSecure === "always" ||
@@ -172,6 +311,22 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         return send(res, 200, { ok: true, service: "platform-control", version: "0.2.0" });
       }
 
+      // The UI talks to one scheduler through /api/scheduler; forward to the first
+      // active root scheduler. Only the scheduler's /v1 API is exposed here.
+      if (path === "/api/scheduler" || path.startsWith("/api/scheduler/")) {
+        const rest = path.slice("/api/scheduler".length) || "/";
+        if (rest !== "/healthz" && !rest.startsWith("/v1/")) {
+          send(res, 404, { error: { code: "NOT_FOUND", message: "no such scheduler endpoint" } });
+          return;
+        }
+        const target = await service.defaultSchedulerUrl();
+        if (!target) {
+          throw new PcsError(503, "SCHEDULER_NOT_READY", "deploy a scheduler before using the UI");
+        }
+        await proxyToScheduler(req, res, target, rest, url.search);
+        return;
+      }
+
       // ---- Accounts: registration, login, logout and session introspection (no admin scope)
       const sessionCookie = () => readCookie(req.headers.cookie, "pcs_session");
       const setSessionCookies = (session: { token: string; csrf: string; expires_at: string }) => {
@@ -182,8 +337,17 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         ]);
       };
 
-      if (method === "POST" && path === "/api/v1/auth/register") {
-        const body = await readJson(req);
+      // Public login-page hints: registration policy and whether this is the demo
+      // (which prefills admin/admin). No account data is exposed here.
+      if (method === "GET" && path === "/api/v1/auth/config") {
+        return send(res, 200, {
+          demo: cfg.demoMode,
+          registration: cfg.registrationMode,
+          has_accounts: await service.hasAccounts(),
+        });
+      }
+
+      if (method === "POST" && path === "/api/v1/auth/register") {        const body = await readJson(req);
         const out = await service.registerAccount({
           username: body.username as string | undefined,
           password: body.password as string | undefined,
@@ -1115,6 +1279,9 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
         const h = await host();
         return send(res, 200, await service.renewHostToken(h));
       }
+
+      // The built admin app, when configured; API routes above win.
+      if (cfg.webDir && (await serveStatic(req, res, cfg.webDir, path))) return;
 
       send(res, 404, { error: { code: "NOT_FOUND", message: `no such endpoint: ${method} ${path}` } });
     } catch (e) {

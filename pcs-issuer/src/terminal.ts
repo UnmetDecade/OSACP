@@ -84,7 +84,10 @@ export function handleTerminalUpgrade(
   socket: Duplex,
   head: Buffer,
 ): void {
-  const path = (req.url ?? "").split("?")[0];
+  let path = (req.url ?? "").split("?")[0];
+  // PCS serving the app itself keeps the UI's /api/pcs prefix on upgrades.
+  if (path.startsWith("/api/pcs/")) path = path.slice("/api/pcs".length);
+  else if (path.startsWith("/pcs/")) path = path.slice("/pcs".length);
   if (path !== "/api/v1/platform/terminal") {
     socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
     return;

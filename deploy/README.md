@@ -7,17 +7,15 @@ In v4 both the scheduler and the builders are containers; this directory is a re
 | File | Purpose |
 |---|---|
 | `compose.demo.yaml` | One-command demo: PostgreSQL + PCS + scheduler + one builder + the admin UI |
-| `compose.yaml` | Single-machine orchestration: PostgreSQL + scheduler + four Ubuntu 20/22/24/26 builders |
-| `builder/Dockerfile` | Legacy builder image (Compose reference only; control-plane deployments now use bare ubuntu) |
-| `builder/entrypoint.sh` | Legacy image entrypoint (Compose reference only) |
+| `builder/Dockerfile` | Builder image used by the demo (control-plane deployments use bare ubuntu) |
+| `builder/entrypoint.sh` | Demo image entrypoint |
 | `builder/app-entrypoint.sh` | Bare-ubuntu builder entrypoint: pulls Node/CLI/ssh from the host cache, starts the instance runtime |
-| `scheduler/Dockerfile` | Legacy scheduler image (Compose reference only; control-plane deployments now use bare ubuntu) |
-| `scheduler/entrypoint.sh` | Legacy image entrypoint (Compose reference only) |
+| `scheduler/Dockerfile` | Scheduler image used by the demo (control-plane deployments use bare ubuntu) |
+| `scheduler/entrypoint.sh` | Demo image entrypoint |
 | `scheduler/app-entrypoint.sh` | Bare-ubuntu scheduler entrypoint: pulls Node/CLI/ssh from the host cache, migrates and starts |
-| `.env.example` | Password and token template |
 | `demo-initdb.sql` | Creates the scheduler database in the demo PostgreSQL volume |
 | `pcs/Dockerfile`, `pcs/entrypoint.sh` | Demo control-plane image: generates keys, migrates, issues the demo admin token |
-| `web/Dockerfile`, `web/nginx.conf.template`, `web/40-demo-token.sh` | Demo UI image: static admin app with same-origin PCS/scheduler proxies |
+| `web/Dockerfile`, `web/nginx.conf` | Demo UI image: static admin app with same-origin PCS/scheduler proxies |
 
 ## Demo (one command)
 
@@ -37,9 +35,10 @@ scheduler instance and builder, and three sideload clients (development, test,
 after-sales). The script submits a few Shell tasks so the studio has running,
 finished and queued work.
 
-Sign in with the `admin` account and the password printed by the script (also
-stored in `deploy/.env.demo`, mode 0600). In a real deployment the first
-registration becomes the administrator; the demo seeds one for you.
+Sign in with **admin / admin**. That password is seeded only in demo mode and
+bypasses the normal length policy; it exists because the demo UI is bound to
+loopback. In a real deployment the first registration becomes the administrator
+and passwords must be at least 10 characters.
 
 Stop with `scripts/demo.sh --down` (add `--volumes` to drop the data too).
 
@@ -48,45 +47,21 @@ onboarding is not available: adding a host is rejected immediately with a
 “Demo mode does not support adding hosts” message. The scheduler and builders run
 as static containers instead; use the full deployment to manage hosts.
 
-## Quick start
+## Deploy
+
+There is one deployment path, at the repository root:
 
 ```bash
-cd deploy
-cp .env.example .env
-mkdir -p keys tokens data/postgres data/artifacts
-
-# one SSH key per machine (public key goes into the container, keep the private key yourself)
-ssh-keygen -t ed25519 -N "" -f keys/scheduler
-ssh-keygen -t ed25519 -N "" -f keys/builder20
-ssh-keygen -t ed25519 -N "" -f keys/builder22
-ssh-keygen -t ed25519 -N "" -f keys/builder24
-ssh-keygen -t ed25519 -N "" -f keys/builder26
-
-docker compose -f compose.yaml --env-file .env up -d --build
+scripts/deploy.sh
 ```
 
-After startup:
-
-| Entry point | Address |
-|---|---|
-| Scheduler API | `http://<host>:8443` |
-| Scheduler SSH | `ssh root@<host> -p 2200` |
-| builder20 SSH | `ssh root@<host> -p 2222` |
-| builder22 SSH | `ssh root@<host> -p 2223` |
-| builder24 SSH | `ssh root@<host> -p 2224` |
-| builder26 SSH | `ssh root@<host> -p 2225` |
-
-Inside the container it is root + writable root + `CapAdd:["ALL"]`; SSH in and you can `apt install`, change system configuration and run any
-toolchain. The isolation boundary is the container itself, CPU/memory/PID limits and network policies — not privilege reduction inside the container.
-
-The scheduler container also runs a host-runtime instance with the `scheduler` role, responsible for
-`task.chat.scheduler` and `task.console.scheduler`. By default replies are deterministic (a queue snapshot);
-if you mount the runtime view exported by PCS and set `PROFILES_FILE`, conversations are routed to the bound scheduler Agent
-(for example, the DeepSeek scheduling assistant). Dispatch rules are always decided by the scheduler service; Agents never participate in queueing.
+It starts PostgreSQL, PCS and the admin app on one machine, builds the payload and host cache, and serves
+the UI from PCS. This directory holds the assets that deployment consumes: the payload entrypoints, the demo
+compose file and the demo UI image.
 
 ## Multi-host: local and SSH hosts
 
-Compose is still the fastest single-machine path; when you need builders on other machines, use "Hosts" in the admin page:
+Additional hosts are added from the admin page:
 
 1. **Add a local host** — the machine running PCS; probing is direct and needs no SSH.
 2. **Add an SSH host** — fill in address, port, user and private key; the key is encrypted at rest and the UI only shows the fingerprint.

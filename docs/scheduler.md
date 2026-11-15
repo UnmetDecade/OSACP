@@ -207,7 +207,7 @@ Authentication: instances use a Bearer token; the admin app uses an optional adm
 
 ## 9. Deployment Form
 
-For the single-machine Compose setup see [deploy/compose.yaml](../deploy/compose.yaml); control plane deployments are planned by PCS, and host-runtime launches official ubuntu containers and writes the `/opt/platform/app/` payload.
+Deployments are planned by PCS (started with `scripts/deploy.sh`); host-runtime launches official ubuntu containers and writes the `/opt/platform/app/` payload.
 
 ```yaml
 scheduler:

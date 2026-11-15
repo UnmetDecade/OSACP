@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { t } from "../i18n";
-import { useAuth } from "../auth";
+import { useAuth, strongPassword } from "../auth";
 import { errorMessage } from "../live/client";
 import { AuthLayout } from "../components/AuthLayout";
 import { Button, Callout, Field } from "../components/ui";
@@ -18,7 +18,7 @@ export function RegisterPage() {
 
   const valid =
     /^[a-zA-Z0-9._-]{3,32}$/.test(username.trim()) &&
-    password.length >= 10 &&
+    strongPassword(password) &&
     password === confirm;
 
   async function submit(e: React.FormEvent) {
@@ -81,7 +81,7 @@ export function RegisterPage() {
             onChange={(e) => setDisplayName(e.target.value)}
           />
         </Field>
-        <Field label={t("密码")} hint={t("至少 10 位")}>
+        <Field label={t("密码")} hint={t("长度大于 8，包含大小写字母和符号")}>
           <input
             className="input"
             type="password"

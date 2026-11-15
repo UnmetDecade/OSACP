@@ -3,7 +3,8 @@
 > [English](deployment.md) · 简体中文
 
 > 版本：v4.3 · 2026-11-12
-> 两条路径：单机 Compose 跑通闭环；PCS + host-runtime 管多台主机。
+> 只有一条路径：PCS + host-runtime。`scripts/deploy.sh` 在一台机器上启动控制面
+> （PostgreSQL + PCS + 界面），其他主机在界面里添加。
 
 ---
 
@@ -18,76 +19,41 @@
 | Docker | 24+，含 compose plugin | 最新稳定版 |
 | Node | 22+（PCS、host-runtime、管理应用） | 22 LTS |
 
-单机 Compose 只需要 Docker；多主机控制面需要 Node 在 PCS 与每台主机上可执行。
+PCS、host-runtime 和管理端需要 Node；PostgreSQL 以及 host-runtime 在各主机上创建的容器需要 Docker。
 
 ---
 
-## 2. 路径 A：单机 Compose
+## 2. 部署
 
-想先看效果、暂时不准备密钥和控制面，运行 `scripts/demo.sh`：它会拉起 PostgreSQL + PCS +
-调度机 + 一台构建机 + 管理端，并输出 `http://127.0.0.1:18080`。
+只有一条路径：PCS + host-runtime。用一条脚本在控制机启动控制面，之后在界面里添加主机、
+部署调度机与构建机。`scripts/deploy.sh` 可以重复执行。
 
-`deploy/compose.yaml` 是唯一事实来源，起 PostgreSQL + 调度机 + Ubuntu 20/22/24/26
-四台构建机。完整的准备步骤见 [deploy/README.zh-CN.md](../deploy/README.zh-CN.md)，最短路径：
-
-```bash
-cd deploy
-cp .env.example .env                 # 改 POSTGRES_PASSWORD；模型凭据可留空
-mkdir -p keys tokens data/postgres data/artifacts
-
-# 主机登录公钥：容器里的 sshd 只接受密钥
-ssh-keygen -t ed25519 -N "" -f keys/scheduler
-ssh-keygen -t ed25519 -N "" -f keys/builder
-for os in 20 22 24 26; do cp keys/builder.pub "keys/builder$os.pub"; done
-
-docker compose -f compose.yaml --env-file .env up -d --build
-```
-
-启动后：
-
-| 入口 | 地址 |
-|---|---|
-| 调度机 API | `http://<host>:8443` |
-| 调度机 SSH | `ssh root@<host> -p 2200` |
-| 构建机 SSH | `ssh root@<host> -p 2222–2225` |
-
-调度机会自动迁移并种子。构建机注册到 `http://scheduler:8443`；实例 JWT 放在
-`deploy/tokens/<instance_id>.jwt`，通过只读卷 `/opt/platform/tokens` 读取。
-
----
-
-## 3. 路径 B：PCS + host-runtime（多主机）
-
-控制面把「期望态」与「实际态」分开：PCS 写部署计划并下发签名命令，host-runtime 在主机上
-执行，管理应用只读写 PCS 与调度机 API。
-
-### 3.1 启动 PCS
+### 2.1 启动控制面
 
 ```bash
-cd pcs-issuer
-npm install
-npm run keygen          # ES256 JWT 密钥 + Ed25519 命令签名密钥（已存在则保留）
-npm run migrate         # 建 platform_control 库
-
-PCS_HOST=0.0.0.0 \
-PCS_RUNTIME_URL=http://pcs.example:7901 \
-PCS_CREDENTIAL_KEY_FILE=$HOME/.config/platform/pcs-credential.key \
-PCS_IMAGE_ALLOWLIST=docker.io/library/ \
-npm start
+scripts/deploy.sh
 ```
 
-`PCS_CREDENTIAL_KEY_FILE` 是 32 字节密钥（0600），用于 AES-256-GCM 加密主机 SSH 私钥；
-不配置时只能接入本地主机。生成一次：
+脚本会：
 
-```bash
-umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
-```
+1. 启动本地 PostgreSQL 容器（除非设置了 `PCS_DATABASE_URL`）；
+2. 生成 PCS 签名密钥和 SSH 凭据密钥（`~/.config/platform/pcs-credential.key`）；
+3. 安装依赖、构建管理端和部署 payload；
+4. 准备主机缓存（`~/.platform/cache`：Linux Node、openssh deb、可选 CLI）；
+5. 迁移数据库并启动 PCS——管理端由 PCS 自己托管（`PCS_WEB_DIR`）。
+
+打开 `http://127.0.0.1:7901`，注册第一个账号（成为管理员），把本机添加为本地主机，
+启动 runtime，再部署调度机和构建机。
+
+接入远程主机时，用 `PCS_HOST=0.0.0.0 PCS_RUNTIME_URL=http://<内网IP>:7901` 启动，再通过 SSH 添加。
+PCS 在前台运行，Ctrl+C 停止。可用环境变量：`PCS_PORT`、`PCS_DATABASE_URL`、
+`PCS_SCHEDULER_DATABASE_URL`、`PCS_IMAGE_ALLOWLIST`、`PCS_REGISTRATION`、`PCS_SESSION_HOURS`。
 
 管理员令牌用 `npm run pcs -- admin-token --operator <name>` 签发，自动化仍可使用。
 管理应用改用账号登录：第一个注册的账号成为管理员，之后的注册需要审批
 （默认 `PCS_REGISTRATION=approval`）。
 
-### 3.2 接入主机
+### 2.2 接入主机
 
 1. **本地主机**：PCS 所在机器，直接探测，不需要 SSH。
 2. **SSH 主机**：填地址、端口、用户和私钥；私钥加密入库，接口只返回指纹。
@@ -97,7 +63,7 @@ umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
 
 远程主机前置条件：Docker Engine、当前用户能访问 Docker、能访问 `PCS_RUNTIME_URL`、Node 22+。
 
-### 3.3 部署载荷与主机缓存
+### 2.3 部署载荷与主机缓存
 
 调度机与构建机都不构建镜像：官方 ubuntu（digest 固定）+ 部署时写入的运行时载荷。
 
@@ -110,7 +76,9 @@ node scripts/build-app-payload.mjs
 Node、Claude Code、openssh deb 放在主机缓存 `~/.platform/cache/`，只读挂到
 `/opt/platform/cache`。准备一次即可，见 [deploy/README.zh-CN.md](../deploy/README.zh-CN.md#裸-os-镜像--主机缓存调度机与构建机)。
 
-### 3.4 启动管理应用
+### 2.4 管理应用（仅前端开发）
+
+部署好的控制面已经托管构建产物，这一节只用于前端开发：
 
 ```bash
 cd admin-app
@@ -118,10 +86,9 @@ npm install
 npm run dev
 ```
 
-打开页面并注册第一个账号，它会成为管理员。会话是 HttpOnly Cookie + CSRF 令牌，
-`.env.local` 里不再写共享令牌。开发代理把 `/api/pcs` 转到 `http://127.0.0.1:7901`、
-`/api/scheduler` 转到 `http://127.0.0.1:8443`；可用 `VITE_PCS_TARGET` /
-`VITE_SCHEDULER_TARGET` 覆盖。
+开发代理把 `/api/pcs` 转到 `http://127.0.0.1:7901`、`/api/scheduler` 转到
+`http://127.0.0.1:8443`；可用 `VITE_PCS_TARGET` / `VITE_SCHEDULER_TARGET` 覆盖。
+会话是 HttpOnly Cookie + CSRF 令牌，`.env.local` 里不再写共享令牌。
 
 ---
 
@@ -133,9 +100,9 @@ npm run dev
 | 8443 | 调度机 API | 反代 + TLS；只开内网 |
 | 2200 | 调度机 SSH | 内网 / VPN |
 | 2222–2231 | 构建机 SSH | 内网 / VPN |
-| 5432 | PostgreSQL | 不映射 |
+| 55432 | PostgreSQL（`scripts/deploy.sh`） | 为让调度机容器访问而发布；只开内网 |
 
-如果公网访问管理应用，必须在前面加 Caddy/Nginx + HTTPS + 基础认证/VPN。
+管理界面由 PCS 在 7901 上托管。绝不要把管理端发布到公网；需要公网访问请用侧载令牌。
 
 ---
 

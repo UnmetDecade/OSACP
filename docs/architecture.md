@@ -160,8 +160,7 @@ builder: register with its owning scheduler → heartbeat → ONLINE
 admin app: show SSH address and port
 ```
 
-> Both paths work: `deploy/compose.yaml` pre-provisions 1–4 builders on different Ubuntu versions;
-> the admin app's "New Builder" goes through a PCS deployment plan, and the host SSH port is delivered
+> There is one deployment path: the admin app's "New Builder" goes through a PCS deployment plan, and the host SSH port is delivered
 > with the deployment intent (`instance.ports`), which Host Runtime writes into `PortBindings`.
 > Resource tiers come in light / standard / heavy, and you can also customize CPU, memory, and disk;
 > the Agent can be Claude Code, Codex, DeepSeek, or custom, with DeepSeek connected through an

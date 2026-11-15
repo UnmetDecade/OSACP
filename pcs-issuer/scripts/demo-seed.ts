@@ -10,6 +10,8 @@
  */
 import { loadConfig } from "../src/config.js";
 import { query } from "../src/db.js";
+import { ACCOUNT_SCOPES } from "../src/jwt.js";
+import { hashPassword } from "../src/passwords.js";
 import { PcsService } from "../src/service.js";
 
 const HOST_DEV = "docker-host-01";
@@ -20,7 +22,7 @@ const Gib = 1024 ** 3;
 const hosts = [
   {
     host_id: HOST_DEV,
-    hostname: "开发机",
+    hostname: "Development host",
     parent_host_id: null as string | null,
     labels: { role: "development" },
     resources: {
@@ -33,7 +35,7 @@ const hosts = [
   },
   {
     host_id: HOST_KERNEL,
-    hostname: "调度机 · 内核开发",
+    hostname: "Kernel host (scheduler)",
     parent_host_id: HOST_DEV,
     labels: { role: "kernel" },
     resources: {
@@ -52,7 +54,7 @@ const deployments = [
     instance_id: "scheduler",
     host_id: HOST_DEV,
     role_id: "scheduler",
-    display_name: "调度机 · 派令",
+    display_name: "Scheduler · Dispatch",
     image: "platform/scheduler:demo",
   },
   {
@@ -60,7 +62,7 @@ const deployments = [
     instance_id: "dev-ui",
     host_id: HOST_DEV,
     role_id: "builder",
-    display_name: "界面开发",
+    display_name: "UI development",
     image: "platform/builder:demo-ubuntu22.04",
   },
   {
@@ -68,7 +70,7 @@ const deployments = [
     instance_id: "dev-middle",
     host_id: HOST_DEV,
     role_id: "builder",
-    display_name: "中间层开发",
+    display_name: "Middle-layer development",
     image: "platform/builder:demo-ubuntu22.04",
   },
   {
@@ -76,7 +78,7 @@ const deployments = [
     instance_id: "dev-driver",
     host_id: HOST_DEV,
     role_id: "builder",
-    display_name: "驱动开发",
+    display_name: "Driver development",
     image: "platform/builder:demo-ubuntu22.04",
   },
   {
@@ -84,7 +86,7 @@ const deployments = [
     instance_id: "scheduler-kernel",
     host_id: HOST_KERNEL,
     role_id: "scheduler",
-    display_name: "调度机 · 内核",
+    display_name: "Scheduler · Kernel",
     image: "platform/scheduler:demo",
   },
   {
@@ -92,18 +94,18 @@ const deployments = [
     instance_id: "kernel-dev",
     host_id: HOST_KERNEL,
     role_id: "builder",
-    display_name: "内核开发",
+    display_name: "Kernel development",
     image: "platform/builder:demo-ubuntu22.04",
   },
 ];
 
 const sideloads = [
   {
-    name: "开发",
+    name: "Development",
     scopes: ["tasks:read", "tasks:write", "builders:read", "queue:read", "console:run"],
   },
-  { name: "测试", scopes: ["tasks:read", "tasks:write", "queue:read", "console:run"] },
-  { name: "售后", scopes: ["tasks:read", "queue:read"] },
+  { name: "Test", scopes: ["tasks:read", "tasks:write", "queue:read", "console:run"] },
+  { name: "After-sales", scopes: ["tasks:read", "queue:read"] },
 ];
 
 async function seedHosts(): Promise<void> {
@@ -168,21 +170,28 @@ async function seedSideloads(service: PcsService): Promise<void> {
   }
 }
 
-async function seedAdmin(service: PcsService): Promise<void> {
-  const password = process.env.DEMO_ADMIN_PASSWORD;
-  if (!password) return;
-  const existing = await query(`SELECT count(*)::text AS n FROM pcs_accounts`);
-  if (Number(existing.rows[0]?.n ?? "0") > 0) return;
-  await service.createAccount(
-    {
-      username: "admin",
-      password,
-      display_name: "管理员",
-      role: "admin",
-    },
-    "demo",
+/**
+ * Demo-only administrator: admin/admin.
+ *
+ * The password is intentionally weak and bypasses the normal 10-character
+ * policy; it only exists because the demo is bound to loopback and prefills the
+ * login form. Password changes made in the UI use the normal policy.
+ */
+async function seedAdmin(): Promise<void> {
+  await query(
+    `INSERT INTO pcs_accounts
+       (account_id, username, display_name, password_hash, role, scopes, status, approved_by)
+     VALUES ('acc_demo_admin','admin','Administrator',$1,'admin',$2,'ACTIVE','demo')
+     ON CONFLICT (username) DO UPDATE SET
+       display_name=EXCLUDED.display_name,
+       password_hash=EXCLUDED.password_hash,
+       role='admin',
+       scopes=EXCLUDED.scopes,
+       status='ACTIVE',
+       updated_at=now()`,
+    [hashPassword("admin"), [...ACCOUNT_SCOPES]],
   );
-  console.log("[demo-seed] admin account ready");
+  console.log("[demo-seed] demo admin ready (admin/admin)");
 }
 
 async function main(): Promise<void> {
@@ -190,7 +199,7 @@ async function main(): Promise<void> {
   await seedDeployments();
   const service = new PcsService(loadConfig());
   await seedSideloads(service);
-  await seedAdmin(service);
+  await seedAdmin();
   console.log("[demo-seed] hosts, deployments, sideloads and admin ready");
 }
 

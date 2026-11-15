@@ -31,6 +31,8 @@ export type BootstrapPlan = {
    * process directly on the host and can start host-runtime without Docker.
    */
   dockerRequired?: boolean;
+  /** Docker socket used by host-runtime; local hosts on Docker Desktop/colima need a non-default path. */
+  dockerSocket?: string;
 };
 
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64");
@@ -51,7 +53,7 @@ export function buildBootstrapScript(p: BootstrapPlan): string {
         p.networkPolicyMap[name] ?? (name === "default" ? "bridge" : name),
       ]),
     ),
-    docker_socket: "/var/run/docker.sock",
+    docker_socket: p.dockerSocket ?? "/var/run/docker.sock",
     admission_socket: "run/runtime.sock",
   };
   return [

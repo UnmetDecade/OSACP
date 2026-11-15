@@ -30,7 +30,7 @@ x-builder-env: &builder-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: ${DEMO_REGISTRY:-}postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: platform
@@ -49,6 +49,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/pcs/Dockerfile
+      args:
+        REGISTRY: ${DEMO_REGISTRY:-}
     image: platform/pcs:demo
     restart: unless-stopped
     environment:
@@ -58,9 +60,9 @@ services:
       PCS_ADMIN_ORIGINS: http://127.0.0.1:${DEMO_PORT:-18080},http://localhost:${DEMO_PORT:-18080}
       ADMIN_TOKEN_FILE: /run/demo/admin-token
       ADMIN_TOKEN_HOURS: ${ADMIN_TOKEN_HOURS:-720}
-      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
-      # Seed the example-project hosts, deployments and sideloads; keep them ONLINE
-      # without a host-runtime heartbeat for the duration of the demo.
+      # Demo-only: seeds admin/admin and lets the login page prefill it. The UI is
+      # bound to loopback; never enable this outside a local demo.
+      DEMO_MODE: "1"
       DEMO_SEED: "1"
       PCS_HOST_OFFLINE_SECONDS: "315360000"
     volumes:
@@ -77,6 +79,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/scheduler/Dockerfile
+      args:
+        REGISTRY: ${DEMO_REGISTRY:-}
     image: platform/scheduler:demo
     restart: unless-stopped
     depends_on:
@@ -108,7 +112,7 @@ services:
   # Drops the placeholder builders from the scheduler seed so the studio shows only
   # the three development workstreams; runs once per `up`.
   demo-seed:
-    image: postgres:16-alpine
+    image: ${DEMO_REGISTRY:-}postgres:16-alpine
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,6 +183,7 @@ services:
       dockerfile: deploy/builder/Dockerfile
       args:
         UBUNTU_VERSION: "22.04"
+        REGISTRY: ${DEMO_REGISTRY:-}
     image: platform/builder:demo-ubuntu22.04
     restart: unless-stopped
     hostname: dev-ui
@@ -260,6 +265,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/web/Dockerfile
+      args:
+        REGISTRY: ${DEMO_REGISTRY:-}
     image: platform/web:demo
     restart: unless-stopped
     depends_on:

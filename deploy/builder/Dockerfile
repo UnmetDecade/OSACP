@@ -7,7 +7,9 @@
 #   docker build -f deploy/builder/Dockerfile --build-arg UBUNTU_VERSION=22.04 -t platform/builder:ubuntu22.04 .
 
 ARG UBUNTU_VERSION=22.04
-FROM ubuntu:${UBUNTU_VERSION}
+# Optional registry prefix for networks where Docker Hub is unreachable.
+ARG REGISTRY=
+FROM ${REGISTRY}ubuntu:${UBUNTU_VERSION}
 
 ARG NODE_VERSION=22.20.0
 # Agent CLI versions are pinned; the image digest provides traceability; the CLI is only installed in the image and does not inherit host credentials.
@@ -32,7 +34,7 @@ RUN arch="$(dpkg --print-architecture)"; \
 
 # Claude Code / Codex: the in-container CLI Agents, launched by host-runtime via stdio JSON-RPC.
 # Uses npmmirror for speed; versions are pinned in build arguments.
-RUN npm install -g --no-fund --no-audit --registry=https://registry.npmmirror.com \
+RUN npm install -g --no-fund --no-audit --loglevel=http --registry=https://registry.npmmirror.com \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@openai/codex@${CODEX_VERSION}"
 
@@ -45,7 +47,7 @@ RUN mkdir -p /opt/platform/host-runtime /opt/platform/workspace /opt/platform/ar
  && ssh-keygen -A
 
 COPY host-runtime/package.json host-runtime/package-lock.json /opt/platform/host-runtime/
-RUN cd /opt/platform/host-runtime && npm ci
+RUN cd /opt/platform/host-runtime && npm ci --loglevel=http
 
 COPY host-runtime /opt/platform/host-runtime
 COPY agents /opt/platform/agents

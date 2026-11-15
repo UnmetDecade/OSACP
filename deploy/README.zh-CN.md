@@ -2,22 +2,20 @@
 
 > [English](README.md) · 简体中文
 
-v4 的调度机与构建机都是容器，本目录是可直接构建的参考实现。
+v4 的调度机与构建机都是容器，本目录是控制面部署所消费的资产。
 
 | 文件 | 作用 |
 |---|---|
 | `compose.demo.yaml` | 一条命令的演示：PostgreSQL + PCS + 调度机 + 一台构建机 + 管理界面 |
-| `compose.yaml` | 单机编排：PostgreSQL + 调度机 + Ubuntu 20/22/24/26 四台构建机 |
-| `builder/Dockerfile` | 旧版构建机镜像（仅 compose 参考；控制面部署已改为裸 ubuntu） |
-| `builder/entrypoint.sh` | 旧版镜像入口（仅 compose 参考） |
+| `builder/Dockerfile` | 演示用构建机镜像（控制面部署已改为裸 ubuntu） |
+| `builder/entrypoint.sh` | 演示镜像入口 |
 | `builder/app-entrypoint.sh` | 裸 ubuntu 构建机入口：从主机缓存取 Node/CLI/ssh，启动实例运行时 |
-| `scheduler/Dockerfile` | 旧版调度机镜像（仅 compose 参考；控制面部署已改为裸 ubuntu） |
-| `scheduler/entrypoint.sh` | 旧版镜像入口（仅 compose 参考） |
+| `scheduler/Dockerfile` | 演示用调度机镜像（控制面部署已改为裸 ubuntu） |
+| `scheduler/entrypoint.sh` | 演示镜像入口 |
 | `scheduler/app-entrypoint.sh` | 裸 ubuntu 调度机入口：从主机缓存取 Node/CLI/ssh，迁移并启动 |
-| `.env.example` | 密码与令牌模板 |
 | `demo-initdb.sql` | 在演示用 PostgreSQL 数据卷里创建调度机数据库 |
 | `pcs/Dockerfile`, `pcs/entrypoint.sh` | 演示用控制面镜像：生成密钥、迁移数据库、签发演示管理令牌 |
-| `web/Dockerfile`, `web/nginx.conf.template`, `web/40-demo-token.sh` | 演示用界面镜像：托管管理端静态资源，同源代理 PCS 与调度机 |
+| `web/Dockerfile`, `web/nginx.conf` | 演示用界面镜像：托管管理端静态资源，同源代理 PCS 与调度机 |
 
 ## 演示（一条命令）
 
@@ -34,8 +32,9 @@ scripts/demo.sh
 折叠进来的内核主机自带调度机实例和构建机；开发、测试、售后通过三个侧载令牌接入。
 脚本还会提交几条 Shell 任务，让工作室里有运行中、已完成和排队中的工作。
 
-用 `admin` 账号和脚本打印的密码登录（密码也保存在 `deploy/.env.demo`，权限 0600）。
-真实部署里第一个注册的账号会成为管理员；演示已经替你预置好了。
+用 **admin / admin** 登录。这个密码只在演示模式预置，并且绕过了正常的长度策略；
+它存在的前提是演示界面只绑定回环地址。真实部署里第一个注册的账号成为管理员，
+密码至少 10 位。
 
 停止：`scripts/demo.sh --down`（加 `--volumes` 同时删除数据）。
 
@@ -43,45 +42,20 @@ scripts/demo.sh
 会直接提示「演示模式不支持添加主机」。调度机和构建机以静态容器运行；需要管理主机
 请使用完整部署。
 
-## 快速开始
+## 部署
+
+只有一条部署路径，在仓库根目录：
 
 ```bash
-cd deploy
-cp .env.example .env
-mkdir -p keys tokens data/postgres data/artifacts
-
-# 每台机器一份 SSH 密钥（公钥进容器，私钥自己保存）
-ssh-keygen -t ed25519 -N "" -f keys/scheduler
-ssh-keygen -t ed25519 -N "" -f keys/builder20
-ssh-keygen -t ed25519 -N "" -f keys/builder22
-ssh-keygen -t ed25519 -N "" -f keys/builder24
-ssh-keygen -t ed25519 -N "" -f keys/builder26
-
-docker compose -f compose.yaml --env-file .env up -d --build
+scripts/deploy.sh
 ```
 
-启动后：
-
-| 入口 | 地址 |
-|---|---|
-| 调度机 API | `http://<host>:8443` |
-| 调度机 SSH | `ssh root@<host> -p 2200` |
-| builder20 SSH | `ssh root@<host> -p 2222` |
-| builder22 SSH | `ssh root@<host> -p 2223` |
-| builder24 SSH | `ssh root@<host> -p 2224` |
-| builder26 SSH | `ssh root@<host> -p 2225` |
-
-容器内是 root + 可写根 + `CapAdd:["ALL"]`，SSH 进去可以 `apt install`、改系统配置、跑任意
-工具链。隔离边界是容器本身、CPU/内存/PID 限额与网络策略，不是容器内的权限收缩。
-
-调度机容器里同时跑一个 `scheduler` 角色的 host-runtime 实例，负责
-`task.chat.scheduler` 与 `task.console.scheduler`。默认回复是确定性的（队列快照）；
-如果挂载 PCS 导出的运行时视图并设置 `PROFILES_FILE`，对话会路由给绑定的调度 Agent
-（例如 DeepSeek 调度助手）。派发规则始终由调度服务决定，Agent 不参与排队。
+它在一台机器上启动 PostgreSQL、PCS 和管理端，构建 payload 与主机缓存，并由 PCS 托管界面。
+本目录存放这次部署消费的资产：payload 入口、演示用 compose 文件和演示界面镜像。
 
 ## 多主机：本地主机与 SSH 主机
 
-Compose 仍是最快的单机路径；需要把构建机放到别的机器时，用管理页的「主机」：
+其他主机在管理页里添加：
 
 1. **添加本地主机** —— PCS 所在机器，直接探测，无需 SSH。
 2. **添加 SSH 主机** —— 填地址、端口、用户和私钥；私钥加密入库，界面只显示指纹。

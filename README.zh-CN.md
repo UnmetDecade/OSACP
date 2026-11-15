@@ -1,22 +1,5 @@
 <div align="center">
 
-# 多节点 AI Agent 计算与调度平台
-
-**在任意多台主机上运行 Claude Code、Codex、DeepSeek 或普通 Shell —— 确定性调度、递归调度机、满权限构建机。**
-
-[快速开始](#快速开始) · [架构](#架构) · [示例](#示例工程架构) · [调度算法](#调度算法) · [界面](#界面) · [文档](#文档) · **[English](README.md)**
-
-[![CI](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml/badge.svg)](https://github.com/UnmetDecade/OSACP/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/UnmetDecade/OSACP?color=6f5bd3)](https://github.com/UnmetDecade/OSACP/releases)
-
-![Node](https://img.shields.io/badge/Node-22-339933?logo=node.js&logoColor=white)
-![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-24+-2496ED?logo=docker&logoColor=white)
-
-</div>
-
 ---
 
 AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把运营核心做得**朴素且确定**：调度机做决定，构建机执行，Agent 只负责解释。
@@ -28,16 +11,16 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 ## 为什么做它
 
-| | |
-|---|---|
-| **派发是确定性的** | 排队顺序、准入、租约与 fencing 都是 PostgreSQL 里的普通规则。大模型不决定谁跑什么。 |
-| **调度机递归成树** | 每台主机一台根调度机；结点调度机挂在下面继续递归，各自一套库、各自名下的构建机。 |
-| **主机可联邦** | 主机可以并入另一台主机：它的根在父视角里变成结点，`ΣW` 沿树汇总；脱离只改一行引用，不重启容器。 |
-| **构建机就是机器** | 官方 Ubuntu 容器或整台裸机，root SSH、自己的工具链、真实 shell。不是假沙箱。 |
-| **Agent 不绑定** | Claude Code、Codex、DeepSeek 或自定义 CLI/HTTP Agent。档案只存引用，密钥运行时解析。 |
-| **对话与终端也是任务** | 对话和容器终端走同一条任务管线、同一套租约与 fencing，没有旁路执行器。 |
-| **文件双向进出** | 输入附件在命令执行前落进工作区；收集到的产物走专用产物通道（单文件 64 MiB，SHA-256 校验）并按原始字节下载，不靠 stdout 里的 base64。 |
-| **局域网设备走同一条链路** | 侧载令牌让一台设备用 `curl` 驱动某台主机的构建机 —— 与控制台同一套任务、租约与 fencing，权限是封闭集合，也拿不到调度机地址。 |
+|                                  |                                                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **派发是确定性的**         | 排队顺序、准入、租约与 fencing 都是 PostgreSQL 里的普通规则。大模型不决定谁跑什么。                                                  |
+| **调度机递归成树**         | 每台主机一台根调度机；结点调度机挂在下面继续递归，各自一套库、各自名下的构建机。                                                     |
+| **主机可联邦**             | 主机可以并入另一台主机：它的根在父视角里变成结点，`ΣW` 沿树汇总；脱离只改一行引用，不重启容器。                                   |
+| **构建机就是机器**         | 官方 Ubuntu 容器或整台裸机，root SSH、自己的工具链、真实 shell。不是假沙箱。                                                         |
+| **Agent 不绑定**           | Claude Code、Codex、DeepSeek 或自定义 CLI/HTTP Agent。档案只存引用，密钥运行时解析。                                                 |
+| **对话与终端也是任务**     | 对话和容器终端走同一条任务管线、同一套租约与 fencing，没有旁路执行器。                                                               |
+| **文件双向进出**           | 输入附件在命令执行前落进工作区；收集到的产物走专用产物通道（单文件 64 MiB，SHA-256 校验）并按原始字节下载，不靠 stdout 里的 base64。 |
+| **局域网设备走同一条链路** | 侧载令牌让一台设备用 `curl` 驱动某台主机的构建机 —— 与控制台同一套任务、租约与 fencing，权限是封闭集合，也拿不到调度机地址。     |
 
 ## 架构
 
@@ -99,67 +82,49 @@ AI 编码 Agent 启动很容易，跨机器稳定运行很难。这个平台把�
 
 工作室是主界面：根调度机在上，结点调度机与构建机在下，每条在线链路都有流动信号。每张卡片带所属主机、资源规格与能力值；新增构建机或调度机也从同一棵树进入——你点的那张「＋」卡片已经决定了父结点。
 
-## 快速开始
+## 部署
 
-要求：Node 22+、PostgreSQL 16（或 Docker）、Docker 24+。
-
-> **只想看看效果？** 运行 `scripts/demo.sh`，它会自动构建并启动 PostgreSQL + PCS + 调度机 + 示例工程故事线（界面 / 中间层 / 驱动构建机，折叠的内核主机，以及侧载客户端）+ 本界面，然后输出 `http://127.0.0.1:18080` 和预置的 `admin` 密码（可用 `DEMO_PORT` 改端口）。密钥、管理员密码和数据库密码都会自动生成；首次运行需要几分钟。
+> **想先看看效果？** 运行 `scripts/demo.sh`，它会启动一套自包含演示——PostgreSQL + PCS + 调度机 + 示例工程故事线和本界面——地址是 `http://127.0.0.1:18080`。用 **admin / admin** 登录（演示专用凭据）。演示不是部署方式，只是为了快速展示产品。
 >
-> **绝不要把管理界面发布到公网。** 演示里它只绑定 `127.0.0.1` 是有意为之；原因见[暴露面](#暴露面管理端只留在内网)。
+> ```bash
+> scripts/demo.sh --down            # 停止容器，保留数据
+> scripts/demo.sh --down --volumes  # 停止并删除演示数据
+> ```
 
-### 1. 单机 Compose
+要求：Node 22+ 和 Docker（用于 PostgreSQL 与宿主缓存）。在 Debian/Ubuntu、Fedora 以及装有 Homebrew 的 macOS 上，脚本会自动安装缺失的依赖（sudo 可能要求输入密码；macOS 上可能安装 colima 并启动虚拟机）。设置 `PLATFORM_AUTO_INSTALL=0` 可关闭。一台机器就够。
 
-```bash
-cd deploy
-cp .env.example .env                 # 改 POSTGRES_PASSWORD；模型凭据可以留空
-mkdir -p keys tokens data/postgres data/artifacts
-
-ssh-keygen -t ed25519 -N "" -f keys/scheduler
-ssh-keygen -t ed25519 -N "" -f keys/builder
-for os in 20 22 24 26; do cp keys/builder.pub "keys/builder$os.pub"; done
-
-docker compose -f compose.yaml --env-file .env up -d --build
-```
-
-调度机 API：`http://<host>:8443`。构建机 SSH：2222–2225，仅密钥，root shell。
-
-### 2. 控制面（多主机）
+| 宿主系统 | 自动安装 | 需要你手动安装 |
+|---|---|---|
+| Debian / Ubuntu | Node 22、Docker、Compose v2 | — |
+| Fedora / RHEL | Node 22、Docker（dnf） | 仓库里没有时手动装 Compose v2 |
+| macOS + Homebrew | Node 22、Docker（启动 Docker Desktop，或安装 colima） | 使用 Docker Desktop 时的许可/首次设置 |
+| macOS 无 Homebrew | — | Node 22、Docker Desktop 或 colima |
+| 其他 Linux | Node 22（官方 tarball） | Docker + Compose v2 |
+| Windows | — | 在 WSL2 里按 Ubuntu 一行操作 |
 
 ```bash
-cd pcs-issuer
-npm install
-npm run keygen
-npm run migrate
-
-umask 077 && openssl rand -out ~/.config/platform/pcs-credential.key 32
-PCS_HOST=0.0.0.0 \
-PCS_RUNTIME_URL=http://pcs.example:7901 \
-PCS_CREDENTIAL_KEY_FILE=$HOME/.config/platform/pcs-credential.key \
-PCS_IMAGE_ALLOWLIST=docker.io/library/ \
-npm start
+scripts/deploy.sh
 ```
 
-在管理应用里添加本地主机或 SSH 主机，启动 runtime，再部署调度机与构建机。完整步骤见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md) 与 [deploy/README.zh-CN.md](deploy/README.zh-CN.md)。
+脚本是幂等的：启动本地 PostgreSQL 容器、生成 PCS 签名密钥与 SSH 凭据密钥、构建管理端和部署 payload、准备宿主缓存、迁移数据库，然后启动 PCS——界面也由 PCS 自己托管。
 
-### 3. 管理应用
+打开 `http://127.0.0.1:7901`：
 
-```bash
-cd admin-app
-npm install
-npm run dev
-```
+1. **注册第一个账号**——它成为管理员；之后的注册需要审批；
+2. **把本机添加为本地主机**，启动它的 runtime；
+3. **部署调度机，再部署构建机**——全部在界面里完成。
 
-开发代理把 `/api/pcs` 转到 `127.0.0.1:7901`、`/api/scheduler` 转到 `127.0.0.1:8443`。打开页面后**注册第一个账号**——它会成为管理员；之后的注册需要管理员审批。会话是 HttpOnly Cookie + CSRF 令牌，`.env.local` 里不再需要共享令牌。
+PCS 在前台运行，Ctrl+C 停止；PostgreSQL 容器继续保留（用 `docker stop osacp-postgres` 停止）。需要接入远程主机时，用 `PCS_HOST=0.0.0.0 PCS_RUNTIME_URL=http://<内网IP>:7901` 启动，再通过 SSH 添加主机。
 
-`PCS_REGISTRATION=approval|open|closed` 控制后续注册，`PCS_SESSION_HOURS` 控制会话有效期。自动化仍可使用 CLI 令牌：
+账号由 PCS 强制执行：scrypt 密码哈希、HttpOnly 会话 + CSRF 保护、角色预设 + 自定义权限，审计记录归属到登录账号。密码必须长度大于 8，并包含大写字母、小写字母和符号。`PCS_REGISTRATION=approval|open|closed` 控制后续注册，`PCS_SESSION_HOURS` 控制会话有效期。自动化仍可使用 CLI 令牌：
 
 ```bash
 npm --prefix pcs-issuer run pcs -- admin-token --operator <name>
 ```
 
-### 4. 可选：从另一台设备驱动主机
+### 外部系统接入
 
-在工作室里点「接入侧载」创建令牌，然后带文件跑一个项目：
+侧载不是部署方式，而是接入方式：在工作室里点「接入侧载」创建令牌，让一台设备用 `curl` 或脚本驱动某台主机的构建机。令牌只属于那份主机、可吊销，也不会拿到调度机地址。
 
 ```bash
 SIDELOAD_TOKEN='sdl_…' PCS_URL='http://pcs.example:7901' \
@@ -173,18 +138,18 @@ SIDELOAD_TOKEN='sdl_…' PCS_URL='http://pcs.example:7901' \
 
 ## 核心模型
 
-| 概念 | 怎么工作 |
-|---|---|
-| **根 / 结点调度机** | 每台主机一台根，下面可挂任意多台结点。结点有自己的构建机与数据库，不直接调度别的结点的构建机。 |
-| **能力值 `W`** | 按 CPU 核数、主频、内存、磁盘、模型能力、API 能力六项归一化到 0–1000。静态模式在部署时冻结；动态模式让与负载相关的那一半保持实时（`W_static + H_res × W_res`）。 |
-| **任务难度 `D`** | 提交时给出。只有 `W ≥ D` 且能力子集匹配的构建机才能领取。 |
-| **`ΣW`** | 调度机上报整棵子树在线构建机的能力之和；根能看到整个联邦的容量。 |
-| **租约与 fencing** | 每次领取生成 attempt、租约与 fencing token；旧 token 写入返回 `409 FENCING_STALE`。 |
-| **Agent / API 档案** | PCS 保存档案与绑定；调度机只看见 `profile_id` 引用，从不接触密钥。 |
-| **Secret Store** | 档案只存 `secret://` 引用；按实例身份解析成短期凭据，审计不记录值。 |
-| **中继** | `D > W` 的任务下推到子调度机，不复制；结果沿链上浮，最大深度 8。 |
-| **文件** | `requirements.console.attachments` 在命令执行前写入 `<workspace>/attachments/`。`collect` 扫描工作区（32 个路径 / 128 个文件，单文件 64 MiB、合计 256 MiB），每个文件都带新的 SHA-256 进入产物通道。 |
-| **侧载** | `sdl_` 令牌绑定到单台主机，平台只存 SHA-256 哈希与末四位。权限是封闭集合，`console:run` 单独放行 Shell 任务；调用链是 `设备 → PCS → 根调度机`。 |
+| 概念                       | 怎么工作                                                                                                                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **根 / 结点调度机**  | 每台主机一台根，下面可挂任意多台结点。结点有自己的构建机与数据库，不直接调度别的结点的构建机。                                                                                                             |
+| **能力值 `W`**     | 按 CPU 核数、主频、内存、磁盘、模型能力、API 能力六项归一化到 0–1000。静态模式在部署时冻结；动态模式让与负载相关的那一半保持实时（`W_static + H_res × W_res`）。                                       |
+| **任务难度 `D`**   | 提交时给出。只有 `W ≥ D` 且能力子集匹配的构建机才能领取。                                                                                                                                               |
+| **`ΣW`**          | 调度机上报整棵子树在线构建机的能力之和；根能看到整个联邦的容量。                                                                                                                                           |
+| **租约与 fencing**   | 每次领取生成 attempt、租约与 fencing token；旧 token 写入返回 `409 FENCING_STALE`。                                                                                                                      |
+| **Agent / API 档案** | PCS 保存档案与绑定；调度机只看见 `profile_id` 引用，从不接触密钥。                                                                                                                                       |
+| **Secret Store**     | 档案只存 `secret://` 引用；按实例身份解析成短期凭据，审计不记录值。                                                                                                                                      |
+| **中继**             | `D > W` 的任务下推到子调度机，不复制；结果沿链上浮，最大深度 8。                                                                                                                                         |
+| **文件**             | `requirements.console.attachments` 在命令执行前写入 `<workspace>/attachments/`。`collect` 扫描工作区（32 个路径 / 128 个文件，单文件 64 MiB、合计 256 MiB），每个文件都带新的 SHA-256 进入产物通道。 |
+| **侧载**             | `sdl_` 令牌绑定到单台主机，平台只存 SHA-256 哈希与末四位。权限是封闭集合，`console:run` 单独放行 Shell 任务；调用链是 `设备 → PCS → 根调度机`。                                                    |
 
 ## 调度算法
 
@@ -251,17 +216,17 @@ ORDER BY effective_priority, enqueued_at, task_id
 
 ## 仓库结构
 
-| 路径 | 职责 |
-|---|---|
-| [`scheduler/`](scheduler/README.zh-CN.md) | 任务状态机、队列、租约、fencing、事件、联邦中继 |
-| [`pcs-issuer/`](pcs-issuer/README.zh-CN.md) | PCS 控制面：主机、部署计划、签名命令、档案、审计 |
-| [`host-runtime/`](host-runtime/README.zh-CN.md) | 主机守护进程：注册、验签、创建容器、上报资源 |
-| [`admin-app/`](admin-app/README.zh-CN.md) | React 19 + Vite 控制台：总览、主机、构建机、调度机、档案、任务、终端、对话、日志 |
-| [`secret-store/`](secret-store/README.zh-CN.md) | Secret Store 参考实现，按实例解析短期凭据 |
-| [`agents/`](agents/README.zh-CN.md) | Claude Code / Codex / 自定义 CLI 的 Agent 适配器 |
-| [`deploy/`](deploy/README.zh-CN.md) | 单机 Compose、容器入口、部署载荷构建 |
-| [`docs/`](docs/) | 架构、调度算法、构建机、调度机、管理应用、侧载、联邦、部署文档 |
-| [`scripts/`](scripts/README.zh-CN.md) | 验收、压测、备份、PKI、载荷与侧载脚本 |
+| 路径                                             | 职责                                                                             |
+| ------------------------------------------------ | -------------------------------------------------------------------------------- |
+| [`scheduler/`](scheduler/README.zh-CN.md)       | 任务状态机、队列、租约、fencing、事件、联邦中继                                  |
+| [`pcs-issuer/`](pcs-issuer/README.zh-CN.md)     | PCS 控制面：主机、部署计划、签名命令、档案、审计                                 |
+| [`host-runtime/`](host-runtime/README.zh-CN.md) | 主机守护进程：注册、验签、创建容器、上报资源                                     |
+| [`admin-app/`](admin-app/README.zh-CN.md)       | React 19 + Vite 控制台：总览、主机、构建机、调度机、档案、任务、终端、对话、日志 |
+| [`secret-store/`](secret-store/README.zh-CN.md) | Secret Store 参考实现，按实例解析短期凭据                                        |
+| [`agents/`](agents/README.zh-CN.md)             | Claude Code / Codex / 自定义 CLI 的 Agent 适配器                                 |
+| [`deploy/`](deploy/README.zh-CN.md)             | 单机 Compose、容器入口、部署载荷构建                                             |
+| [`docs/`](docs/)                                | 架构、调度算法、构建机、调度机、管理应用、侧载、联邦、部署文档                   |
+| [`scripts/`](scripts/README.zh-CN.md)           | 验收、压测、备份、PKI、载荷与侧载脚本                                            |
 
 ## 安全模型
 
