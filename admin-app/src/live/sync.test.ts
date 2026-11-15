@@ -7,6 +7,7 @@ import {
   fetchTaskDetail,
   fetchTaskEvents,
   syncLive,
+  taskAttention,
 } from "./sync";
 
 const connection: LiveConnection = {
@@ -713,5 +714,22 @@ describe("task detail fetchers", () => {
       { at: "2026-01-01T00:00:00Z", type: "state", message: '{"from":"QUEUED"}' },
       { at: "2026-01-01T00:01:00Z", type: "state", message: "QUEUED → RUNNING" },
     ]);
+  });
+});
+
+describe("taskAttention", () => {
+  it("uses the scheduler-provided attention value", () => {
+    expect(taskAttention("review", "RUNNING")).toBe("review");
+    expect(taskAttention("answer", "NEEDS_INPUT")).toBe("answer");
+    expect(taskAttention("blocked", "BLOCKED")).toBe("blocked");
+    expect(taskAttention("waiting", "WAITING_CHILDREN")).toBe("waiting");
+  });
+
+  it("derives attention for older schedulers that omit the field", () => {
+    expect(taskAttention(undefined, "NEEDS_INPUT")).toBe("answer");
+    expect(taskAttention(undefined, "BLOCKED")).toBe("blocked");
+    expect(taskAttention(undefined, "WAITING_CHILDREN")).toBe("waiting");
+    expect(taskAttention(undefined, "RUNNING")).toBe("none");
+    expect(taskAttention("bogus", "QUEUED")).toBe("none");
   });
 });

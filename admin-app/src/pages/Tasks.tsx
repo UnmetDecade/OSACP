@@ -15,7 +15,22 @@ import { Badge, Button, Callout, Card, CardTitle, Empty, KeyVal, PageHead, Tag }
 import { Icon } from "../components/Icon";
 import { answerTask, cancelBuild, retryBuild } from "../api";
 
-const FILTERS = ["ALL", "QUEUED", "RUNNING", "NEEDS_INPUT", "WAITING_CHILDREN", "SUCCEEDED", "FAILED"] as const;
+const FILTERS = ["ALL", "ATTENTION", "QUEUED", "RUNNING", "NEEDS_INPUT", "WAITING_CHILDREN", "SUCCEEDED", "FAILED"] as const;
+
+/** Derived human-attention stages; 'none' means no person is needed. */
+const ATTENTION_LABELS: Record<string, string> = {
+  answer: "等待回答",
+  review: "等待评审",
+  blocked: "阻塞",
+  waiting: "等待子任务",
+};
+
+const ATTENTION_TONES: Record<string, "warn" | "bad" | "accent"> = {
+  answer: "warn",
+  review: "accent",
+  blocked: "bad",
+  waiting: "warn",
+};
 
 const OUTCOME_LABELS: Record<string, string> = {
   completed: "已完成",
@@ -63,11 +78,22 @@ export function TaskList() {
   }, [params]);
 
   const tasks = tasksForHost(host);
+  const needsAttention = (task: Task) => task.attention !== "none";
   const shown = tasks.filter((t) => {
-    if (filter !== "ALL" && t.state !== filter) return false;
+    if (filter === "ATTENTION") {
+      if (!needsAttention(t)) return false;
+    } else if (filter !== "ALL" && t.state !== filter) {
+      return false;
+    }
     const q = query.trim().toLowerCase();
     return !q || t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q) || t.type.includes(q);
   });
+  const countOf = (f: (typeof FILTERS)[number]) =>
+    f === "ALL"
+      ? tasks.length
+      : f === "ATTENTION"
+        ? tasks.filter(needsAttention).length
+        : tasks.filter((t) => t.state === f).length;
 
   function closeSubmit() {
     setSubmitOpen(false);
@@ -121,8 +147,8 @@ export function TaskList() {
         <div className="segmented">
           {FILTERS.map((f) => (
             <button key={f} className={`segment${filter === f ? " active" : ""}`} onClick={() => setFilter(f)}>
-              {f === "ALL" ? t("全部") : f}
-              <em>{f === "ALL" ? tasks.length : tasks.filter((t) => t.state === f).length}</em>
+              {f === "ALL" ? t("全部") : f === "ATTENTION" ? t("需要处理") : f}
+              <em>{countOf(f)}</em>
             </button>
           ))}
         </div>
@@ -158,6 +184,11 @@ export function TaskList() {
                     <td><Tag>{task.type}</Tag></td>
                     <td>
                       <Badge value={task.state} />
+                      {task.attention !== "none" && (
+                        <Tag tone={ATTENTION_TONES[task.attention] ?? "warn"}>
+                          {t(ATTENTION_LABELS[task.attention] ?? task.attention)}
+                        </Tag>
+                      )}
                       {/* A retrying task is QUEUED between attempts; the counter is the only hint in the list that it already failed. */}
                       {task.state === "QUEUED" && task.attempts > 0 && (
                         <div className="small muted">{t("上次执行失败，等待自动重试")}</div>
@@ -297,6 +328,11 @@ export function TaskShow() {
             <Character role="builder" state={task.state === "RUNNING" ? "working" : task.state === "FAILED" ? "alert" : "idle"} size={44} flat />
             {task.title}
             <Badge value={task.state} />
+            {task.attention !== "none" && (
+              <Tag tone={ATTENTION_TONES[task.attention] ?? "warn"}>
+                {t(ATTENTION_LABELS[task.attention] ?? task.attention)}
+              </Tag>
+            )}
           </>
         }
         meta={
@@ -335,6 +371,11 @@ export function TaskShow() {
       />
 
       {error && <Callout tone="bad">{error}</Callout>}
+      {task.attention === "review" && (
+        <Callout tone="info">
+          {t("等待人工审批：该任务所在的 workflow 处于 WAITING_APPROVAL，请在审批流程中处理后再继续。")}
+        </Callout>
+      )}
       {task.block_reason && <Callout tone="bad">{task.block_reason}</Callout>}
       {/* The agent stopped and is waiting for a person. Answering requeues the task and hands the
           answer to the next attempt; it is not a failure and does not consume the retry budget. */}

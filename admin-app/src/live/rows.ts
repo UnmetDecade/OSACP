@@ -219,6 +219,7 @@ export type TaskRowData = {
   task_type?: unknown;
   workflow_run_id?: unknown;
   status?: unknown;
+  attention?: unknown;
   target_role?: unknown;
   priority_class?: unknown;
   difficulty?: unknown;

@@ -19,6 +19,7 @@ import type {
   SideloadScope,
   Task,
   TaskAttempt,
+  TaskAttention,
   TaskChild,
   TaskEvent,
   TaskState,
@@ -134,6 +135,21 @@ function taskState(status: string): TaskState {
     default:
       return "QUEUED";
   }
+}
+
+/**
+ * Why a task needs a person. The scheduler now derives this field; older
+ * schedulers omit it, so fall back to the task state instead of showing nothing.
+ */
+export function taskAttention(raw: unknown, state: TaskState): TaskAttention {
+  const value = String(raw ?? "");
+  if (value === "answer" || value === "review" || value === "blocked" || value === "waiting") {
+    return value;
+  }
+  if (state === "NEEDS_INPUT") return "answer";
+  if (state === "BLOCKED") return "blocked";
+  if (state === "WAITING_CHILDREN") return "waiting";
+  return "none";
 }
 
 /**
@@ -703,6 +719,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
       priority: num(t.priority_class, 2),
       difficulty: num(t.difficulty),
       state: taskState(str(t.status)),
+      attention: taskAttention(t.attention, taskState(str(t.status))),
       instance_id: t.current_instance_id ? str(t.current_instance_id) : undefined,
       attempts: num(t.attempt_count),
       block_reason: t.resource_block_reason ? str(t.resource_block_reason) : undefined,

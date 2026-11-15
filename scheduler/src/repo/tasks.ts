@@ -14,7 +14,20 @@ export async function createTask(input: CreateTaskInput) {
 }
 
 export async function getTask(taskId: string) {
-  const task = await q1("SELECT * FROM tasks WHERE task_id = $1", [taskId]);
+  const task = await q1(
+    `SELECT t.*,
+            CASE
+              WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
+              WHEN t.status = 'BLOCKED' THEN 'blocked'
+              WHEN t.status = 'WAITING_CHILDREN' THEN 'waiting'
+              WHEN wr.status = 'WAITING_APPROVAL' THEN 'review'
+              ELSE 'none'
+            END AS attention
+       FROM tasks t
+       LEFT JOIN workflow_runs wr ON wr.workflow_run_id = t.workflow_run_id
+      WHERE t.task_id = $1`,
+    [taskId],
+  );
   if (!task) throw new ApiError(404, "NOT_FOUND", `task not found: ${taskId}`);
   const attempts = await q(
     `SELECT attempt_id, attempt_number, instance_id, status, result_summary, outputs,
@@ -72,10 +85,18 @@ export async function listTasks(filter: {
   return q(
     `SELECT t.*, td.target_role,
             a.instance_id AS current_instance_id,
-            a.attempt_number AS current_attempt_number
+            a.attempt_number AS current_attempt_number,
+            CASE
+              WHEN t.status = 'NEEDS_INPUT' THEN 'answer'
+              WHEN t.status = 'BLOCKED' THEN 'blocked'
+              WHEN t.status = 'WAITING_CHILDREN' THEN 'waiting'
+              WHEN wr.status = 'WAITING_APPROVAL' THEN 'review'
+              ELSE 'none'
+            END AS attention
        FROM tasks t
        JOIN task_definitions td USING (task_type)
        LEFT JOIN task_attempts a ON a.attempt_id = t.current_attempt_id
+       LEFT JOIN workflow_runs wr ON wr.workflow_run_id = t.workflow_run_id
       ${where.length ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY t.enqueued_at DESC, t.task_id
       LIMIT $${params.length}`,

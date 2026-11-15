@@ -61,6 +61,7 @@ function task(id: string, instanceId?: string): Task {
     target_role: "builder",
     priority: 2,
     state: "RUNNING",
+    attention: "none",
     instance_id: instanceId,
     attempts: 0,
     created_at: "2026-01-01T00:00:00Z",
