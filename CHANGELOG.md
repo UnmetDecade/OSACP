@@ -4,8 +4,6 @@
 
 All notable changes to OSACP are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
 ## [4.6.0] - 2026-11-15
 
 ### Added
@@ -73,7 +71,6 @@ All notable changes to OSACP are recorded here. The format follows [Keep a Chang
 
 - First public release: PCS control plane, host runtime, recursive schedulers, federation, relay, builders, agent adapters, admin app, Compose deployment and acceptance tooling.
 
-[Unreleased]: https://github.com/UnmetDecade/OSACP/compare/v4.6.0...HEAD
 [4.6.0]: https://github.com/UnmetDecade/OSACP/compare/v4.5.1...v4.6.0
 [4.5.1]: https://github.com/UnmetDecade/OSACP/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/UnmetDecade/OSACP/compare/v4.4.0...v4.5.0

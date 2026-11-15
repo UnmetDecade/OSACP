@@ -4,8 +4,6 @@
 
 这里记录 OSACP 的重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/)。
 
-## [未发布]
-
 ## [4.6.0] - 2026-11-15
 
 ### 新增
@@ -73,7 +71,6 @@
 
 - 首个公开版本：PCS 控制面、host runtime、递归调度机、联邦、中继、构建机、Agent 适配层、管理应用、Compose 部署和验收工具。
 
-[未发布]: https://github.com/UnmetDecade/OSACP/compare/v4.6.0...HEAD
 [4.6.0]: https://github.com/UnmetDecade/OSACP/compare/v4.5.1...v4.6.0
 [4.5.1]: https://github.com/UnmetDecade/OSACP/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/UnmetDecade/OSACP/compare/v4.4.0...v4.5.0
