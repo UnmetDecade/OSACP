@@ -157,9 +157,9 @@ wft_build = [ EXECUTE(task.build) ]
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/tasks` | Submit a task |
+| `POST` | `/v1/tasks` | Submit a task (`thread_id` attaches it to a thread) |
 | `GET` | `/v1/tasks` | Task list |
-| `GET` | `/v1/tasks/:id` | Task details (including attempts/events) |
+| `GET` | `/v1/tasks/:id` | Task details (including attempts/events, `thread_id`) |
 | `POST` | `/v1/tasks/:id/cancel` | Cancel |
 | `GET` | `/v1/queue/stats` | Queue stats |
 | `POST` | `/v1/instances/register` | Builder registration |
@@ -177,11 +177,33 @@ wft_build = [ EXECUTE(task.build) ]
 | `POST` | `/v1/builders` | Create a builder (container) |
 | `POST` | `/v1/builders/:id/:action` | start/stop/restart/remove |
 | `GET` | `/v1/events/stream` | SSE event stream |
+| `POST` | `/v1/threads` | Create a thread (optionally attach `task_id` as owner) |
+| `GET` | `/v1/threads` / `/v1/threads/:id` | Thread list / thread with tasks, messages, subscriptions |
+| `POST` | `/v1/threads/:id/messages` | Append a message and create the continuation task |
+| `POST` | `/v1/threads/:id/subscribe` | Subscribe to a thread's outbox events |
+| `GET` | `/v1/threads/:id/subscriptions/:sid/events` | Poll thread events after the cursor (`ack=true` advances it) |
+| `GET` | `/v1/effects` | List outbox effects (cursor, lag, retry state) |
+| `POST` | `/v1/effects` | Create a named consumer (`name`, optional `event_type`, `after`) |
+| `GET` | `/v1/effects/:id/events` | Peek at undelivered events (does not move the cursor) |
+| `POST` | `/v1/effects/:id/ack` | Advance the cursor after delivery |
+| `POST` | `/v1/effects/:id/nack` | Record a delivery failure without moving the cursor |
+| `PATCH` | `/v1/effects/:id` | Pause or resume delivery (`status`) |
+| `DELETE` | `/v1/effects/:id` | Remove a consumer |
+| `GET` | `/v1/outbox/stats` | Outbox totals, per-type counts and the slowest effect's lag |
 
 File channel: builders write outputs through the artifact channel (`POST /v1/artifacts` declares the digest,
 `PUT /v1/artifacts/:id/content` uploads raw bytes of any format, `POST /v1/artifacts/:id/complete` makes the
 server recompute SHA-256). The two operator routes above list and download those files without an instance
 credential — the same trust boundary as the other operator routes, with PCS authenticating the caller.
+
+Threads: a thread indexes the tasks and messages of one conversation. Posting a message creates a continuation
+task in the same transaction, inheriting the previous builder task's target, profile, priority and approval mode.
+Threads are an index, not an execution unit: a running task never depends on its thread row.
+
+Effects: the outbox is the durable notification source. An effect is a named pull consumer with a cursor. Pull
+returns events after the cursor, `ack` advances it, and `nack` records the failure without moving it, so delivery
+is at-least-once and retries are visible. The cursor never moves backwards; an older ack is a `CURSOR_REGRESSION`
+conflict.
 
 Authentication: instances use a Bearer token; the admin app uses an optional admin token. v4 no longer distinguishes viewer/operator/approver.
 
@@ -194,6 +216,9 @@ Authentication: instances use a Bearer token; the admin app uses an optional adm
 | `tasks` | Task main table |
 | `task_attempts` | Each claim |
 | `task_events` | State events |
+| `threads` / `thread_tasks` / `thread_messages` | Conversation index over tasks and its message log |
+| `thread_subscriptions` | Per-thread outbox cursor |
+| `outbox_effects` | Named outbox consumers: cursor, status, delivered/retry counters |
 | `failure_signatures` | Normalized failure clusters (`kind:sha256[...]`, occurrences, first/last seen) |
 | `role_instances` | Builder/scheduler instances |
 | `leases` | Leases and fencing |

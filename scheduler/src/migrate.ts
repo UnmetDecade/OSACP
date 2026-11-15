@@ -73,4 +73,6 @@ await runFile("010_failure_recovery.sql");
 await runFile("011_artifact_names.sql");
 // 012 sources/threads/subscriptions: group tasks into conversations and track outbox cursors.
 await runFile("012_threads.sql");
+// 013 outbox effects: named consumers with a durable cursor, ack/nack retry accounting.
+await runFile("013_effects.sql");
 process.exit(0);

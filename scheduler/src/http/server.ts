@@ -47,6 +47,16 @@ import {
 import { splitTask } from "../core/fanout.js";
 import { listFailureSignatures } from "../repo/failures.js";
 import { latestEventId, listOutbox } from "../repo/outbox.js";
+import {
+  ackEffect,
+  createEffect,
+  deleteEffect,
+  listEffects,
+  nackEffect,
+  outboxStats,
+  pullEffectEvents,
+  setEffectStatus,
+} from "../repo/effects.js";
 import { upsertHost } from "../repo/hosts.js";
 import { capabilitySnapshot, listNodes, upsertNodeReport } from "../repo/federation.js";
 import { getFederationParentUrl, setFederationParentUrl } from "../federation-state.js";
@@ -401,6 +411,28 @@ route("GET", "/v1/threads/:id/subscriptions/:subscriptionId/events", (c) =>
     ack: c.query.get("ack") === "true",
   }),
 );
+
+// ---------------- Outbox effects
+// Named consumers read the outbox with a durable cursor: pull → process → ack (or nack and
+// retry). The cursor never moves backwards, so delivery is at-least-once.
+route("GET", "/v1/outbox/stats", () => outboxStats());
+route("GET", "/v1/effects", async () => ({ items: await listEffects() }));
+route("POST", "/v1/effects", (c) =>
+  createEffect(bodyAs<{ name?: string; event_type?: string; after?: number }>(c.body)),
+);
+route("GET", "/v1/effects/:id/events", (c) =>
+  pullEffectEvents(c.params.id, c.query.get("limit") ? Number(c.query.get("limit")) : undefined),
+);
+route("POST", "/v1/effects/:id/ack", (c) =>
+  ackEffect(c.params.id, Number(bodyAs<{ after?: number }>(c.body).after)),
+);
+route("POST", "/v1/effects/:id/nack", (c) =>
+  nackEffect(c.params.id, String(bodyAs<{ error?: string }>(c.body).error ?? "")),
+);
+route("PATCH", "/v1/effects/:id", (c) =>
+  setEffectStatus(c.params.id, bodyAs<{ status?: "ACTIVE" | "PAUSED" }>(c.body).status ?? "ACTIVE"),
+);
+route("DELETE", "/v1/effects/:id", (c) => deleteEffect(c.params.id));
 
 // ---------------- Artifacts (§7.8)
 route(

@@ -11,6 +11,7 @@ import { createTask, type CreateTaskInput } from "../src/repo/tasks.js";
 process.env.ARTIFACT_DIR ??= path.join(os.tmpdir(), "scheduler-test-artifacts");
 
 const TABLES = [
+  "outbox_effects",
   "thread_subscriptions",
   "thread_messages",
   "thread_tasks",
