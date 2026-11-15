@@ -57,4 +57,6 @@ await runFile("013_native_roles.sql");
 await runFile("014_sideloads.sql");
 // 015 accounts, sessions and audit attribution.
 await runFile("015_accounts.sql");
+// 016 versioned policy and per-task mandates.
+await runFile("016_policy.sql");
 process.exit(0);

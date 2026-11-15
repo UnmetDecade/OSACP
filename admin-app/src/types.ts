@@ -292,6 +292,29 @@ export type TaskEvent = {
 /** Why a task needs a person, derived by the scheduler from status and workflow state. */
 export type TaskAttention = "none" | "answer" | "review" | "blocked" | "waiting";
 
+export type Mandate = {
+  mandate_id: string;
+  source: string;
+  source_id: string | null;
+  actor: string;
+  task_id: string | null;
+  host_id: string | null;
+  policy_version: string;
+  strength: "explicit" | "inferred";
+  scopes: string[];
+  target: Record<string, unknown>;
+  issued_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+};
+
+export type PolicyDocument = {
+  sources?: Record<
+    string,
+    { required_scope?: string; console_scope?: string; strength?: "explicit" | "inferred" }
+  >;
+};
+
 export type Task = {
   id: string;
   title: string;

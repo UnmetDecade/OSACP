@@ -78,6 +78,41 @@ export type AccountRow = {
 
 export type IssuedSession = { token: string; csrf: string; expires_at: string };
 
+/** Versioned admission policy document; sources may override the scope and strength. */
+export type PolicyDocument = {
+  sources?: Record<
+    string,
+    { required_scope?: string; console_scope?: string; strength?: "explicit" | "inferred" }
+  >;
+};
+
+export type MandateRow = {
+  mandate_id: string;
+  source: string;
+  source_id: string | null;
+  actor: string;
+  task_id: string | null;
+  host_id: string | null;
+  policy_version: string;
+  strength: "explicit" | "inferred";
+  scopes: string[];
+  target: Record<string, unknown>;
+  issued_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+};
+
+const DEFAULT_POLICY: PolicyDocument = {
+  sources: {
+    admin: { required_scope: "deployment:write", strength: "explicit" },
+    sideload: {
+      required_scope: "tasks:write",
+      console_scope: "console:run",
+      strength: "explicit",
+    },
+  },
+};
+
 const ACCOUNT_PUBLIC_COLUMNS =
   "account_id, username, display_name, role, scopes, status, created_at, updated_at, approved_by, last_login_at";
 
@@ -1200,6 +1235,173 @@ export class PcsService {
       await query<{ n: string }>(`SELECT count(*)::text AS n FROM pcs_accounts`)
     ).rows[0];
     return Number(row?.n ?? "0") > 0;
+  }
+
+  // ---------------------------------------------------------------- Policy & mandates
+
+  /**
+   * The active admission policy. A missing row is bootstrapped with the default
+   * document so an upgraded deployment keeps working without manual setup.
+   */
+  async activePolicy(): Promise<{ version: string; document: PolicyDocument }> {
+    if (this.policyCache) return this.policyCache;
+    let row = (
+      await query<{ version: string; document: PolicyDocument }>(
+        `SELECT version, document FROM pcs_policies WHERE active ORDER BY created_at DESC LIMIT 1`,
+      )
+    ).rows[0];
+    if (!row) {
+      await query(
+        `INSERT INTO pcs_policies (version, document, active, created_by)
+         VALUES ('1', $1::jsonb, TRUE, 'system')
+         ON CONFLICT (version) DO NOTHING`,
+        [JSON.stringify(DEFAULT_POLICY)],
+      );
+      row = (
+        await query<{ version: string; document: PolicyDocument }>(
+          `SELECT version, document FROM pcs_policies WHERE active ORDER BY created_at DESC LIMIT 1`,
+        )
+      ).rows[0];
+    }
+    this.policyCache = {
+      version: String(row?.version ?? "1"),
+      document: (row?.document ?? DEFAULT_POLICY) as PolicyDocument,
+    };
+    return this.policyCache;
+  }
+
+  /** Read the policy for the UI. */
+  async getPolicy(): Promise<{ version: string; document: PolicyDocument }> {
+    return this.activePolicy();
+  }
+
+  private policyCache: { version: string; document: PolicyDocument } | null = null;
+
+  /**
+   * Decide whether a source may create work, and issue an immutable mandate.
+   *
+   * The scope checks already exist at the HTTP layer; the policy makes the
+   * required scope configurable per source and records the decision together
+   * with its policy version, so a task can answer "why was this allowed".
+   */
+  async admitTask(input: {
+    source: "admin" | "sideload";
+    sourceId?: string;
+    actor: string;
+    scopes: string[];
+    hostId?: string;
+    taskType?: string;
+    target?: Record<string, unknown>;
+  }): Promise<
+    | { allowed: true; mandate: MandateRow }
+    | { allowed: false; reason: string; policyVersion: string }
+  > {
+    const policy = await this.activePolicy();
+    const rules = policy.document.sources?.[input.source] ?? {};
+    const required =
+      rules.required_scope ?? (input.source === "admin" ? "deployment:write" : "tasks:write");
+    if (!input.scopes.includes(required)) {
+      return {
+        allowed: false,
+        reason: `source ${input.source} requires scope ${required}`,
+        policyVersion: policy.version,
+      };
+    }
+    if (input.source === "sideload" && String(input.taskType ?? "").startsWith("task.console.")) {
+      const extra = rules.console_scope ?? "console:run";
+      if (!input.scopes.includes(extra)) {
+        return {
+          allowed: false,
+          reason: `console tasks require scope ${extra}`,
+          policyVersion: policy.version,
+        };
+      }
+    }
+    const mandate = await this.createMandate({
+      source: input.source,
+      sourceId: input.sourceId,
+      actor: input.actor,
+      hostId: input.hostId,
+      policyVersion: policy.version,
+      strength: rules.strength === "inferred" ? "inferred" : "explicit",
+      scopes: input.scopes,
+      target: input.target ?? (input.taskType ? { task_type: input.taskType } : {}),
+    });
+    return { allowed: true, mandate };
+  }
+
+  private async createMandate(input: {
+    source: "admin" | "sideload";
+    sourceId?: string;
+    actor: string;
+    hostId?: string;
+    policyVersion: string;
+    strength: "explicit" | "inferred";
+    scopes: string[];
+    target: Record<string, unknown>;
+  }): Promise<MandateRow> {
+    const row = (
+      await query<MandateRow>(
+        `INSERT INTO pcs_mandates
+           (mandate_id, source, source_id, actor, host_id, policy_version, strength, scopes, target)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+         RETURNING *`,
+        [
+          newId("mnd"),
+          input.source,
+          input.sourceId ?? null,
+          input.actor,
+          input.hostId ?? null,
+          input.policyVersion,
+          input.strength,
+          input.scopes,
+          JSON.stringify(input.target),
+        ],
+      )
+    ).rows[0];
+    await this.audit(input.actor, "mandate.issue", row.mandate_id, null, {
+      source: input.source,
+      policy_version: input.policyVersion,
+      strength: input.strength,
+      host_id: input.hostId ?? null,
+    });
+    return row;
+  }
+
+  /** Link the mandate to the task the scheduler returned. */
+  async attachMandateTask(mandateId: string, taskId: string): Promise<void> {
+    await query(`UPDATE pcs_mandates SET task_id=$2 WHERE mandate_id=$1`, [mandateId, taskId]);
+  }
+
+  async listMandates(limit = 100, taskId?: string): Promise<MandateRow[]> {
+    const cap = Math.max(1, Math.min(limit, 500));
+    return taskId
+      ? (
+          await query<MandateRow>(
+            `SELECT * FROM pcs_mandates WHERE task_id=$2 ORDER BY issued_at DESC LIMIT $1`,
+            [cap, taskId],
+          )
+        ).rows
+      : (
+          await query<MandateRow>(
+            `SELECT * FROM pcs_mandates ORDER BY issued_at DESC LIMIT $1`,
+            [cap],
+          )
+        ).rows;
+  }
+
+  async revokeMandate(mandateId: string, operator: string): Promise<MandateRow> {
+    const row = (
+      await query<MandateRow>(
+        `UPDATE pcs_mandates SET revoked_at=now()
+          WHERE mandate_id=$1 AND revoked_at IS NULL
+          RETURNING *`,
+        [mandateId],
+      )
+    ).rows[0];
+    if (!row) throw notFound("MANDATE_NOT_FOUND", "mandate not found or already revoked");
+    await this.audit(operator, "mandate.revoke", mandateId, null, {});
+    return row;
   }
 
   async createAccount(

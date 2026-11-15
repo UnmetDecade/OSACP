@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { t } from "../i18n";
 import { getLiveConnection } from "../live/config";
 import { errorMessage, pcs } from "../live/client";
 import { useAuth, strongPassword, type Account, type AccountRole } from "../auth";
-import { Badge, Button, Callout, Card, Empty, Field, Modal, PageHead, Tag } from "../components/ui";
+import type { Mandate, PolicyDocument } from "../types";
+import { Badge, Button, Callout, Card, CardTitle, Empty, Field, Modal, PageHead, Tag } from "../components/ui";
 
 /** Every permission an account can carry; keep in sync with pcs-issuer/src/jwt.ts. */
 const SCOPE_INFO: Array<{ scope: string; label: string; desc: string }> = [
@@ -46,6 +48,8 @@ export function AccountsPage() {
   const auth = useAuth();
   const canWrite = auth.hasScope("account:write");
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [policy, setPolicy] = useState<{ version: string; document: PolicyDocument } | null>(null);
+  const [mandates, setMandates] = useState<Mandate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Account | "new" | null>(null);
@@ -57,6 +61,20 @@ export function AccountsPage() {
     try {
       const out = await pcs<{ accounts: Account[] }>(getLiveConnection(), "/api/v1/platform/accounts");
       setAccounts(out.accounts ?? []);
+      // Policy and mandates need audit:read; a custom account with only
+      // account:read still sees the account list.
+      const [policyOut, mandatesOut] = await Promise.all([
+        pcs<{ version: string; document: PolicyDocument }>(
+          getLiveConnection(),
+          "/api/v1/platform/policy",
+        ).catch(() => null),
+        pcs<{ mandates: Mandate[] }>(
+          getLiveConnection(),
+          "/api/v1/platform/mandates?limit=50",
+        ).catch(() => null),
+      ]);
+      if (policyOut) setPolicy(policyOut);
+      if (mandatesOut) setMandates(mandatesOut.mandates ?? []);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -168,6 +186,55 @@ export function AccountsPage() {
           </div>
         )}
       </Card>
+
+      {policy && (
+        <Card style={{ marginTop: 16 }}>
+          <CardTitle extra={<Tag>{t("策略 v{version}", { version: policy.version })}</Tag>}>
+            {t("策略与授权")}
+          </CardTitle>
+          <div className="muted" style={{ marginBottom: 10 }}>
+            {t("来源准入规则与最近的授权记录。")}
+          </div>
+          {mandates.length === 0 ? (
+            <Empty text={t("还没有授权记录。")} />
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t("时间")}</th>
+                    <th>{t("操作人")}</th>
+                    <th>{t("来源")}</th>
+                    <th>{t("强度")}</th>
+                    <th>{t("任务")}</th>
+                    <th>{t("策略")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mandates.map((m) => (
+                    <tr key={m.mandate_id}>
+                      <td className="muted small">
+                        {new Date(m.issued_at).toLocaleString("zh-CN")}
+                      </td>
+                      <td>{m.actor}</td>
+                      <td><Tag>{m.source}</Tag></td>
+                      <td>{m.strength === "explicit" ? t("显式") : t("推断")}</td>
+                      <td>
+                        {m.task_id ? (
+                          <Link className="link" to={`/tasks/${m.task_id}`}>{m.task_id}</Link>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td>v{m.policy_version}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
 
       {editing && (
         <AccountModal
