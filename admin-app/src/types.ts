@@ -289,6 +289,9 @@ export type TaskEvent = {
   message: string;
 };
 
+/** Why a task needs a person, derived by the scheduler from status and workflow state. */
+export type TaskAttention = "none" | "answer" | "review" | "blocked" | "waiting";
+
 export type Task = {
   id: string;
   title: string;
@@ -300,6 +303,8 @@ export type Task = {
   /** Task difficulty D; 0 = unlimited, and only builders with W ≥ D can claim it. */
   difficulty?: number;
   state: TaskState;
+  /** What a person must do next, if anything. */
+  attention: TaskAttention;
   instance_id?: string;
   attempts: number;
   block_reason?: string;
