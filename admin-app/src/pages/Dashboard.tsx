@@ -1,6 +1,6 @@
 import { t } from "../i18n";
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { db } from "../store";
 import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
@@ -25,6 +25,7 @@ import type { Sideload } from "../types";
 export function Dashboard() {
   const live = useLive();
   const { host } = useHostScope();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [addOpen, setAddOpen] = useState(false);
   // Third entry point: attach a host already onboarded to the control plane under the current host.
@@ -58,6 +59,17 @@ export function Dashboard() {
   function chooseRole(kind: "builder" | "scheduler") {
     setAddOpen(false);
     setAddRole(kind);
+  }
+  // With no host there is nothing to deploy onto: send the operator to the host
+  // page with its add-host dialog already open, instead of a deploy modal that
+  // cannot proceed.
+  function startDeploy(kind: "builder" | "scheduler") {
+    if (db.hosts.length === 0) {
+      navigate("/hosts?add=1");
+      return;
+    }
+    if (kind === "scheduler") setAddRole("scheduler");
+    else setBuilderChoiceOpen(true);
   }
   // "Onboard host" lists only hosts already onboarded to the control plane; exclude the current host itself and its ancestors/descendants to avoid cycles in the federation tree.
   const attachCandidates = (() => {
@@ -151,7 +163,7 @@ export function Dashboard() {
       title: t("部署调度机"),
       desc: t("平台指挥中心，负责接收任务、排队和派发。"),
       done: schedulerReady,
-      run: () => setAddRole("scheduler"),
+      run: () => startDeploy("scheduler"),
       action: t("立即部署 →"),
       blocked: "",
     },
@@ -160,7 +172,7 @@ export function Dashboard() {
       desc: t("用 Docker 容器运行构建 Agent，执行研发任务。"),
       done: buildersReady,
       // The steps lead straight into creating a builder; the container/bare-metal choice appears only at the studio's empty-state entry.
-      run: () => setAddRole("builder"),
+      run: () => startDeploy("builder"),
       action: t("立即部署 →"),
       blocked: "",
     },
@@ -223,8 +235,8 @@ export function Dashboard() {
             }}
             onAddSideload={() => setSideloadOpen(true)}
             onOpenSideload={(sideload) => setSideloadDetail(sideload)}
-            onDeployScheduler={() => setAddRole("scheduler")}
-            onDeployBuilder={() => setBuilderChoiceOpen(true)}
+            onDeployScheduler={() => startDeploy("scheduler")}
+            onDeployBuilder={() => startDeploy("builder")}
           />
         </Card>
 

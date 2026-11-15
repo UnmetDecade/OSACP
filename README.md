@@ -95,6 +95,8 @@ The studio is the main screen: root scheduler on top, node schedulers and builde
 
 Requirements: Node 22+, PostgreSQL 16 (or Docker), Docker 24+.
 
+> **Just want to look?** `scripts/demo.sh` builds and starts PostgreSQL + PCS + scheduler + the example-project storyline (UI / middle-layer / driver builders, a folded kernel host, and sideload clients) + this UI, then prints `http://127.0.0.1:18080` (override with `DEMO_PORT`). Keys, the admin token and the database password are generated automatically; the first run takes a few minutes.
+
 ### 1. Single-machine Compose
 
 ```bash

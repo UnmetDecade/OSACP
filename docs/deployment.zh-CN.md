@@ -24,6 +24,9 @@
 
 ## 2. 路径 A：单机 Compose
 
+想先看效果、暂时不准备密钥和控制面，运行 `scripts/demo.sh`：它会拉起 PostgreSQL + PCS +
+调度机 + 一台构建机 + 管理端，并输出 `http://127.0.0.1:18080`。
+
 `deploy/compose.yaml` 是唯一事实来源，起 PostgreSQL + 调度机 + Ubuntu 20/22/24/26
 四台构建机。完整的准备步骤见 [deploy/README.zh-CN.md](../deploy/README.zh-CN.md)，最短路径：
 

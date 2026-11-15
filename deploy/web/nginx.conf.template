@@ -1,0 +1,65 @@
+# Demo same-origin proxy. Mirrors the Vite dev proxy so the browser only ever
+# talks to this origin; PCS and the scheduler are never exposed to the page.
+#
+# Rendered at container start by /docker-entrypoint.d/40-demo-token.sh:
+# ${PCS_ADMIN_TOKEN} is substituted, everything else is left for nginx.
+
+map $http_authorization $demo_authorization {
+  default $http_authorization;
+  ""      "Bearer ${PCS_ADMIN_TOKEN}";
+}
+
+map $http_upgrade $demo_connection {
+  default upgrade;
+  ""      close;
+}
+
+server {
+  listen 8080;
+  server_name _;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  # PCS: hosts, profiles, audit, terminal WebSocket.
+  location /api/pcs/ {
+    proxy_pass http://pcs:7901/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $demo_connection;
+    proxy_set_header Authorization $demo_authorization;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  }
+
+  # Legacy prefix kept by older saved connections.
+  location /pcs/ {
+    proxy_pass http://pcs:7901/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $demo_connection;
+    proxy_set_header Authorization $demo_authorization;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  }
+
+  # Scheduler: tasks, leases, events stream.
+  location /api/scheduler/ {
+    proxy_pass http://scheduler:8443/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $demo_connection;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  }
+
+  # SPA routes fall back to index.html.
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}

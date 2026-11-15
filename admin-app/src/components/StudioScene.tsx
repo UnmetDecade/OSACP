@@ -280,8 +280,10 @@ export function StudioScene({
         <div className="scene-tree" ref={treeRef}>
           <SceneEdges edges={edges} />
           <div className="scene-empty-roles">
-            <EmptyRoleCard role="scheduler" />
-            <EmptyRoleCard role="builder" />
+            {/* Without a host there is nothing to deploy onto, but the cards must
+                still respond: the page routes them to the add-host dialog. */}
+            <EmptyRoleCard role="scheduler" onDeploy={onDeployScheduler} />
+            <EmptyRoleCard role="builder" onDeploy={onDeployBuilder} />
           </div>
         </div>
       </div>

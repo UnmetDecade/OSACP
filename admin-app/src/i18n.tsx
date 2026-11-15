@@ -640,6 +640,7 @@ const EN: Record<string, string> = {
   "已保存，但探测未通过：{reason}。": "Saved, but probing failed: {reason}.",
   "已保存：{host}，Docker {docker}。": "Saved: {host}, Docker {docker}.",
   "已接入，但 runtime 启动失败：{reason}。可以在主机行点「启动 runtime」重试。": "Connected, but the runtime failed to start: {reason}. Click “Start runtime” on the host row to retry.",
+  "演示模式不支持添加主机": "Demo mode does not support adding hosts",
   "已接入：{host}，Docker {docker}。": "Connected: {host}, Docker {docker}.",
   "我是{name}，{instance} 的构建机器人。 {os}，root Shell 完整权限。要问进度、看磁盘，还是让我执行点什么？": "I'm {name}, the builder bot for {instance}. {os}, with full root shell access. Want a progress check, a disk review, or shall I run something?",
   "我是{name}，调度机器人。派发由确定性规则完成，我身上的 Agent 负责解释队列、租约和「为什么这条在等」。": "I'm {name}, the scheduler bot. Dispatch is done by deterministic rules; the agent on me explains the queue, leases, and “why this one is waiting”.",

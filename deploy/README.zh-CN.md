@@ -6,6 +6,7 @@ v4 的调度机与构建机都是容器，本目录是可直接构建的参考�
 
 | 文件 | 作用 |
 |---|---|
+| `compose.demo.yaml` | 一条命令的演示：PostgreSQL + PCS + 调度机 + 一台构建机 + 管理界面 |
 | `compose.yaml` | 单机编排：PostgreSQL + 调度机 + Ubuntu 20/22/24/26 四台构建机 |
 | `builder/Dockerfile` | 旧版构建机镜像（仅 compose 参考；控制面部署已改为裸 ubuntu） |
 | `builder/entrypoint.sh` | 旧版镜像入口（仅 compose 参考） |
@@ -14,6 +15,30 @@ v4 的调度机与构建机都是容器，本目录是可直接构建的参考�
 | `scheduler/entrypoint.sh` | 旧版镜像入口（仅 compose 参考） |
 | `scheduler/app-entrypoint.sh` | 裸 ubuntu 调度机入口：从主机缓存取 Node/CLI/ssh，迁移并启动 |
 | `.env.example` | 密码与令牌模板 |
+| `demo-initdb.sql` | 在演示用 PostgreSQL 数据卷里创建调度机数据库 |
+| `pcs/Dockerfile`, `pcs/entrypoint.sh` | 演示用控制面镜像：生成密钥、迁移数据库、签发演示管理令牌 |
+| `web/Dockerfile`, `web/nginx.conf.template`, `web/40-demo-token.sh` | 演示用界面镜像：托管管理端静态资源，同源代理 PCS 与调度机 |
+
+## 演示（一条命令）
+
+```bash
+scripts/demo.sh
+```
+
+自动构建 PostgreSQL + PCS + 调度机 + 管理端，启动后输出
+`http://127.0.0.1:18080`（可用 `DEMO_PORT` 改端口；调度机默认发布在
+`127.0.0.1:18443`）。密钥、管理令牌和数据库密码都会自动生成；只对回环地址
+开放端口。首次运行需要构建四个镜像，耗时几分钟。
+
+演示按示例工程的故事线准备：一台开发机上有界面、中间层、驱动三个构建机；一台
+折叠进来的内核主机自带调度机实例和构建机；开发、测试、售后通过三个侧载令牌接入。
+脚本还会提交几条 Shell 任务，让工作室里有运行中、已完成和排队中的工作。
+
+停止：`scripts/demo.sh --down`（加 `--volumes` 同时删除数据）。
+
+演示不打包 host-runtime，也不挂载 Docker socket，因此不支持主机接入：添加主机时
+会直接提示「演示模式不支持添加主机」。调度机和构建机以静态容器运行；需要管理主机
+请使用完整部署。
 
 ## 快速开始
 

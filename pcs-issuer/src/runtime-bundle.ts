@@ -23,6 +23,19 @@ export function runtimeSourceDir(): string {
   return process.env.PCS_RUNTIME_SOURCE_DIR ?? path.resolve(here, "..", "..", "host-runtime");
 }
 
+/**
+ * A deployment without the host-runtime source cannot start a host at all.
+ * Host creation checks this first, so the demo fails at the dialog with a clear
+ * message instead of registering a host that can never come online.
+ */
+export function runtimeSourceAvailable(): boolean {
+  const source = runtimeSourceDir();
+  return (
+    fs.existsSync(path.join(source, "src", "runtime.ts")) &&
+    fs.existsSync(path.join(source, "src", "watchdog.ts"))
+  );
+}
+
 export async function ensureRuntimeBundle(): Promise<RuntimeBundle> {
   const source = runtimeSourceDir();
   const runtimeEntry = path.join(source, "src", "runtime.ts");
