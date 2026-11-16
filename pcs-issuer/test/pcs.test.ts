@@ -45,6 +45,9 @@ before(async () => {
     // Builder deployments need a resolvable local scheduler address; the test pins a loopback address.
     schedulerUrl: "http://127.0.0.1:8443",
     schedulerDatabaseUrl: "postgres://postgres:sched_dev_pw@127.0.0.1:5432/scheduler_test",
+    // A deployment that binds an API Profile is refused without a Secret Store; the suite only
+    // needs an address, since no container ever calls it.
+    secretStoreUrl: "http://127.0.0.1:7902",
   });
   // This suite truncates every control-plane table, so it must never touch a live database.
   // `npm test` points PCS_DATABASE_URL at platform_control_test; anyone invoking the tests with a
@@ -363,6 +366,14 @@ test("deployment input validation: image, env, network policy", async () => {
     () => svc.createDeployment({ ...base, image: PINNED, env: { API_TOKEN: "x" } }),
     (e: any) => e.code === "SECRET_IN_ENVELOPE",
   );
+  // SECRET_STORE_URL is an address the control plane injects, not a credential: the plan for any instance
+  // that binds API Profiles carries it, so rejecting it would block every such deployment when applied.
+  const withStore = await svc.createDeployment({
+    ...base,
+    image: PINNED,
+    env: { SECRET_STORE_URL: "http://127.0.0.1:7902" },
+  });
+  assert.ok(withStore.command_id);
   await assert.rejects(
     () => svc.createDeployment({ ...base, image: PINNED, network_policy: "host" }),
     (e: any) => e.code === "NETWORK_POLICY_NOT_ALLOWED",
@@ -844,18 +855,37 @@ test("applying a plan automatically writes Agent / API bindings", async () => {
     },
     "alice",
   );
-  const plan = await svc.previewDeploymentPlan(
-    {
-      host_id: host.host_id,
-      role_id: "builder",
-      count: 1,
-      agent_profile_id: "agp_plan_builder",
-      api_profile_ids: ["api_plan"],
-      resource_profile: { cpu_limit: 0.5, memory_limit_bytes: 128 * 1024 ** 2, pids_limit: 32 },
-    },
-    "alice",
+  const planInput = {
+    host_id: host.host_id,
+    role_id: "builder",
+    count: 1,
+    agent_profile_id: "agp_plan_builder",
+    api_profile_ids: ["api_plan"],
+    resource_profile: { cpu_limit: 0.5, memory_limit_bytes: 128 * 1024 ** 2, pids_limit: 32 },
+  };
+  const plan = await svc.previewDeploymentPlan(planInput, "alice");
+  const item = plan.items[0] as any;
+  // The container receives handles, never credentials: API ids, the store address and the egress
+  // allowlist synthesized from each base_url; the instance token travels as a delivered file.
+  // The plan view masks platform-injected variables, so the address is only checked after applying.
+  assert.equal(item.env.API_PROFILE_IDS, "api_plan");
+  assert.equal(item.env.SECRET_STORE_URL, "***");
+  assert.deepEqual(JSON.parse(item.env.EGRESS_POLICIES_JSON), { "api:api_plan": ["api.example"] });
+  assert.equal(plan.checks.find((c) => c.id === "secret_store")?.ok, true);
+
+  // Without a store address the plan is refused outright instead of starting an adapter that cannot authenticate.
+  const noStore = new PcsService({ ...cfg, secretStoreUrl: null, secretStoreContainerUrl: null });
+  await assert.rejects(
+    () => noStore.previewDeploymentPlan(planInput, "alice"),
+    (e: any) => e.code === "SECRET_STORE_NOT_CONFIGURED",
   );
+
   await svc.applyDeploymentPlan(plan.plan_id, { plan_digest: plan.plan_digest }, "alice");
+  const applied = (await svc.listDeployments(host.host_id)).find(
+    (d) => d.instance_id === plan.names[0],
+  );
+  // The masked view is for the browser; the host still receives the real address with the signed command.
+  assert.equal(applied?.env.SECRET_STORE_URL, "http://127.0.0.1:7902");
   const resolved = await svc.resolveInstance(host.host_id, plan.names[0]);
   assert.equal(resolved?.agent.agent_profile_id, "agp_plan_builder");
   assert.equal(resolved?.api_profiles[0]?.api_profile_id, "api_plan");
@@ -1087,6 +1117,171 @@ test("a host role is one of three; a bare-metal role cannot additionally deploy 
     () => svc.updateHost(hostId, { role_mode: "both" as any }),
     (e: any) => e.code === "INVALID_HOST_ROLE",
   );
+});
+
+test("switching to a bare-metal builder with no scheduler keeps the role and waits for one", async () => {
+  const hostId = (await svc.createLocalHost({ name: "no-scheduler-host" })).host_id;
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id=$1`,
+    [hostId],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+
+  // No scheduler row and no PCS_SCHEDULER_URL: the host can still be prepared as a bare-metal builder now,
+  // because the builder attaches to the first scheduler that appears (a scheduler on another host is fine).
+  const noScheduler = new PcsService({ ...cfg, schedulerUrl: null, schedulerUrls: {} });
+  const out = await noScheduler.updateHost(hostId, { role_mode: "builder" });
+  assert.equal((await svc.getHost(hostId))?.role_mode, "builder");
+  assert.equal(out.native_builder, undefined);
+  assert.match(String(out.warning), /no scheduler is reachable/);
+  // No builder instance is created before there is a scheduler address to poll.
+  const builders = (await svc.listDeployments(hostId)).filter(
+    (d) => d.role_id === "builder" && d.status !== "REMOVED",
+  );
+  assert.equal(builders.length, 0);
+
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+});
+
+test("a bare-metal builder joins the fleet's scheduler when its own host runs none", async () => {
+  // A host that only builds has no scheduler of its own; it joins the one on another host by address.
+  const schedHost = await onlineHost("fleet-sched-host");
+  await svc.createDeployment({
+    host_id: schedHost,
+    instance_id: "fleet-root",
+    role_id: "scheduler",
+    image: PINNED,
+    created_by: "alice",
+  });
+  await query(
+    `UPDATE pcs_deployments SET status='HEALTHY' WHERE host_id=$1 AND instance_id='fleet-root'`,
+    [schedHost],
+  );
+  const root = (await svc.listDeployments(schedHost)).find((d) => d.instance_id === "fleet-root")!;
+  assert.ok(root.scheduler_url);
+
+  const hostId = (await svc.createLocalHost({ name: "remote-builder-host" })).host_id;
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id=$1`,
+    [hostId],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+
+  // No local scheduler and no default address: the fleet root is the only scheduler the builder can reach.
+  const remoteOnly = new PcsService({ ...cfg, schedulerUrl: null, schedulerUrls: {} });
+  const out = await remoteOnly.updateHost(hostId, { role_mode: "builder" });
+  assert.equal(out.native_builder?.created, true);
+  const dep = await svc.getDeployment(out.native_builder!.deployment_id);
+  // The builder polls the remote scheduler and records its deployment id, so the admin app can name the
+  // scheduler that owns it instead of showing "unassigned".
+  assert.equal(dep?.env.SCHEDULER_URL, root.scheduler_url);
+  assert.equal(dep?.scheduler_deployment_id, root.deployment_id);
+
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id = ANY($1::text[])`,
+    [[hostId, schedHost]],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+});
+
+test("a host prepared as a bare-metal builder attaches its builder once a scheduler appears", async () => {
+  const hostId = (await svc.createLocalHost({ name: "deferred-builder-host" })).host_id;
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id=$1`,
+    [hostId],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+
+  // No scheduler anywhere yet: the host still becomes a bare-metal builder, with no instance created.
+  const noScheduler = new PcsService({ ...cfg, schedulerUrl: null, schedulerUrls: {} });
+  await noScheduler.updateHost(hostId, { role_mode: "builder" });
+  const host = (await svc.getHost(hostId))!;
+  assert.equal(host.role_mode, "builder");
+
+  // A heartbeat with no scheduler to join must leave the slot empty.
+  await noScheduler.storeReport(host, {});
+  await new Promise((r) => setTimeout(r, 50));
+  const nativeBuilders = async () =>
+    (await svc.listDeployments(hostId)).filter(
+      (d) => d.role_id === "builder" && d.status !== "REMOVED",
+    );
+  assert.equal((await nativeBuilders()).length, 0);
+
+  // A scheduler appears on another host; the next heartbeat starts the builder against it.
+  const schedHost = await onlineHost("deferred-sched-host");
+  await svc.createDeployment({
+    host_id: schedHost,
+    instance_id: "deferred-root",
+    role_id: "scheduler",
+    image: PINNED,
+    created_by: "alice",
+  });
+  await query(
+    `UPDATE pcs_deployments SET status='HEALTHY' WHERE host_id=$1 AND instance_id='deferred-root'`,
+    [schedHost],
+  );
+  const root = (await svc.listDeployments(schedHost)).find((d) => d.instance_id === "deferred-root")!;
+
+  await noScheduler.storeReport(host, {});
+  let attached: Awaited<ReturnType<typeof nativeBuilders>>[number] | null = null;
+  for (let i = 0; i < 100 && !attached; i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+    attached = (await nativeBuilders())[0] ?? null;
+  }
+  assert.ok(attached, "the deferred builder should attach once a scheduler is reachable");
+  assert.equal(attached.env.SCHEDULER_URL, root.scheduler_url);
+  // The control plane attaches it on its own; no operator click is needed for the second step.
+  assert.equal(attached.created_by, "system");
+
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id = ANY($1::text[])`,
+    [[hostId, schedHost]],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+});
+
+test("removing the last bare-metal builder returns the host to a container host", async () => {
+  const hostId = (await svc.createLocalHost({ name: "removed-native-host" })).host_id;
+  await query(
+    `UPDATE pcs_deployments SET status='REMOVED', desired_state='REMOVED' WHERE host_id=$1`,
+    [hostId],
+  );
+  await query(`UPDATE pcs_hosts SET role_mode='containers' WHERE host_id=$1`, [hostId]);
+
+  const created = await svc.updateHost(hostId, { role_mode: "builder" });
+  assert.equal(created.native_builder?.created, true);
+  const deploymentId = created.native_builder!.deployment_id;
+  // Claim by deployment id: the shared local host may still hold undelivered commands from earlier tests.
+  const commandFor = async (type: string) =>
+    (
+      await query<{ command_id: string }>(
+        `SELECT command_id FROM pcs_commands
+          WHERE deployment_id=$1 AND command_type=$2
+          ORDER BY created_at DESC LIMIT 1`,
+        [deploymentId, type],
+      )
+    ).rows[0];
+  const deployCmd = await commandFor("DEPLOY");
+  assert.ok(deployCmd);
+  await svc.ackCommand(hostId, deployCmd.command_id, true, {});
+
+  // Deleting the builder is the host-level undo of the role switch: the operator asked for no bare builder.
+  await svc.enqueueAction(deploymentId, "remove", "alice");
+  const removeCmd = await commandFor("REMOVE");
+  assert.ok(removeCmd);
+  await svc.ackCommand(hostId, removeCmd.command_id, true, {});
+
+  assert.equal((await svc.getHost(hostId))?.role_mode, "containers");
+  const active = async () =>
+    (await svc.listDeployments(hostId)).filter(
+      (d) => d.role_id === "builder" && d.execution === "native" && d.status !== "REMOVED",
+    );
+  assert.equal((await active()).length, 0);
+
+  // The next heartbeat must not resurrect it, even though the configured scheduler address still resolves.
+  await svc.storeReport((await svc.getHost(hostId))!, {});
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await active()).length, 0);
 });
 
 test("a bare-metal builder honours the chosen name, Agent and API, and is restored when its deployment is gone", async () => {

@@ -496,6 +496,23 @@ const AGENT_ADAPTERS: Record<string, string[]> = {
 
 const SECRET_REF = /^secret:\/\/[A-Za-z0-9._\-\/]{1,200}$/;
 
+/** Scopes carried by the instance identity token: registration/claim/report plus config and artifacts. */
+const INSTANCE_SCOPES = [
+  "instance:register",
+  "instance:claim",
+  "task:report",
+  "config:read",
+  "artifact:write",
+  "artifact:read",
+];
+
+/** Provider selected in the Agent Profile args (`--provider claude|codex|custom`); cli-agent defaults to claude. */
+function agentProvider(args: string[]): string {
+  const i = args.indexOf("--provider");
+  const value = i >= 0 ? String(args[i + 1] ?? "").trim().toLowerCase() : "";
+  return value || "claude";
+}
+
 function unique(values: string[]): string[] {
   return [...new Set(values.map((v) => String(v).trim()).filter(Boolean))];
 }
@@ -795,6 +812,8 @@ export class PcsService {
   private readonly credentialKey: Buffer | null;
   /** Shared token schedulers use to report ΣW to each other; when unset, derived from the command signing private key, unchanged across restarts. */
   private readonly federationToken: string;
+  /** Hosts whose deferred native builder is being attached, so concurrent heartbeats cannot create two. */
+  private readonly attachingBuilders = new Set<string>();
 
   constructor(readonly cfg: PcsConfig) {
     this.jwtPrivateKey = readKey(cfg.jwtPrivateKeyFile);
@@ -1986,6 +2005,8 @@ export class PcsService {
     role_mode?: "containers" | "builder" | "scheduler";
     native_builder?: { deployment_id: string; created: boolean; status: string };
     warning?: string;
+    /** Machine-readable reason for the warning, so the UI can explain a deferred scheduler differently from a failure. */
+    warning_code?: string;
   }> {
     const cred = await this.getHostCredential(hostId);
     if (!cred) throw notFound("HOST_NOT_FOUND", "host not found");
@@ -2155,6 +2176,7 @@ export class PcsService {
   ): Promise<{
     native_builder?: { deployment_id: string; created: boolean; status: string };
     warning?: string;
+    warning_code?: string;
   }> {
     if (!next) return {};
     // Idempotent by design: even when the host is already a bare-metal builder, its native deployment may be gone
@@ -2164,17 +2186,73 @@ export class PcsService {
       try {
         return { native_builder: await this.ensureNativeBuilder(hostId, operator, options) };
       } catch (e) {
-        return { warning: e instanceof Error ? e.message : String(e) };
+        return this.roleWarning(e);
       }
     }
     if (previous === "builder") {
       try {
         await this.removeNativeBuilders(hostId, operator);
       } catch (e) {
-        return { warning: e instanceof Error ? e.message : String(e) };
+        return this.roleWarning(e);
       }
     }
     return {};
+  }
+
+  /** A role switch is never rolled back by a follow-up failure; the code lets the UI tell "waiting" from "broken". */
+  private roleWarning(e: unknown): { warning: string; warning_code: string } {
+    return {
+      warning: e instanceof Error ? e.message : String(e),
+      warning_code: e instanceof PcsError ? e.code : "NATIVE_BUILDER_FAILED",
+    };
+  }
+
+  /**
+   * The fleet's active root scheduler: the fallback for hosts that run no scheduler of their own. A bare-metal
+   * builder joins the scheduler on another host, so ordering puts the root first and skips rows without an address.
+   */
+  private async fleetRootScheduler(): Promise<DeploymentRow | null> {
+    const r = await query<DeploymentRow>(
+      `SELECT * FROM pcs_deployments
+        WHERE role_id='scheduler' AND status IN ('STARTING','HEALTHY')
+        ORDER BY CASE WHEN COALESCE(scheduler_role, 'root') = 'root' THEN 0 ELSE 1 END, created_at`,
+    );
+    return r.rows.find((d) => String(d.scheduler_url ?? "").trim()) ?? null;
+  }
+
+  /**
+   * Scheduler address a bare-metal builder registers with: this host's root scheduler, else the per-host /
+   * default URL from the control-plane config, else the fleet's root scheduler on another host. A host that
+   * only builds has no scheduler, and joining a remote one needs the address alone; the remote scheduler's
+   * deployment id is still recorded on the builder, so the admin app can show who dispatches to it.
+   * Shared by the pre-role-switch check and ensureNativeBuilder so both agree on whether it can start at all.
+   */
+  private async nativeBuilderScheduler(
+    hostId: string,
+  ): Promise<{ ref: DeploymentRow | null; url: string | null }> {
+    const local = await this.activeSchedulers(hostId);
+    const ref = local.find((d) => (d.scheduler_role ?? "root") === "root") ?? local[0] ?? null;
+    const configured =
+      ref?.scheduler_url ?? this.cfg.schedulerUrls[hostId] ?? this.cfg.schedulerUrl ?? null;
+    if (configured) return { ref, url: configured };
+    const remote = await this.fleetRootScheduler();
+    return {
+      ref: remote,
+      url: remote ? String(remote.scheduler_url ?? "").trim() || null : null,
+    };
+  }
+
+  /** An active scheduler anywhere in the fleet, by deployment id or instance id; builders may attach across hosts. */
+  private async fleetSchedulerRef(ref: string): Promise<SchedulerRefRow | null> {
+    const r = await query<DeploymentRow>(
+      `SELECT * FROM pcs_deployments
+        WHERE role_id='scheduler' AND status NOT IN ('REMOVED','FAILED')
+          AND (deployment_id=$1 OR instance_id=$1)
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [ref],
+    );
+    return r.rows[0] ?? null;
   }
 
   private async activeNativeBuilders(hostId: string): Promise<DeploymentRow[]> {
@@ -2217,6 +2295,17 @@ export class PcsService {
       if (existing.desired_state === "STOPPED") {
         await this.enqueueAction(existing.deployment_id, "start", operator).catch(() => undefined);
       }
+      // A builder created before remote attachment was recorded has no scheduler link; fill it in so the admin app
+      // can name the scheduler instead of "unassigned". An existing link is left alone — a redeploy is the repair.
+      if (!existing.scheduler_deployment_id) {
+        const { ref } = await this.nativeBuilderScheduler(hostId);
+        if (ref?.deployment_id && String(ref.host_id) !== hostId) {
+          await query(
+            `UPDATE pcs_deployments SET scheduler_deployment_id=$1 WHERE deployment_id=$2`,
+            [ref.deployment_id, existing.deployment_id],
+          ).catch(() => undefined);
+        }
+      }
       return {
         deployment_id: existing.deployment_id,
         created: false,
@@ -2227,24 +2316,31 @@ export class PcsService {
     // an InstanceSpec, so a full DEPLOY must be sent again. createDeployment marks the old record for the same
     // instance as REMOVED, and the new deployment takes over.
 
-    const active = await this.activeSchedulers(hostId);
-    const schedulerRef =
-      active.find((d) => (d.scheduler_role ?? "root") === "root") ?? active[0] ?? null;
-    const schedulerUrl =
-      schedulerRef?.scheduler_url ??
-      this.cfg.schedulerUrls[hostId] ??
-      this.cfg.schedulerUrl;
+    const { ref: schedulerRef, url: schedulerUrl } = await this.nativeBuilderScheduler(hostId);
     if (!schedulerUrl) {
+      // The role switch is kept: the host stays a bare-metal builder and joins the first scheduler that
+      // appears (see attachNativeBuilder), so an operator can prepare the host before the scheduler exists.
       throw new PcsError(
         409,
         "SCHEDULER_URL_MISSING",
-        "a bare-metal builder needs a scheduler address: deploy a scheduler first, or set PCS_SCHEDULER_URL",
+        "no scheduler is reachable yet; the host stays a bare-metal builder and starts once a scheduler is deployed",
       );
+    }
+
+    // Validate the chosen API Profiles before creating the deployment, so a bad id leaves no half-created instance behind.
+    const apiProfileIds = [...new Set((options.api_profile_ids ?? []).map(String))];
+    const apiRows: ApiProfileRow[] = [];
+    for (const apiId of apiProfileIds) {
+      const profile = await this.getApiProfile(apiId);
+      if (!profile) throw notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
+      if (!profile.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile is disabled: ${apiId}`);
+      apiRows.push(profile);
     }
 
     // Bind a builder Agent that can be delivered with the deployment; deterministic subtasks can still run when no Profile is available.
     let agent: AgentProfileRow | null = null;
     let delivery: ReturnType<PcsService["agentDelivery"]> | null = null;
+    const deliveryOpts = { hostId, apis: apiRows };
     const requestedAgentId = String(options.agent_profile_id ?? "").trim();
     if (requestedAgentId) {
       const chosen = await this.getAgentProfile(requestedAgentId);
@@ -2253,28 +2349,20 @@ export class PcsService {
       if (chosen.role_id !== "builder") {
         throw forbidden("ROLE_AGENT_NOT_ALLOWED", "Agent Profile does not belong to the builder role");
       }
-      delivery = this.agentDelivery(chosen, "builder", instanceId);
+      delivery = this.agentDelivery(chosen, "builder", instanceId, deliveryOpts);
       agent = chosen;
     } else {
       for (const candidate of await this.listAgentProfiles()) {
         if (candidate.role_id !== "builder" || !candidate.enabled) continue;
         try {
-          const out = this.agentDelivery(candidate, "builder", instanceId);
+          const out = this.agentDelivery(candidate, "builder", instanceId, deliveryOpts);
           agent = candidate;
           delivery = out;
           break;
         } catch {
-          // A Profile that references the Secret Store cannot be delivered with the deployment, so try the next one.
+          // An Agent whose declared API Profiles are not bound to this deployment is not a usable default.
         }
       }
-    }
-
-    // Validate the chosen API Profiles before creating the deployment, so a bad id leaves no half-created instance behind.
-    const apiProfileIds = [...new Set((options.api_profile_ids ?? []).map(String))];
-    for (const apiId of apiProfileIds) {
-      const profile = await this.getApiProfile(apiId);
-      if (!profile) throw notFound("API_PROFILE_NOT_FOUND", `API Profile not found: ${apiId}`);
-      if (!profile.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile is disabled: ${apiId}`);
     }
 
     const resources = (host.resources ?? {}) as Record<string, unknown>;
@@ -2366,6 +2454,34 @@ export class PcsService {
       created: true,
       status: deployment.status,
     };
+  }
+
+  /**
+   * Attach the bare-metal builder of a host that was switched before any scheduler was reachable.
+   *
+   * Runs on every host report: it stays quiet until a scheduler address resolves, and only fills an empty
+   * slot, so a builder the operator stopped is not resurrected. A removed builder returns the host to a
+   * container host on acknowledgement (see ackCommand), so the next heartbeat no longer sees this role.
+   * The in-flight guard keeps overlapping heartbeats from creating two builders for the same host.
+   */
+  private async attachNativeBuilder(hostId: string): Promise<void> {
+    if (this.attachingBuilders.has(hostId)) return;
+    try {
+      const host = await this.getHost(hostId);
+      if (host?.role_mode !== "builder") return;
+      if ((await this.activeNativeBuilders(hostId)).length) return;
+      if (!(await this.nativeBuilderScheduler(hostId)).url) return;
+      this.attachingBuilders.add(hostId);
+      const out = await this.ensureNativeBuilder(hostId, "system");
+      if (out.created) {
+        console.log(`[native-builder] ${hostId} attached to the fleet scheduler: ${out.deployment_id}`);
+      }
+    } catch (e) {
+      // A report must never fail because the builder could not be attached; the next heartbeat retries.
+      console.warn(`[native-builder] ${hostId} attach failed: ${(e as Error).message}`);
+    } finally {
+      this.attachingBuilders.delete(hostId);
+    }
   }
 
   /** Remove the bare-metal builder when the role switches back to container host; delete only this deployment layer and leave other files on the host untouched. */
@@ -3121,7 +3237,7 @@ export class PcsService {
                  WHERE c.host_id=d.host_id AND c.transport='local'
               ) AS is_local
          FROM pcs_deployments d
-        WHERE d.role_id='scheduler' AND d.status <> 'REMOVED'
+        WHERE d.role_id='scheduler' AND d.status NOT IN ('REMOVED','FAILED')
           AND d.scheduler_url IS NOT NULL AND d.scheduler_role='root'
         ORDER BY (d.actual_state='RUNNING') DESC, d.created_at ASC
         LIMIT 1`,
@@ -3171,11 +3287,14 @@ export class PcsService {
     return url.toString();
   }
 
-  /** Active schedulers on this host; the root scheduler comes first. */
+  /**
+   * Schedulers on this host that can still be used: a failed one cannot accept registrations or reports,
+   * and must not block redeploying the root or hang a new builder off it. The root scheduler comes first.
+   */
   private async activeSchedulers(hostId: string): Promise<DeploymentRow[]> {
     const r = await query<DeploymentRow>(
       `SELECT * FROM pcs_deployments
-        WHERE host_id=$1 AND role_id='scheduler' AND status <> 'REMOVED'
+        WHERE host_id=$1 AND role_id='scheduler' AND status NOT IN ('REMOVED','FAILED')
         ORDER BY CASE WHEN scheduler_role = 'root' THEN 0 ELSE 1 END, created_at`,
       [hostId],
     );
@@ -3313,12 +3432,18 @@ export class PcsService {
       input.role_id === "scheduler"
         ? this.resolveSchedulerPlacement(host.host_id, instanceId, active, input)
         : null;
-    const schedulerRef =
+    let schedulerRef: SchedulerRefRow | null =
       input.role_id === "builder"
         ? input.scheduler_id
           ? active.find((d) => d.deployment_id === input.scheduler_id) ?? null
           : active.find((d) => (d.scheduler_role ?? "root") === "root") ?? active[0] ?? null
         : null;
+    // A bare-metal builder may join a scheduler on another host: it needs only the address, so resolve the
+    // reference fleet-wide before rejecting it. Without this, a removed bare builder re-attached to a remote
+    // scheduler fails every heartbeat with SCHEDULER_NOT_FOUND and never comes back.
+    if (input.role_id === "builder" && input.scheduler_id && !schedulerRef) {
+      schedulerRef = await this.fleetSchedulerRef(String(input.scheduler_id));
+    }
     if (input.role_id === "builder" && input.scheduler_id && !schedulerRef) {
       throw notFound("SCHEDULER_NOT_FOUND", "the selected scheduler does not exist or is stopped");
     }
@@ -4065,27 +4190,109 @@ export class PcsService {
   }
 
   /**
-   * The Agent Profile view and credential variable names delivered to the container with the deployment.
+   * Instance identity token delivered with the deployment.
    *
-   * The Profile file contains only the bound Agent and instance bindings, not API Profiles: model calls go through
-   * cli-agent to a Claude-compatible endpoint, with keys injected from the host-local credential file. Including API
-   * Profiles would make host-runtime require a Secret Store instance JWT, which the container does not have,
-   * so the instance would fail closed.
+   * The container's API adapter presents it to the Secret Store, which authorizes by `sub` (the
+   * instance id). Redeploying the instance rotates the token; PCS_INSTANCE_TOKEN_HOURS controls
+   * its lifetime.
+   */
+  private instanceIdentityToken(instanceId: string, roleId: string, hostId: string): string {
+    const now = Math.floor(Date.now() / 1000);
+    return signJwt(
+      {
+        iss: ISSUER,
+        aud: SCHEDULER_AUDIENCE,
+        sub: instanceId,
+        role: roleId,
+        host_id: hostId,
+        scopes: INSTANCE_SCOPES,
+        iat: now,
+        exp: now + this.cfg.instanceTokenHours * 3600,
+        jti: `tok_${randomUUID()}`,
+      },
+      readKey(this.cfg.jwtPrivateKeyFile),
+    );
+  }
+
+  /**
+   * Runtime view of the bound API Profiles, without the value behind secret_ref.
+   *
+   * Every profile also gets an egress policy name and its declared host, so the container's
+   * default-deny egress check allows exactly the endpoints an administrator created. A named
+   * egress policy groups several profiles; without one, the profile id is the policy name.
+   */
+  private apiRuntime(apis: ApiProfileRow[]): {
+    views: Array<Record<string, unknown>>;
+    policies: Record<string, string[]>;
+  } {
+    const policies: Record<string, string[]> = {};
+    const views = apis.map((api) => {
+      let host: string;
+      try {
+        host = new URL(api.base_url).hostname;
+      } catch {
+        throw new PcsError(
+          400,
+          "INVALID_API_BASE_URL",
+          `API Profile ${api.api_profile_id} has an invalid base_url: ${api.base_url}`,
+        );
+      }
+      const policy = (api.egress ?? "").trim() || `api:${api.api_profile_id}`;
+      policies[policy] = unique([...(policies[policy] ?? []), host]);
+      return {
+        api_profile_id: api.api_profile_id,
+        name: api.name,
+        kind: api.kind,
+        base_url: api.base_url,
+        auth_type: api.auth_type,
+        secret_ref: api.secret_ref,
+        scopes: api.scopes,
+        quota: api.quota,
+        timeout_seconds: api.timeout_seconds,
+        egress: policy,
+        fallback: api.fallback,
+        enabled: api.enabled,
+      };
+    });
+    return { views, policies };
+  }
+
+  /**
+   * The Agent Profile view, the bound API Profiles and the instance identity delivered with the
+   * deployment.
+   *
+   * API Profiles carry only secret:// references. The container's API adapter resolves them
+   * against the Secret Store at egress time with the delivered instance JWT; neither the value
+   * nor the token ever passes through the browser or the logs. Without a Secret Store address the
+   * deployment fails closed instead of starting an adapter that cannot authenticate.
    */
   private agentDelivery(
     agent: AgentProfileRow,
     roleId: string,
     instanceId: string,
+    opts: { hostId: string; apis?: ApiProfileRow[] },
   ): { files: Array<{ path: string; content: string }>; agent_env: string[]; env: Record<string, string> } {
+    const apis = opts.apis ?? [];
+    const apiIds = apis.map((a) => a.api_profile_id);
     const declared = [
       ...(agent.model_api_profile_id ? [agent.model_api_profile_id] : []),
       ...(agent.tool_api_profile_ids ?? []),
     ];
-    if (declared.length) {
+    const unbound = declared.filter((id) => !apiIds.includes(id));
+    if (unbound.length) {
       throw new PcsError(
         409,
-        "AGENT_REQUIRES_SECRET_STORE",
-        `Agent ${agent.agent_profile_id} references API Profiles (${declared.join(", ")}), but the container has no Secret Store instance identity yet; unbind the API Profiles before deploying`,
+        "API_PROFILE_NOT_BOUND",
+        `Agent ${agent.agent_profile_id} references API Profiles that are not bound to the deployment: ${unbound.join(", ")}`,
+      );
+    }
+    const { views, policies } = this.apiRuntime(apis);
+    const storeUrl = this.cfg.secretStoreContainerUrl ?? this.cfg.secretStoreUrl;
+    if (apis.length && !storeUrl) {
+      throw new PcsError(
+        503,
+        "SECRET_STORE_NOT_CONFIGURED",
+        "the deployment binds API Profiles but the control plane has no Secret Store address for containers; set PCS_SECRET_STORE_URL (and PCS_SECRET_STORE_CONTAINER_URL if containers reach it through another address)",
       );
     }
     const file = JSON.stringify(
@@ -4114,18 +4321,32 @@ export class PcsService {
             goals: agent.goals,
           },
         ],
+        api_profiles: views,
         bindings: {
-          [instanceId]: { agent_profile_id: agent.agent_profile_id, api_profile_ids: [] },
+          [instanceId]: { agent_profile_id: agent.agent_profile_id, api_profile_ids: apiIds },
         },
       },
       null,
       2,
     );
+    const files: Array<{ path: string; content: string }> = [
+      { path: "/opt/platform/profiles.json", content: file },
+    ];
     const env: Record<string, string> = {
       PROFILES_FILE: "/opt/platform/profiles.json",
       // Two-level allowlist: container env → Agent adapter → cli-agent.
       PLATFORM_AGENT_PASS_ENV: "ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL",
     };
+    if (apis.length) {
+      // The API adapter is the only consumer of the token and the store address.
+      files.push({
+        path: `/opt/platform/tokens/${instanceId}.jwt`,
+        content: `${this.instanceIdentityToken(instanceId, roleId, opts.hostId)}\n`,
+      });
+      env.API_PROFILE_IDS = apiIds.join(",");
+      env.SECRET_STORE_URL = storeUrl!;
+      env.EGRESS_POLICIES_JSON = JSON.stringify(policies);
+    }
     // The scheduler entry point only reads SCHEDULER_* vars; the builder entry point reads AGENT_PROFILE_ID.
     if (roleId === "scheduler") {
       env.SCHEDULER_INSTANCE_ID = instanceId;
@@ -4133,9 +4354,13 @@ export class PcsService {
     } else {
       env.AGENT_PROFILE_ID = agent.agent_profile_id;
     }
+    // A Claude-compatible model bound through an API Profile is served by the local adapter with a
+    // placeholder key; the host credential file is then not required for model access. Codex reads
+    // its provider settings from CODEX_HOME, so it keeps the host credential path.
+    const modelViaStore = Boolean(agent.model_api_profile_id) && agentProvider(agent.args) !== "codex";
     return {
-      files: [{ path: "/opt/platform/profiles.json", content: file }],
-      agent_env: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
+      files,
+      agent_env: modelViaStore ? [] : ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
       env,
     };
   }
@@ -4261,6 +4486,13 @@ export class PcsService {
       if (!p.enabled) throw conflict("API_PROFILE_DISABLED", `API Profile is disabled: ${id}`);
       apis.push(p);
     }
+    // APIs the Agent references but the deployment does not bind would make the container refuse to start.
+    const declaredApis = agent
+      ? [
+          ...(agent.model_api_profile_id ? [agent.model_api_profile_id] : []),
+          ...(agent.tool_api_profile_ids ?? []),
+        ]
+      : [];
 
     // Both built-in roles' images are decided by the system: the scheduler uses PCS_SCHEDULER_IMAGE, and the builder uses
     // PCS_BUILDER_IMAGES per OS (official ubuntu). Images in the UI/Profile serve only as a fallback.
@@ -4350,7 +4582,7 @@ export class PcsService {
       input.role_id === "scheduler"
         ? this.resolveSchedulerPlacement(host.host_id, itemInputs[0].instance_id, activeSchedulers, input)
         : null;
-    const builderScheduler =
+    let builderScheduler: SchedulerRefRow | null =
       input.role_id === "builder"
         ? input.scheduler_id
           ? this.resolveSchedulerRef(activeSchedulers, input.scheduler_id) ?? null
@@ -4358,6 +4590,11 @@ export class PcsService {
             activeSchedulers[0] ??
             null
         : null;
+    // A bare-metal builder may join a scheduler on another host. Scheduler nodes are bound to their own host,
+    // but builders only need the address, so resolve the reference fleet-wide before rejecting it.
+    if (input.role_id === "builder" && input.scheduler_id && !builderScheduler) {
+      builderScheduler = await this.fleetSchedulerRef(String(input.scheduler_id));
+    }
     if (input.role_id === "builder" && input.scheduler_id && !builderScheduler) {
       throw notFound("SCHEDULER_NOT_FOUND", "the selected scheduler does not exist or is stopped");
     }
@@ -4482,7 +4719,12 @@ export class PcsService {
       }
       if (agent?.agent_profile_id) instanceEnv.AGENT_PROFILE_ID = agent.agent_profile_id;
       // When an Agent is bound, deliver the Profile view together with the credential variable names; with no binding, keep the original behavior.
-      const delivery = agent ? this.agentDelivery(agent, input.role_id, x.instance_id) : null;
+      const delivery = agent
+        ? this.agentDelivery(agent, input.role_id, x.instance_id, {
+            hostId: host.host_id,
+            apis,
+          })
+        : null;
       const files = [...(delivery?.files ?? []), ...appFiles];
       return {
         instance_id: x.instance_id,
@@ -4546,6 +4788,23 @@ export class PcsService {
         id: "api_bindings",
         ok: apis.every((p) => p.enabled),
         detail: apiIds.length ? `API ${apiIds.join(", ")}` : "no API bound",
+      },
+      {
+        // The Agent may only reference APIs the deployment binds; otherwise the container refuses to start.
+        id: "api_declared_bound",
+        ok: declaredApis.every((id) => apiIds.includes(id)),
+        detail: declaredApis.length
+          ? `Agent references ${declaredApis.join(", ")}`
+          : "no API referenced by the Agent",
+      },
+      {
+        // API bindings need a Secret Store address the containers can reach, or the adapter cannot authenticate.
+        id: "secret_store",
+        ok: !apiIds.length || Boolean(this.cfg.secretStoreContainerUrl ?? this.cfg.secretStoreUrl),
+        detail: !apiIds.length
+          ? "no API bound"
+          : (this.cfg.secretStoreContainerUrl ?? this.cfg.secretStoreUrl) ||
+            "Secret Store is not configured: set PCS_SECRET_STORE_URL",
       },
     ];
     if (input.role_id === "builder") {
@@ -4955,7 +5214,10 @@ export class PcsService {
     ok: boolean,
     result: Record<string, unknown>,
   ): Promise<{ command_id: string; state: string; idempotent?: boolean }> {
-    return tx(async (c) => {
+    // Filled when this acknowledgement confirms a REMOVE; the role follow-up runs after the transaction,
+    // where the removed row is visible to every connection.
+    let removedDeploymentId: string | null = null;
+    const out = await tx(async (c) => {
       const cmd = (
         await c.query(
           `SELECT * FROM pcs_commands WHERE command_id=$1 AND host_id=$2 FOR UPDATE`,
@@ -5003,6 +5265,9 @@ export class PcsService {
           // A removed instance cannot use its profiles any more. Keeping the bindings would silently
           // reconfigure a later deployment with the same name and would block profile deletion forever.
           // Skip when another live deployment still owns the instance name on this host (superseded remove).
+          if (cmd.command_type === "REMOVE" && cmd.deployment_id && applied.rowCount) {
+            removedDeploymentId = cmd.deployment_id;
+          }
           if (cmd.command_type === "REMOVE" && cmd.instance_id && applied.rowCount) {
             const live = await c.query(
               `SELECT 1 FROM pcs_deployments
@@ -5026,6 +5291,55 @@ export class PcsService {
 
       return { command_id: commandId, state };
     });
+    // A bare-metal builder is the host's role made concrete: removing the last one returns the host to a
+    // container host, so the studio stops waiting for a builder that no longer exists.
+    if (removedDeploymentId) {
+      await this.revertNativeBuilderRole(removedDeploymentId).catch((e) => {
+        console.warn(`[native-builder] role revert failed: ${(e as Error).message}`);
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Return a host to a container host after its last bare-metal builder was removed on purpose.
+   * Only an explicit REMOVE counts: a builder that merely went MISSING or FAILED is repaired in place.
+   */
+  private async revertNativeBuilderRole(deploymentId: string): Promise<boolean> {
+    const dep = (
+      await query<{
+        host_id: string;
+        role_id: string;
+        execution: string;
+        status: string;
+        desired_state: string;
+      }>(
+        `SELECT host_id, role_id, execution, status, desired_state
+           FROM pcs_deployments WHERE deployment_id=$1`,
+        [deploymentId],
+      )
+    ).rows[0];
+    if (!dep || dep.role_id !== "builder" || dep.execution !== "native") return false;
+    if (dep.status !== "REMOVED" || dep.desired_state !== "REMOVED") return false;
+    const live = await query(
+      `SELECT 1 FROM pcs_deployments
+        WHERE host_id=$1 AND role_id='builder' AND execution='native' AND status <> 'REMOVED'
+        LIMIT 1`,
+      [dep.host_id],
+    );
+    if (live.rowCount) return false;
+    const updated = await query(
+      `UPDATE pcs_hosts SET role_mode='containers', updated_at=now()
+        WHERE host_id=$1 AND role_mode='builder'
+        RETURNING host_id`,
+      [dep.host_id],
+    );
+    if (!updated.rowCount) return false;
+    await this.audit("system", "host.role.switch", dep.host_id, null, {
+      role_mode: "containers",
+      reason: "the last bare-metal builder was removed",
+    }).catch(() => undefined);
+    return true;
   }
 
   // ---------------------------------------------------------------- Reports
@@ -5103,6 +5417,9 @@ export class PcsService {
     // The scheduler maintains its own host roster, and instance registration requires the host to already be in it.
     // A failed push does not affect the report (the next heartbeat retries), and the PCS does not stall just because a scheduler is unavailable.
     void this.pushHostToScheduler(host.host_id, state);
+    // A host switched to a bare-metal builder before any scheduler existed waits here: the first heartbeat
+    // after a scheduler becomes reachable starts its builder, so the operator does not deploy it again.
+    void this.attachNativeBuilder(host.host_id);
     // After a scheduler restart or a parent address change, the heartbeat pushes the federation parent again.
     void this.syncFederationParent(host.host_id);
 
@@ -5219,6 +5536,13 @@ export class PcsService {
     const fallback =
       (localHost ? null : this.cfg.schedulerUrls[hostId]) ?? this.cfg.schedulerSyncUrl ?? this.cfg.schedulerUrl;
     if (bases.size === 0 && fallback) bases.add(fallback);
+    if (bases.size === 0) {
+      // A host that runs no scheduler still hosts builders: they join the fleet's root scheduler, so this
+      // host must reach that scheduler's roster too, or registration fails with HOST_UNKNOWN.
+      const fleet = await this.fleetRootScheduler();
+      const url = String(fleet?.scheduler_url ?? "").trim();
+      if (url) bases.add(url);
+    }
     if (bases.size === 0) return;
     const res = (row.resources ?? {}) as Record<string, unknown>;
     const body = JSON.stringify({

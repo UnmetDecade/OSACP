@@ -247,6 +247,7 @@ export type TasksResponse = {
 export type AttemptRow = {
   attempt_number?: unknown;
   status?: unknown;
+  instance_id?: unknown;
   error?: { code?: unknown; message?: unknown } | null;
   failure_class?: unknown;
   failure_signature?: unknown;

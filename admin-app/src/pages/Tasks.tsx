@@ -288,7 +288,15 @@ export function TaskShow() {
     );
   }
 
-  const inst = db.instances.find((i) => i.id === task.instance_id);
+  // The list projection only joins the current attempt, which is cleared once a task finishes; the attempt history
+  // still records which builder ran it, and the attempt timestamps fill in start/finish that the task row lacks.
+  const latestAttempt = attempts.length
+    ? attempts.reduce((a, b) => (b.attempt_number >= a.attempt_number ? b : a))
+    : undefined;
+  const assignedInstanceId = task.instance_id ?? latestAttempt?.instance_id ?? null;
+  const inst = db.instances.find((i) => i.id === assignedInstanceId);
+  const startedAt = task.started_at ?? latestAttempt?.started_at ?? null;
+  const finishedAt = task.finished_at ?? latestAttempt?.finished_at ?? null;
   // requirements is an object: reading it with String() printed "[object Object]" instead of the task body.
   const requirements = (task.payload.requirements ?? {}) as Record<string, unknown>;
   const build = (requirements.build ?? {}) as Record<string, unknown>;
@@ -594,8 +602,8 @@ export function TaskShow() {
             )}
             <KeyVal label={t("构建机")}>{inst ? <Link className="link" to={`/builders/${inst.id}`}>{inst.name}</Link> : t("等待派发")}</KeyVal>
             <KeyVal label={t("创建时间")}>{new Date(task.created_at).toLocaleString("zh-CN")}</KeyVal>
-            <KeyVal label={t("开始时间")}>{task.started_at ? new Date(task.started_at).toLocaleString("zh-CN") : "-"}</KeyVal>
-            <KeyVal label={t("结束时间")}>{task.finished_at ? new Date(task.finished_at).toLocaleString("zh-CN") : "-"}</KeyVal>
+            <KeyVal label={t("开始时间")}>{startedAt ? new Date(startedAt).toLocaleString("zh-CN") : "-"}</KeyVal>
+            <KeyVal label={t("结束时间")}>{finishedAt ? new Date(finishedAt).toLocaleString("zh-CN") : "-"}</KeyVal>
           </div>
         </Card>
 

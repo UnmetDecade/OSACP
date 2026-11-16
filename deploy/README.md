@@ -153,43 +153,52 @@ Default endpoints: Claude Code uses `ANTHROPIC_BASE_URL=https://api.deepseek.com
 Codex uses the DeepSeek Responses API configured in `CODEX_HOME=/opt/platform/codex/config.toml`.
 To switch back to the official Anthropic endpoint, override `ANTHROPIC_BASE_URL`.
 
-### Routing model traffic through LiteLLM
+### Routing model traffic through an API Profile
 
-Agent Profiles cannot reference API Profiles today (the deployment rejects them with `AGENT_REQUIRES_SECRET_STORE`),
-so per-builder quotas and spend tracking have to live in front of the model endpoint. [LiteLLM](https://github.com/BerriAI/litellm)
-does this without touching the platform: it exposes an Anthropic-compatible `/v1/messages`, which is exactly what
-Claude Code already calls.
+Agent Profiles can reference API Profiles. Pick one in the Agent Profile's "Model API" field (an API Profile of
+kind `llm`), and deploy dialogs bind it to the builder / scheduler automatically. The host-runtime then sets
+`ANTHROPIC_BASE_URL` to its local adapter (`http://127.0.0.1:<port>/<api_profile_id>`) with a placeholder key. The
+real credential is resolved from the Secret Store at egress through the instance identity token delivered with the
+deployment:
 
-1. Run the proxy where builders can reach it (its own Compose service or host; give it an internal DNS name).
-2. Put the upstream keys in the proxy, not on builder hosts. A minimal `config.yaml`:
+- the key never enters the container environment, the deployment payload, the database, or the logs;
+- egress is deny-by-default: the adapter only reaches the hostname in the Profile's `base_url`
+  (one synthesized policy per Profile, unless the Profile names an `egress` policy);
+- per-Profile rpm / daily quotas and a per-call audit line (no bodies) are enforced by the adapter;
+- this path needs no credential file on the host, so builders can run without `~/.config/platform/agent-env`.
 
-   ```yaml
-   model_list:
-     - model_name: claude-sonnet-4-5
-       litellm_params:
-         model: anthropic/claude-sonnet-4-5
-         api_key: os.environ/ANTHROPIC_UPSTREAM_KEY
-     - model_name: claude-haiku-4-5
-       litellm_params:
-         model: deepseek/deepseek-chat
-         api_key: os.environ/DEEPSEEK_API_KEY
-   general_settings:
-     master_key: os.environ/LITELLM_MASTER_KEY
-   ```
+The base URL must serve the Anthropic Messages API (Claude Code calls `/v1/messages`), written as the host root:
+`https://api.deepseek.com/anthropic`, `https://api.anthropic.com`, or any proxy that speaks the same protocol.
+Codex is not routed through the adapter (it reads provider settings from `CODEX_HOME`) and keeps the credential-file path.
 
-3. Issue one virtual key per builder pool (or per Agent) and point the container at the proxy:
+Deployment of an instance that binds API Profiles requires `PCS_SECRET_STORE_URL` on the control plane, so containers
+know where to resolve `secret://` references; `scripts/deploy.sh` starts the Secret Store and sets it, including
+`PCS_SECRET_STORE_CONTAINER_URL` when containers reach the store through a different address (the Docker bridge gateway
+on macOS). Without it the UI says so in the Profiles page and the plan is refused with `SECRET_STORE_NOT_CONFIGURED`.
 
-   ```dotenv
-   ANTHROPIC_BASE_URL=http://litellm.internal:4000
-   ANTHROPIC_API_KEY=sk-<virtual-key>
-   # Pin the name the CLI sends, so it matches model_name in config.yaml.
-   ANTHROPIC_MODEL=claude-sonnet-4-5
-   PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,DEEPSEEK_API_KEY,CODEX_HOME
-   ```
+Instance identity tokens are minted per deployment with `PCS_INSTANCE_TOKEN_HOURS` (default 720, i.e. 30 days) and
+delivered at `/opt/platform/tokens/<instance_id>.jwt`.
 
-The virtual key is the only model credential that reaches a builder; budgets and spend logs are set on it in LiteLLM.
+A [LiteLLM](https://github.com/BerriAI/litellm) proxy can sit behind an API Profile the same way: its
+Anthropic-compatible surface is what the CLI expects, so give the Profile the proxy's root URL and key, and keep the
+upstream keys and virtual-key budgets in the proxy.
+
+```yaml
+model_list:
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_UPSTREAM_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+```
+
 Keep the proxy on the trusted network, and do not give builders the master key. Codex can go through LiteLLM's
-OpenAI-compatible endpoint in the same way by changing `CODEX_HOME`'s `base_url` and `env_key`.
+OpenAI-compatible endpoint by changing `CODEX_HOME`'s `base_url` and `env_key`.
 
 ### Interaction latency
 
@@ -198,14 +207,16 @@ Every command in the terminal and chat is an independent task, and the wait is d
 the scheduler: use 0.5s for a small platform with a few machines, and raise it back to 1–2s when there are many machines to save database load.
 The console frontend has its own adaptive polling (150ms steps for the first 5 seconds, then backing off to 1 second).
 
-Profiles are mounted from the runtime view exported by PCS: write `agent_profiles` + `bindings` to a file,
-mount it into the container, and set `PROFILES_FILE=/opt/platform/profiles.json` in `deploy/.env` (both the builder
-and scheduler entrypoints write it into `runtime.config.json`).
+Profiles are delivered by PCS with the deployment: `/opt/platform/profiles.json` carries the Agent Profile runtime
+view, the API Profiles bound to this instance, and `bindings`; the builder and scheduler entrypoints merge it into
+`runtime.config.json` together with `API_PROFILE_IDS` and `EGRESS_POLICIES_JSON`. A manual deployment (without PCS)
+writes the same file and points `PROFILES_FILE=/opt/platform/profiles.json` at it.
 
 ## Instance tokens
 
-When the scheduler enables instance JWTs, put the token issued by PCS at `tokens/<instance_id>.jwt`; containers read it through the read-only volume
-`/opt/platform/tokens`:
+When an instance binds API Profiles, PCS issues its identity token with the deployment and writes it to
+`/opt/platform/tokens/<instance_id>.jwt`; containers read it through the read-only volume. The token's `aud` is
+`scheduler`, and the Secret Store uses it to validate resolve requests. Without PCS you can issue one by hand:
 
 ```bash
 npm --prefix ../pcs-issuer run issue -- instance \

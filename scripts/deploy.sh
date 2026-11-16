@@ -6,9 +6,10 @@
 # What it does (idempotent):
 #   1. starts a local PostgreSQL container (unless PCS_DATABASE_URL is set);
 #   2. generates the PCS signing keys and the SSH credential key;
-#   3. installs dependencies, builds the admin app and the deployment payload;
-#   4. prepares the host cache (Linux Node + openssh debs) used by containers;
-#   5. migrates the database and starts PCS, which serves the UI itself.
+#   3. starts the Secret Store (API keys typed in the admin app; role containers resolve refs there);
+#   4. installs dependencies, builds the admin app and the deployment payload;
+#   5. prepares the host cache (Linux Node + openssh debs) used by containers;
+#   6. migrates the database and starts PCS, which serves the UI itself.
 #
 # Then open http://127.0.0.1:7901, register the first account (administrator),
 # add this machine as a host and deploy schedulers/builders from the UI.
@@ -69,6 +70,18 @@ else
 fi
 PCS_POSTGRES_IMAGE="${PCS_POSTGRES_IMAGE:-${REGISTRY_PREFIX}postgres:16-alpine}"
 
+# ---------------------------------------------------------------- container-visible host address
+# Containers created by host-runtime reach host-published ports through a container-visible
+# address: on Linux the host's LAN IP, on macOS the Docker bridge gateway.
+LAN_IP="$(node -e 'const os=require("node:os");for(const l of Object.values(os.networkInterfaces()))for(const i of l||[])if(i.family==="IPv4"&&!i.internal){console.log(i.address);process.exit(0)}')"
+LAN_IP="${LAN_IP:-127.0.0.1}"
+if [ "$(uname -s)" = "Darwin" ]; then
+  CONTAINER_HOST_IP="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  CONTAINER_HOST_IP="${CONTAINER_HOST_IP:-172.17.0.1}"
+else
+  CONTAINER_HOST_IP="$LAN_IP"
+fi
+
 # ---------------------------------------------------------------- PostgreSQL
 if [ -z "${PCS_DATABASE_URL:-}" ]; then
   command -v docker >/dev/null 2>&1 || die "Docker is required for PostgreSQL, or set PCS_DATABASE_URL"
@@ -100,17 +113,7 @@ if [ -z "${PCS_DATABASE_URL:-}" ]; then
     || die "PostgreSQL did not become ready"
   PCS_DATABASE_URL="postgres://postgres:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/platform_control"
   # Scheduler containers are created by host-runtime on the host's Docker bridge;
-  # they reach PostgreSQL through the host's LAN address, not 127.0.0.1.
-  LAN_IP="$(node -e 'const os=require("node:os");for(const l of Object.values(os.networkInterfaces()))for(const i of l||[])if(i.family==="IPv4"&&!i.internal){console.log(i.address);process.exit(0)}')"
-  LAN_IP="${LAN_IP:-127.0.0.1}"
-  # Scheduler containers reach host-published ports through a container-visible
-  # address; on macOS that is the Docker bridge gateway, not the host LAN IP.
-  if [ "$(uname -s)" = "Darwin" ]; then
-    CONTAINER_HOST_IP="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-    CONTAINER_HOST_IP="${CONTAINER_HOST_IP:-172.17.0.1}"
-  else
-    CONTAINER_HOST_IP="$LAN_IP"
-  fi
+  # they reach PostgreSQL through the container-visible host address, not 127.0.0.1.
   PCS_SCHEDULER_DATABASE_URL="postgres://postgres:${PG_PASSWORD}@${CONTAINER_HOST_IP}:${PG_PORT}/scheduler"
   export PCS_SCHEDULER_DATABASE_URL
 fi
@@ -136,6 +139,74 @@ if [ ! -f "$CRED_KEY" ]; then
   fi
 fi
 chmod 600 "$CRED_KEY"
+
+# ---------------------------------------------------------------- Secret Store
+# API keys entered in the admin app are forwarded to this process and never stored in the PCS
+# database; role containers resolve secret:// references through it with their instance identity.
+STORE_DIR="$HOME/.config/platform/secret-store"
+STORE_PORT="${SECRET_STORE_PORT:-7902}"
+STORE_TOKEN_FILE="$STORE_DIR/admin-token"
+mkdir -p "$STORE_DIR"
+umask 077
+for name in secrets.json policy.json; do
+  [ -f "$STORE_DIR/$name" ] || printf '{}\n' > "$STORE_DIR/$name"
+  chmod 600 "$STORE_DIR/$name"
+done
+if [ ! -f "$STORE_TOKEN_FILE" ]; then
+  node -e 'process.stdout.write(require("node:crypto").randomBytes(24).toString("hex"))' > "$STORE_TOKEN_FILE"
+fi
+chmod 600 "$STORE_TOKEN_FILE"
+STORE_TOKEN="$(cat "$STORE_TOKEN_FILE")"
+
+# The store must listen where role containers can reach it; loopback is invisible inside them.
+# PCS and the host health check use STORE_URL, containers use PCS_SECRET_STORE_CONTAINER_URL.
+if [ "$(uname -s)" = "Darwin" ]; then
+  STORE_HOST="${SECRET_STORE_HOST:-0.0.0.0}"
+  STORE_URL="${PCS_SECRET_STORE_URL:-http://127.0.0.1:${STORE_PORT}}"
+  STORE_CONTAINER_URL="${PCS_SECRET_STORE_CONTAINER_URL:-http://${CONTAINER_HOST_IP}:${STORE_PORT}}"
+else
+  STORE_HOST="${SECRET_STORE_HOST:-$LAN_IP}"
+  STORE_URL="${PCS_SECRET_STORE_URL:-http://${LAN_IP}:${STORE_PORT}}"
+  STORE_CONTAINER_URL="${PCS_SECRET_STORE_CONTAINER_URL:-$STORE_URL}"
+fi
+case "$STORE_HOST" in
+  0.0.0.0|"::") STORE_CHECK_HOST=127.0.0.1 ;;
+  *) STORE_CHECK_HOST="$STORE_HOST" ;;
+esac
+store_ready() {
+  node -e "fetch('http://${STORE_CHECK_HOST}:${STORE_PORT}/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+}
+if ! store_ready; then
+  if [ ! -d "$ROOT/secret-store/node_modules" ]; then
+    say "installing Secret Store dependencies"
+    (cd secret-store && npm ci --no-audit --no-fund)
+  fi
+  say "starting the Secret Store on ${STORE_HOST}:${STORE_PORT}"
+  # setsid on Linux keeps Ctrl+C on the foreground PCS from also stopping the store; macOS has no
+  # setsid, so the child ignores SIGINT and stays up either way.
+  STORE_DETACH=""
+  command -v setsid >/dev/null 2>&1 && STORE_DETACH="setsid"
+  (
+    cd secret-store
+    SECRET_STORE_HOST="$STORE_HOST" \
+    SECRET_STORE_PORT="$STORE_PORT" \
+    SECRET_STORE_SECRETS_FILE="$STORE_DIR/secrets.json" \
+    SECRET_STORE_POLICY_FILE="$STORE_DIR/policy.json" \
+    SECRET_STORE_AUDIT_FILE="$STORE_DIR/audit.jsonl" \
+    SECRET_STORE_ADMIN_TOKEN="$STORE_TOKEN" \
+    PCS_PUBLIC_KEY_FILE="$ROOT/pcs-issuer/keys/public.pem" \
+    $STORE_DETACH nohup bash -c 'trap "" INT; exec "$@"' _ npm start \
+      >> "$STORE_DIR/secret-store.log" 2>&1 < /dev/null &
+  )
+  for _ in $(seq 1 40); do
+    store_ready && break
+    sleep 0.5
+  done
+  store_ready || die "the Secret Store did not become ready; see $STORE_DIR/secret-store.log"
+fi
+export PCS_SECRET_STORE_URL="$STORE_URL"
+export PCS_SECRET_STORE_CONTAINER_URL="$STORE_CONTAINER_URL"
+export PCS_SECRET_STORE_ADMIN_TOKEN="${PCS_SECRET_STORE_ADMIN_TOKEN:-$STORE_TOKEN}"
 
 # ---------------------------------------------------------------- build
 if [ ! -d "$ROOT/pcs-issuer/node_modules" ]; then
@@ -230,6 +301,7 @@ cat <<EOF
 
   Admin app / API   http://${PCS_HOST}:${PCS_PORT}
   Database          PostgreSQL on 127.0.0.1:${PG_PORT} (container ${PG_CONTAINER})
+  Secret Store      ${STORE_URL} (data and admin token under ${STORE_DIR})
   Host cache        ~/.platform/cache
 
 Next steps:

@@ -1,10 +1,12 @@
 import { t } from "../i18n";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { db } from "../store";
 import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import {
   deleteProfile,
+  fetchAuthConfig,
   saveAgentProfile,
   saveApiProfile,
   setProfileEnabled,
@@ -22,8 +24,21 @@ type Tab = "agent" | "api";
  */
 export function ProfilesPage() {
   const live = useLive();
+  // A deploy dialog that finds no Agent navigates here with `state.createAgent` set. Read it while
+  // initializing so the page and the create dialog paint in one commit: opening the dialog from an
+  // effect would flash the bare page first, and a query string would need a second navigation to
+  // strip itself, both of which read as a hitch.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const createAgent = Boolean((location.state as { createAgent?: boolean } | null)?.createAgent);
+  // Snapshot the arrival mode: the page fade would blink beneath a dialog that is already open
+  // (the same reason the host page skips its enter animation for ?add=1). Keeping it in state stops
+  // the fade from restarting when the arrival state is cleared below.
+  const [skipEnter] = useState(createAgent);
   const [tab, setTab] = useState<Tab>("agent");
-  const [editAgent, setEditAgent] = useState<AgentProfile | "new" | null>(null);
+  const [editAgent, setEditAgent] = useState<AgentProfile | "new" | null>(() =>
+    createAgent ? "new" : null,
+  );
   const [editApi, setEditApi] = useState<ApiProfile | "new" | null>(null);
   const [busy, setBusy] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<
@@ -31,6 +46,26 @@ export function ProfilesPage() {
   >(null);
   const [confirmError, setConfirmError] = useState("");
   const [error, setError] = useState("");
+  // Whether the control plane has a Secret Store, i.e. whether a key typed here can be stored at all.
+  // Optimistic until the hint arrives so the dialog does not flicker.
+  const [secretStore, setSecretStore] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchAuthConfig().then((cfg) => {
+      if (alive) setSecretStore(cfg.secret_store);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // The deploy dialog opens this page with `state.createAgent`; clear it once the dialog has opened so
+  // navigating back and forward (or refreshing) does not resurrect the create dialog.
+  useEffect(() => {
+    if (!createAgent) return;
+    navigate(location.pathname, { replace: true, state: null });
+  }, [createAgent, location.pathname, navigate]);
 
   async function remove(kind: "agent" | "api", id: string) {
     setBusy(id);
@@ -58,7 +93,7 @@ export function ProfilesPage() {
   }
 
   return (
-    <div className="page">
+    <div className={`page${skipEnter ? " page-static" : ""}`}>
       <PageHead
         title={t("配置")}
         meta={
@@ -153,6 +188,12 @@ export function ProfilesPage() {
           )}
         </Card>
       ) : (
+        <>
+        {!secretStore && (
+          <Callout tone="warn">
+            {t("当前部署未配置 Secret Store：只能保存 secret:// 引用，密钥无法在这里写入。重新执行 scripts/deploy.sh 会启动它。")}
+          </Callout>
+        )}
         <Card flush>
           {db.apis.length === 0 ? (
             <Empty text={t("还没有 API Profile。")} />
@@ -205,6 +246,7 @@ export function ProfilesPage() {
             </table>
           )}
         </Card>
+        </>
       )}
 
       {editAgent && (
@@ -217,6 +259,7 @@ export function ProfilesPage() {
       {editApi && (
         <ApiProfileModal
           value={editApi === "new" ? null : editApi}
+          secretStore={secretStore}
           onClose={() => setEditApi(null)}
           onSaved={live.refresh}
         />
@@ -312,25 +355,29 @@ function agentVersion(kind: AgentKind): string {
 
 type ApiProvider = "deepseek" | "anthropic" | "openai" | "custom";
 
+// Base URLs are host roots, not `/v1` endpoints: the API adapter joins the path the Agent asks
+// for (`/v1/messages`, `/v1/chat/completions`, …). For a model Profile the address must speak the
+// Anthropic Messages API, which is what the Claude Code CLI calls.
 const API_PRESETS: Record<
   Exclude<ApiProvider, "custom">,
   { label: string; base_url: string; auth_type: string; secret_ref: string }
 > = {
   deepseek: {
     label: "DeepSeek",
-    base_url: "https://api.deepseek.com/v1",
+    base_url: "https://api.deepseek.com/anthropic",
+    // DeepSeek's Anthropic-compatible endpoint takes the key as a bearer token (ANTHROPIC_AUTH_TOKEN).
     auth_type: "bearer",
     secret_ref: "secret://apis/deepseek",
   },
   anthropic: {
     label: "Anthropic",
-    base_url: "https://api.anthropic.com/v1",
+    base_url: "https://api.anthropic.com",
     auth_type: "api_key",
     secret_ref: "secret://apis/anthropic",
   },
   openai: {
     label: "OpenAI",
-    base_url: "https://api.openai.com/v1",
+    base_url: "https://api.openai.com",
     auth_type: "bearer",
     secret_ref: "secret://apis/openai",
   },
@@ -379,6 +426,14 @@ function AgentProfileModal({
   );
   const [description, setDescription] = useState(value?.description ?? "");
   const [systemPrompt, setSystemPrompt] = useState(value?.system_prompt ?? "");
+  // Empty = the host credential file (ANTHROPIC_API_KEY on the host). Selecting an API Profile routes
+  // model traffic through the local adapter with a Secret Store credential instead.
+  const [modelApi, setModelApi] = useState(value?.model_api_profile_id ?? "");
+  // Only enabled llm Profiles can serve as the model; the current value stays listed even if disabled,
+  // so editing another field does not silently unbind it.
+  const modelApis = db.apis.filter(
+    (a) => (a.kind === "llm" && a.enabled !== false) || a.id === modelApi,
+  );
   // An empty string means all permissions by default; the runtime treats an empty allowed_tools as unrestricted.
   const [permissions, setPermissions] = useState((value?.allowed_tools ?? []).join(", "));
   const [maxTurns, setMaxTurns] = useState(value?.limits?.max_turns?.toString() ?? "");
@@ -438,6 +493,8 @@ function AgentProfileModal({
           goals: "",
           allowed_tools: splitList(permissions),
           limits,
+          // null unbinds the model API; the deployment then needs the host credential file again.
+          model_api_profile_id: modelApi || null,
         },
         onSaved,
       );
@@ -492,6 +549,22 @@ function AgentProfileModal({
             </select>
           </Field>
         </div>
+
+        <Field label={t("模型 API")}>
+          <select className="input" value={modelApi} onChange={(e) => setModelApi(e.target.value)}>
+            <option value="">{t("使用主机凭据（不经适配器）")}</option>
+            {modelApis.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} · {a.base_url}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {modelApi && (
+          <p className="muted small" style={{ margin: 0 }}>
+            {t("模型请求走本机 API 适配器，密钥来自 Secret Store；部署构建机 / 调度机时要把这个 API 一起选中。")}
+          </p>
+        )}
 
         <Field label={t("描述")}>
           <input
@@ -602,10 +675,13 @@ function AgentProfileModal({
 
 function ApiProfileModal({
   value,
+  secretStore,
   onClose,
   onSaved,
 }: {
   value: ApiProfile | null;
+  /** False when the control plane has no Secret Store: the key field is then disabled and only refs can be saved. */
+  secretStore: boolean;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -653,7 +729,7 @@ function ApiProfileModal({
         },
         onSaved,
       );
-      if (apiKey.trim()) {
+      if (apiKey.trim() && secretStore) {
         // The key is written only to the Secret Store; on failure keep the dialog and the already-created Profile so a retry does not create another one.
         setCreatedId(id);
         await writeApiKey(id, apiKey.trim());
@@ -710,9 +786,16 @@ function ApiProfileModal({
             className="input"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.deepseek.com/v1"
+            placeholder={
+              kind === "llm" ? "https://api.deepseek.com/anthropic" : "https://api.deepseek.com"
+            }
           />
         </Field>
+        {kind === "llm" && (
+          <p className="muted small" style={{ margin: 0 }}>
+            {t("模型请求经构建机内的 API 适配器转发，地址只写到主机根路径；必须提供 Anthropic Messages 接口（DeepSeek 用 https://api.deepseek.com/anthropic）。")}
+          </p>
+        )}
 
         <div className="row">
           <Field label="API Key">
@@ -721,8 +804,11 @@ function ApiProfileModal({
               type="password"
               autoComplete="new-password"
               value={apiKey}
+              disabled={!secretStore}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder={value ? t("留空不修改") : "sk-…"}
+              placeholder={
+                !secretStore ? t("未配置 Secret Store") : value ? t("留空不修改") : "sk-…"
+              }
             />
           </Field>
           <Field label={t("超时（秒）")}>

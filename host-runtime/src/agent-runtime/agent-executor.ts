@@ -307,11 +307,24 @@ export async function runAgentTask(
     }),
   };
   if (opts.apiAdapter) env.PLATFORM_API_PROXY = opts.apiAdapter.url;
+  // A Claude-compatible model bound through an API Profile is served by the local adapter: the CLI
+  // sees only the adapter handle and a placeholder key, and the real credential is injected at egress.
+  const modelProfileId = profile.model_api_profile_id ?? null;
+  const modelViaAdapter = Boolean(
+    modelProfileId && opts.apiAdapter && opts.profiles.api.has(modelProfileId),
+  );
   // Pass through only variables the deployer listed explicitly; anything with the platform's own prefix is rejected, so a misconfiguration cannot
   // hand the tool token or API proxy handle to the Agent.
   for (const name of agentPassEnv()) {
     if (name.startsWith("PLATFORM_")) continue;
+    // The model handle wins over a host credential file: the Secret Store value must not be
+    // shadowed by a stale ANTHROPIC_API_KEY left in the container environment.
+    if (modelViaAdapter && (name === "ANTHROPIC_API_KEY" || name === "ANTHROPIC_BASE_URL")) continue;
     if (process.env[name] !== undefined) env[name] = process.env[name];
+  }
+  if (modelViaAdapter && opts.apiAdapter && modelProfileId) {
+    env.ANTHROPIC_BASE_URL = `${opts.apiAdapter.url}/${encodeURIComponent(modelProfileId)}`;
+    env.ANTHROPIC_API_KEY = "platform-api-adapter";
   }
 
   const adapter =

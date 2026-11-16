@@ -147,40 +147,48 @@ PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,DEEPSEEK_API_KEY,CO
 Codex 走 `CODEX_HOME=/opt/platform/codex/config.toml` 里的 DeepSeek Responses API。
 换回官方 Anthropic 时覆盖 `ANTHROPIC_BASE_URL` 即可。
 
-### 用 LiteLLM 统一模型流量
+### 用 API Profile 转发模型流量
 
-目前 Agent Profile 不能引用 API Profile（部署时会以 `AGENT_REQUIRES_SECRET_STORE` 拒绝），
-所以按构建机限流、记账只能放在模型端点前面。[LiteLLM](https://github.com/BerriAI/litellm)
-正好可以不动平台做到这一点：它提供 Anthropic 兼容的 `/v1/messages`，也就是 Claude Code 本来就在调的接口。
+Agent Profile 可以引用 API Profile：在 Agent 的「模型 API」里选一个 `llm` 类型的 Profile，部署构建机 / 调度机时
+界面会自动把它带上。host-runtime 会把 `ANTHROPIC_BASE_URL` 指向本机适配器
+（`http://127.0.0.1:<port>/<api_profile_id>`）并配一个占位密钥。真实密钥在出口处用随部署下发的
+实例身份令牌向 Secret Store 解析：
 
-1. 把代理跑在构建机能访问到的地方（单独一个 Compose 服务或主机，给个内部域名）。
-2. 上游密钥放在代理里，不要放到构建机主机上。最小 `config.yaml`：
+- 密钥不进入容器环境变量、部署载荷、数据库和日志；
+- egress 默认拒绝：适配器只访问该 Profile `base_url` 里的主机名（每个 Profile 合成一条策略；
+  Profile 自己写了 `egress` 时以它为准）；
+- 按 Profile 的 rpm / 每日配额与每次调用一条审计（不含正文）都在适配器里执行；
+- 这条路径不需要主机上的凭据文件，构建机可以不配 `~/.config/platform/agent-env`。
 
-   ```yaml
-   model_list:
-     - model_name: claude-sonnet-4-5
-       litellm_params:
-         model: anthropic/claude-sonnet-4-5
-         api_key: os.environ/ANTHROPIC_UPSTREAM_KEY
-     - model_name: claude-haiku-4-5
-       litellm_params:
-         model: deepseek/deepseek-chat
-         api_key: os.environ/DEEPSEEK_API_KEY
-   general_settings:
-     master_key: os.environ/LITELLM_MASTER_KEY
-   ```
+Base URL 必须提供 Anthropic Messages 接口（Claude Code 调 `/v1/messages`），并写到主机根路径：
+`https://api.deepseek.com/anthropic`、`https://api.anthropic.com`，或任何同协议的代理。
+Codex 不走适配器（它的提供方设置来自 `CODEX_HOME`），仍用凭据文件那条路径。
 
-3. 按构建机池（或按 Agent）发虚拟 Key，然后让容器指向代理：
+部署绑定 API Profile 的实例要求控制面有 `PCS_SECRET_STORE_URL`，容器才知道去哪里解析 `secret://`；
+`scripts/deploy.sh` 会启动 Secret Store 并设置它，必要时再设 `PCS_SECRET_STORE_CONTAINER_URL`
+（例如 macOS 上容器经 Docker 网桥网关访问）。没有它时 Profiles 页面会提示，部署计划以
+`SECRET_STORE_NOT_CONFIGURED` 拒绝。
 
-   ```dotenv
-   ANTHROPIC_BASE_URL=http://litellm.internal:4000
-   ANTHROPIC_API_KEY=sk-<virtual-key>
-   # 固定 CLI 发出的模型名，确保和 config.yaml 的 model_name 对上。
-   ANTHROPIC_MODEL=claude-sonnet-4-5
-   PLATFORM_AGENT_PASS_ENV=ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,DEEPSEEK_API_KEY,CODEX_HOME
-   ```
+实例身份令牌按 `PCS_INSTANCE_TOKEN_HOURS`（默认 720，即 30 天）签发，随部署写到
+`/opt/platform/tokens/<instance_id>.jwt`。
 
-到达构建机的模型凭据只有这个虚拟 Key，额度与消费记录都在 LiteLLM 里按 Key 设置。
+[LiteLLM](https://github.com/BerriAI/litellm) 也可以作为 API Profile 的后端：它的 Anthropic 兼容接口
+正是 CLI 需要的，Profile 填代理根地址和 Key，上游密钥与虚拟 Key 限额留在代理里。
+
+```yaml
+model_list:
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_UPSTREAM_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+```
+
 代理放在可信网络内，不要把 master key 发给构建机。Codex 也可以走 LiteLLM 的 OpenAI 兼容端点，
 改 `CODEX_HOME` 里 `base_url` 和 `env_key` 即可。
 
@@ -191,14 +199,16 @@ Codex 走 `CODEX_HOME=/opt/platform/codex/config.toml` 里的 DeepSeek Responses
 调度机：几台机器的小平台用 0.5 秒，机器很多时调回 1–2 秒省数据库。
 控制台前端另有自适应轮询（前 5 秒 150ms 一档，随后退避到 1 秒）。
 
-Profile 从 PCS 导出的运行时视图挂载：把 `agent_profiles` + `bindings` 写到文件，
-挂进容器并在 `deploy/.env` 指定 `PROFILES_FILE=/opt/platform/profiles.json`（构建机
-和调度机 entrypoint 都会把它写进 `runtime.config.json`）。
+Profile 由 PCS 随部署下发：`/opt/platform/profiles.json` 里是 Agent Profile 的运行时视图、
+当前实例绑定的 API Profile 与 `bindings`；构建机和调度机 entrypoint 把它和
+`API_PROFILE_IDS`、`EGRESS_POLICIES_JSON` 一起写进 `runtime.config.json`。
+手工部署（不用 PCS）时按同样格式自己提供文件，并用 `PROFILES_FILE=/opt/platform/profiles.json` 指过去。
 
 ## 实例令牌
 
-调度机启用实例 JWT 时，把 PCS 签发的令牌放到 `tokens/<instance_id>.jwt`，容器通过只读卷
-`/opt/platform/tokens` 读取：
+绑定 API Profile 时，PCS 随部署签发实例身份令牌并写到 `/opt/platform/tokens/<instance_id>.jwt`，
+容器通过只读卷 `/opt/platform/tokens` 读取；令牌的 `aud` 是 `scheduler`，Secret Store 用它校验解析请求。
+不用 PCS 时可以手工签发：
 
 ```bash
 npm --prefix ../pcs-issuer run issue -- instance \

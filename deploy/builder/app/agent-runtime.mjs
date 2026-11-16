@@ -1482,7 +1482,7 @@ var ApiAdapter = class {
           headers,
           body: method === "GET" || method === "HEAD" ? void 0 : init.body,
           redirect: "manual",
-          signal: AbortSignal.timeout(profile.timeout_seconds * 1e3)
+          signal: AbortSignal.timeout(upstreamTimeoutMs(profile))
         });
       } catch (e) {
         if (idempotent && attempt === 0) {
@@ -1591,11 +1591,16 @@ var ApiAdapter = class {
 function joinUrl(base, path13) {
   return `${base.replace(/\/+$/, "")}/${path13.replace(/^\/+/, "")}`;
 }
+function upstreamTimeoutMs(profile) {
+  const seconds = profile.kind === "llm" ? Math.max(profile.timeout_seconds, 600) : profile.timeout_seconds;
+  return seconds * 1e3;
+}
 function sanitizeHeaders(input) {
   const out = {};
   for (const [k, v] of Object.entries(input)) {
     const key = k.toLowerCase();
     if (HOP_HEADERS.has(key) || ["authorization", "cookie", "host", "x-api-key"].includes(key)) continue;
+    if (key === "accept-encoding" || key === "content-length") continue;
     out[key] = v;
   }
   return out;
@@ -2408,9 +2413,18 @@ async function runAgentTask(task, ctx, opts) {
     })
   };
   if (opts.apiAdapter) env.PLATFORM_API_PROXY = opts.apiAdapter.url;
+  const modelProfileId = profile.model_api_profile_id ?? null;
+  const modelViaAdapter = Boolean(
+    modelProfileId && opts.apiAdapter && opts.profiles.api.has(modelProfileId)
+  );
   for (const name of agentPassEnv()) {
     if (name.startsWith("PLATFORM_")) continue;
+    if (modelViaAdapter && (name === "ANTHROPIC_API_KEY" || name === "ANTHROPIC_BASE_URL")) continue;
     if (process.env[name] !== void 0) env[name] = process.env[name];
+  }
+  if (modelViaAdapter && opts.apiAdapter && modelProfileId) {
+    env.ANTHROPIC_BASE_URL = `${opts.apiAdapter.url}/${encodeURIComponent(modelProfileId)}`;
+    env.ANTHROPIC_API_KEY = "platform-api-adapter";
   }
   const adapter = profile.adapter === "http-local" ? new HttpLocalAdapter(profile, hooks) : new StdioAdapter(profile, ctx.workspaceDir, env, hooks);
   let aborted = false;

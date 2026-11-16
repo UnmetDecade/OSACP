@@ -143,6 +143,15 @@ try {
 // Chat is optional per deployment: without task.chat.builder the scheduler never
 // dispatches a chat task here, and the console hides the entry point.
 const chat = process.env.CHAT_ENABLED !== "0";
+// API Profiles bound by the deployment: names only; values are resolved by the API adapter against the Secret Store.
+const apiProfileIds = (process.env.API_PROFILE_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+let egressPolicies = {};
+try {
+  const parsed = JSON.parse(process.env.EGRESS_POLICIES_JSON ?? "{}");
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) egressPolicies = parsed;
+} catch {
+  // A malformed policy map leaves the API adapter in deny-by-default mode instead of failing the instance.
+}
 const cfg = {
   scheduler_url: process.env.SCHEDULER_URL,
   heartbeat_seconds: 10,
@@ -157,11 +166,13 @@ const cfg = {
   audit_dir: "/opt/platform/audit",
   // PCS-exported runtime view (agent_profiles + bindings); without it, only the deterministic executor is available.
   ...(process.env.PROFILES_FILE ? { profiles_file: process.env.PROFILES_FILE } : {}),
+  ...(Object.keys(egressPolicies).length ? { egress_policies: egressPolicies } : {}),
   instances: [{
     instance_id: process.env.INSTANCE_ID,
     role_id: process.env.ROLE_ID || "builder",
     host_id: process.env.HOST_ID || "docker-host-01",
     agent_profile_id: process.env.AGENT_PROFILE_ID || "agp_builder",
+    ...(apiProfileIds.length ? { api_profile_ids: apiProfileIds } : {}),
     task_types: ["task.build", ...(chat ? ["task.chat.builder"] : []), "task.console.builder"],
     capabilities: {
       healthy: chat ? ["code.build", "shell", "llm"] : ["code.build", "shell"],

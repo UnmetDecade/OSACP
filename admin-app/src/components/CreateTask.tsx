@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from
 import { Link } from "react-router-dom";
 import { db } from "../store";
 import { useHostScope } from "../host-context";
+import { studioScheduler } from "../host-tasks";
 import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import { submitBuild } from "../api";
@@ -166,13 +167,15 @@ async function readFile(file: File): Promise<TaskAttachment> {
 export function CreateTaskModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const live = useLive();
   const { host } = useHostScope();
-  // Tasks are always handed to the local root scheduler, which dispatches them to a builder or node scheduler by the scheduling algorithm.
-  const rootScheduler = db.instances.find(
-    (i) =>
-      i.role === "scheduler" &&
-      (!host || i.host_id === host.id) &&
-      (i.scheduler_role ?? "root") === "root",
-  );
+  // Tasks go to this studio's scheduler: the local root scheduler, or — when the host is a bare-metal
+  // builder that joined a scheduler elsewhere — the scheduler that dispatches to its builders.
+  const rootScheduler =
+    db.instances.find(
+      (i) =>
+        i.role === "scheduler" &&
+        (!host || i.host_id === host.id) &&
+        (i.scheduler_role ?? "root") === "root",
+    ) ?? studioScheduler(host);
   // The title is the human-readable row in the task list; the description carries the full instruction.
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");

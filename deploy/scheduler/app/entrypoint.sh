@@ -123,6 +123,15 @@ const fs = require("node:fs");
 // Chat is optional per deployment: without task.chat.scheduler the scheduler
 // never dispatches a conversation to this instance.
 const chat = process.env.CHAT_ENABLED !== "0";
+// API Profiles bound by the deployment: names only; values are resolved by the API adapter against the Secret Store.
+const apiProfileIds = (process.env.API_PROFILE_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+let egressPolicies = {};
+try {
+  const parsed = JSON.parse(process.env.EGRESS_POLICIES_JSON ?? "{}");
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) egressPolicies = parsed;
+} catch {
+  // A malformed policy map leaves the API adapter in deny-by-default mode instead of failing the instance.
+}
 const cfg = {
   scheduler_url: "http://127.0.0.1:" + (process.env.PORT || "8443"),
   heartbeat_seconds: 10,
@@ -138,11 +147,13 @@ const cfg = {
   keep_workspace: process.env.KEEP_WORKSPACE === "1",
   audit_dir: "/opt/platform/audit",
   ...(process.env.PROFILES_FILE ? { profiles_file: process.env.PROFILES_FILE } : {}),
+  ...(Object.keys(egressPolicies).length ? { egress_policies: egressPolicies } : {}),
   instances: [{
     instance_id: process.env.SCHEDULER_INSTANCE_ID || "scheduler",
     role_id: "scheduler",
     host_id: process.env.SCHEDULER_HOST_ID || "docker-host-01",
     agent_profile_id: process.env.SCHEDULER_AGENT_PROFILE_ID || "agp_scheduler",
+    ...(apiProfileIds.length ? { api_profile_ids: apiProfileIds } : {}),
     task_types: [...(chat ? ["task.chat.scheduler"] : []), "task.console.scheduler"],
     capabilities: { healthy: chat ? ["queue", "lease", "shell", "llm"] : ["queue", "lease", "shell"] },
     slots: 1,

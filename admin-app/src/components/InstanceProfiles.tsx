@@ -88,7 +88,13 @@ export function InstanceProfilesModal({
               <button
                 key={a.id}
                 className={`select-card${agent === a.id ? " selected" : ""}`}
-                onClick={() => setAgent(a.id)}
+                onClick={() => {
+                  setAgent(a.id);
+                  // The Agent's model API must be bound to the instance as well, or the control
+                  // plane refuses the deployment (the Agent would reference an unbound API).
+                  const model = a.model_api_profile_id;
+                  if (model) setApiIds((prev) => (prev.includes(model) ? prev : [...prev, model]));
+                }}
               >
                 <span className="select-head"><b>{a.name}</b><Tag>v{a.version}</Tag></span>
                 <code>{a.adapter}</code>

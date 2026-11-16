@@ -223,7 +223,7 @@ export class ApiAdapter {
           headers,
           body: method === "GET" || method === "HEAD" ? undefined : (init.body as unknown as NonNullable<RequestInit["body"]>),
           redirect: "manual",
-          signal: AbortSignal.timeout(profile.timeout_seconds * 1000),
+          signal: AbortSignal.timeout(upstreamTimeoutMs(profile)),
         });
       } catch (e) {
         if (idempotent && attempt === 0) {
@@ -341,11 +341,23 @@ function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 
+/**
+ * Model responses routinely take longer than interactive tool calls: an llm profile gets a
+ * 10-minute floor so a short preset timeout does not cut off a legitimate completion.
+ */
+function upstreamTimeoutMs(profile: ApiProfile): number {
+  const seconds = profile.kind === "llm" ? Math.max(profile.timeout_seconds, 600) : profile.timeout_seconds;
+  return seconds * 1000;
+}
+
 function sanitizeHeaders(input: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(input)) {
     const key = k.toLowerCase();
     if (HOP_HEADERS.has(key) || ["authorization", "cookie", "host", "x-api-key"].includes(key)) continue;
+    // Forwarding accept-encoding would stop undici from decompressing the upstream body while the
+    // response headers below do not carry content-encoding; content-length is recomputed by fetch.
+    if (key === "accept-encoding" || key === "content-length") continue;
     out[key] = v;
   }
   return out;

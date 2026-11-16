@@ -103,11 +103,9 @@ function BuilderRow({ builder }: { builder: Instance }) {
       (i.scheduler_role ?? "root") === "root",
   );
   // Attribute by instance name, so it still matches when a scheduler restart changes the deployment_id.
+  // A bare-metal builder may attach to a scheduler on another host, so the id lookup must not be limited to its own.
   const scheduler = db.instances.find(
-    (i) =>
-      i.role === "scheduler" &&
-      i.host_id === builder.host_id &&
-      i.id === (builder.scheduler_instance_id ?? hostRoot?.id),
+    (i) => i.role === "scheduler" && i.id === (builder.scheduler_instance_id ?? hostRoot?.id),
   );
   return (
     <div className="list-row">

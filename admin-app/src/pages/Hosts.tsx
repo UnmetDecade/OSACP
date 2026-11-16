@@ -160,7 +160,7 @@ function HostRow({ host }: { host: Host }) {
         </div>
         <div className="list-meta">
           <span>{host.os} {host.arch}</span>
-          <span>Docker {host.runtime_version.replace(/^docker\s+/i, "")}</span>
+          <span>{t("运行时 {version}", { version: host.runtime_version })}</span>
           {host.transport === "ssh" && (
             <code>{host.ssh_user ?? "root"}@{address}:{host.ssh_port ?? 22}</code>
           )}
@@ -406,9 +406,14 @@ export function HostSettingsModal({
           : out.native_builder
             ? {
                 tone: "info",
-                text: t("裸机构建机已创建（{status}），主机上报后即可接任务。", {
-                  status: out.native_builder.status,
-                }),
+                // Saving again is idempotent: the existing builder is reused, so "created" would be wrong.
+                text: out.native_builder.created
+                  ? t("裸机构建机已创建（{status}），主机上报后即可接任务。", {
+                      status: out.native_builder.status,
+                    })
+                  : t("裸机构建机已在运行（{status}）。", {
+                      status: out.native_builder.status,
+                    }),
               }
             : null,
       );
