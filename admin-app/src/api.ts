@@ -105,6 +105,8 @@ export async function editHost(
   native_builder?: { deployment_id: string; created: boolean; status: string };
   /** Reason the bare-metal builder did not come up after the role switch. */
   warning?: string;
+  /** Why it did not come up: SCHEDULER_URL_MISSING means it will start by itself once a scheduler exists. */
+  warning_code?: string;
 }> {
   const out = await liveUpdateHost(getLiveConnection(), id, input);
   await afterRefresh();
@@ -113,6 +115,7 @@ export async function editHost(
     ...(out.role_mode ? { role_mode: out.role_mode } : {}),
     ...(out.native_builder ? { native_builder: out.native_builder } : {}),
     ...(out.warning ? { warning: out.warning } : {}),
+    ...(out.warning_code ? { warning_code: String(out.warning_code) } : {}),
   };
 }
 
@@ -525,6 +528,23 @@ export async function saveApiProfile(
 /** Write the API key into the Secret Store; the control plane only forwards it, never stores or echoes it. */
 export async function writeApiKey(profileId: string, value: string): Promise<void> {
   await liveSetApiProfileSecret(getLiveConnection(), profileId, value);
+}
+
+/**
+ * Deployment capabilities the Profiles page has to reflect before the user saves anything.
+ *
+ * `secret_store` is false when the control plane runs without PCS_SECRET_STORE_URL (a hand-started
+ * PCS, for example): an API Profile can still be created, but only with a secret:// reference that
+ * the deployment fills in later. Fail closed: an unreachable config endpoint reads as "unavailable"
+ * so the dialog never promises key storage it cannot deliver.
+ */
+export async function fetchAuthConfig(): Promise<{ secret_store: boolean }> {
+  try {
+    const out = await pcs<{ secret_store?: boolean }>(getLiveConnection(), "/api/v1/auth/config");
+    return { secret_store: Boolean(out?.secret_store) };
+  } catch {
+    return { secret_store: false };
+  }
 }
 
 /** Delete an unreferenced Profile; the control plane returns 409 if an instance or Agent still references it. */

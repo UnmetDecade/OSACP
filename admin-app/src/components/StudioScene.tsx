@@ -317,7 +317,13 @@ export function StudioScene({
           <div className={`scene-empty-roles${hasBareBuilder ? " is-builder-only" : ""}`}>
             {!hasBareBuilder && <EmptyRoleCard role="scheduler" onDeploy={onDeployScheduler} />}
             {builders.length === 0 ? (
-              <EmptyRoleCard role="builder" onDeploy={onDeployBuilder} />
+              // The role switch already happened, only the instance is missing (no scheduler yet). Showing the
+              // create card again would invite the operator to repeat an action that has nothing left to do.
+              host.role_mode === "builder" ? (
+                <EmptyRoleCard role="builder" waiting />
+              ) : (
+                <EmptyRoleCard role="builder" onDeploy={onDeployBuilder} />
+              )
             ) : (
               builders.map((b) => <EmptyRoleCard key={b.key} role="builder" builder={b} />)
             )}
@@ -355,17 +361,21 @@ function EmptyRoleCard({
   role,
   onDeploy,
   builder,
+  waiting = false,
 }: {
   role: "scheduler" | "builder";
   onDeploy?: () => void;
   /** When a builder already exists show its real state instead of prompting to deploy. */
   builder?: Instance;
+  /** The host is already a bare-metal builder and only waits for a scheduler; never offer to deploy again. */
+  waiting?: boolean;
 }) {
   const isScheduler = role === "scheduler";
   const runningTask = builder
     ? db.tasks.find((t) => t.instance_id === builder.id && t.state === "RUNNING")
     : undefined;
   const status = builder ? builderStatus(builder, runningTask) : undefined;
+  const emptyTag = waiting ? "neutral" : onDeploy ? "warn" : "neutral";
   return (
     <div className={`scene-scheduler${builder ? "" : " is-empty"} is-${role}`}>
       <div className="scene-node-head">
@@ -373,7 +383,9 @@ function EmptyRoleCard({
         {builder ? (
           <Badge value={status!.value} text={status!.text} />
         ) : (
-          <Tag tone={onDeploy ? "warn" : "neutral"}>{onDeploy ? t("未部署") : t("未选择主机")}</Tag>
+          <Tag tone={emptyTag}>
+            {waiting ? t("等待调度机") : onDeploy ? t("未部署") : t("未选择主机")}
+          </Tag>
         )}
       </div>
       <div className="scene-node-body">
@@ -387,14 +399,18 @@ function EmptyRoleCard({
           <b>
             {builder
               ? builder.name
-              : t(isScheduler ? "调度机器人 · {name}" : "构建机器人 · {name}", {
-                  name: t(CHARACTERS[role].name),
-                })}
+              : waiting
+                ? t("裸机构建机 · {name}", { name: t(CHARACTERS[role].name) })
+                : t(isScheduler ? "调度机器人 · {name}" : "构建机器人 · {name}", {
+                    name: t(CHARACTERS[role].name),
+                  })}
           </b>
           <p>
             {builder
               ? `${osLabel(builder.os)} · ${builder.cpu_limit}C / ${Math.round(builder.mem_limit_mb / 1024)}G`
-              : t("还没有部署")}
+              : waiting
+                ? t("主机已切换为裸机构建机，部署调度机后自动接入")
+                : t("还没有部署")}
           </p>
           <div className="chips">
             {builder ? (
@@ -402,13 +418,17 @@ function EmptyRoleCard({
             ) : isScheduler ? (
               <Tag tone="accent">ΣW 0</Tag>
             ) : (
-              <Tag>{t("容器 / 裸机")}</Tag>
+              <Tag>{waiting ? t("裸机") : t("容器 / 裸机")}</Tag>
             )}
           </div>
         </div>
       </div>
       {builder ? (
         <Link className="scene-action" to={`/builders/${builder.id}`}>{t("打开构建机")}</Link>
+      ) : waiting ? (
+        <button type="button" className="scene-action" disabled>
+          {t("等待调度机接入")}
+        </button>
       ) : (
         <button
           type="button"

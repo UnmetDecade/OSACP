@@ -1,5 +1,6 @@
 import { t } from "../i18n";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { deployScheduler, type SchedulerDraft } from "../api";
 import { errorMessage } from "../live/client";
 import { db } from "../store";
@@ -40,8 +41,20 @@ export function DeploySchedulerModal({
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
+  const navigate = useNavigate();
   const agents = db.agents.filter((a) => a.enabled !== false && a.role === "scheduler");
   const apis = db.apis.filter((a) => a.enabled !== false);
+  /**
+   * A scheduler cannot be deployed without an Agent, so the empty state hands the operator to the
+   * Config page with the new-Agent dialog already open instead of leaving a dead-end modal.
+   *
+   * Navigate without closing first: router navigation is a transition, so the close would commit a
+   * dashboard re-render (scene measurement) before the new route paints, which reads as a hitch.
+   * The dashboard unmounts together with this dialog when the route changes.
+   */
+  const goCreateAgent = () => {
+    navigate("/profiles", { state: { createAgent: true } });
+  };
   const root = schedulers.find((s) => (s.scheduler_role ?? "root") === "root");
   const online = host.state === "ONLINE" || host.state === "WARNING";
 
@@ -166,10 +179,16 @@ export function DeploySchedulerModal({
           <Button onClick={onClose}>{t("取消")}</Button>
           <Button
             variant="primary"
-            onClick={submit}
-            disabled={busy || agents.length === 0 || blocked}
+            onClick={agents.length === 0 ? goCreateAgent : submit}
+            disabled={busy || (agents.length > 0 && blocked)}
           >
-            {busy ? t("部署中…") : role === "root" ? t("部署根调度机") : t("部署结点调度机")}
+            {agents.length === 0
+              ? t("去创建 Agent")
+              : busy
+                ? t("部署中…")
+                : role === "root"
+                  ? t("部署根调度机")
+                  : t("部署结点调度机")}
           </Button>
         </>
       }
@@ -186,7 +205,9 @@ export function DeploySchedulerModal({
           <Callout tone="warn">{t("这台主机还没有根调度机。根是主机入口，必须先部署。")}</Callout>
         )}
         {agents.length === 0 ? (
-          <Callout tone="warn">{t("还没有调度机 Agent。先创建 Agent Profile 再部署。")}</Callout>
+          <Callout tone="warn">
+            {t("还没有调度机 Agent。先在「配置」页创建一个 Agent Profile，再回来部署。")}
+          </Callout>
         ) : (
           <>
             <Field label={t("角色")} hint={t("每台主机最多一个根；结点可以有很多个，逐个挂到父调度机下")}>

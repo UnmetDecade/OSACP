@@ -2,6 +2,7 @@ import { t } from "../i18n";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { db } from "../store";
+import { useLive } from "../live/context";
 import { errorMessage } from "../live/client";
 import {
   deleteWorkspaceEntry,
@@ -24,6 +25,9 @@ import { Icon } from "../components/Icon";
  */
 export function FilesPage() {
   const { id = "" } = useParams();
+  // On a bookmarked deep link the instance list is still empty at first paint; live sync fills it a moment
+  // later, and this subscription is what re-renders the page so it does not stay on "builder not found".
+  useLive();
   const instance = db.instances.find((i) => i.id === id);
   const hostId = instance?.host_id ?? "";
   const instanceId = instance?.id ?? "";

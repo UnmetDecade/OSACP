@@ -116,7 +116,7 @@ export function HostShow() {
           <>
             <span>{host.os} {host.arch}</span>
             <span className="sep" />
-            <span>Docker {host.runtime_version.replace(/^docker\s+/i, "")}</span>
+            <span>{t("运行时 {version}", { version: host.runtime_version })}</span>
             <span className="sep" />
             <span>{host.cpu_total}C / {Math.round(host.mem_total_mb / 1024)} GiB</span>
           </>
@@ -224,7 +224,10 @@ export function HostShow() {
             <div className="kv-list">
               <KeyVal label={t("主机 ID")}>{host.id}</KeyVal>
               <KeyVal label={t("基础系统")}>{host.os} · {host.arch}</KeyVal>
-              <KeyVal label="Docker">{host.runtime_version}</KeyVal>
+              <KeyVal label={t("运行时")}>{host.runtime_version}</KeyVal>
+              <KeyVal label="Docker">
+                {(host.last_probe?.docker_version ?? "-").replace(/^Docker version\s+/i, "")}
+              </KeyVal>
               <KeyVal label={t("主机角色")}>
                 {roleMode === "containers"
                   ? t("容器宿主")

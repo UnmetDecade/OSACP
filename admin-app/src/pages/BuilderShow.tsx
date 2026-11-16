@@ -36,7 +36,17 @@ export function BuilderShow() {
   const ssh = sshCommand(builder.ssh_host, builder.ssh_port, builder.ssh_user);
 
   async function act(action: "start" | "stop" | "restart" | "remove") {
-    if (action === "remove" && !window.confirm(t("删除 {name}？容器与数据卷都会被删除。", { name: builder!.name }))) return;
+    // A bare-metal builder *is* the host's role: deleting it returns the host to a container host,
+    // so the confirmation must not promise a container and its volumes that never existed.
+    if (
+      action === "remove" &&
+      !window.confirm(
+        builder!.execution === "native"
+          ? t("删除 {name}？主机会恢复为普通主机。", { name: builder!.name })
+          : t("删除 {name}？容器与数据卷都会被删除。", { name: builder!.name }),
+      )
+    )
+      return;
     setBusy(action);
     setError("");
     try {
@@ -178,6 +188,7 @@ export function BuilderShow() {
         <Card>
           <CardTitle
             extra={
+              builder.execution !== "native" &&
               builder.ssh_enabled !== false && (
                 <Button size="sm" onClick={copySsh}>
                   <Icon name={copied ? "check" : "copy"} size={13} />
@@ -197,7 +208,11 @@ export function BuilderShow() {
                 .join(" · ") || "-"}
             </KeyVal>
           </div>
-          {builder.ssh_enabled === false ? (
+          {builder.execution === "native" ? (
+            <Callout tone="info">
+              {t("裸机构建机直接运行在主机上，没有独立的 SSH 端口；「终端」会通过主机运行时进入同一个 Shell。")}
+            </Callout>
+          ) : builder.ssh_enabled === false ? (
             <Callout tone="warn">{t("SSH 已在部署中关闭：容器内不启动 sshd，也没有端口映射。在左侧「运行信息」里开启会重建容器。")}</Callout>
           ) : (
             <>

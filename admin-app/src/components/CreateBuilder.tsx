@@ -47,8 +47,13 @@ export function CreateBuilderModal({
   // Capability toggles; editable afterwards from the builder detail page (container is recreated).
   const [sshEnabled, setSshEnabled] = useState(true);
   const [chatEnabled, setChatEnabled] = useState(true);
+  // Prefer the Agent's model API over an arbitrary first Profile: a model bound through an API
+  // Profile must be selected here or the control plane refuses the deployment.
+  const agentModel = db.agents.find((a) => a.id === agent)?.model_api_profile_id;
   const selectedApi =
-    apis[0] && db.apis.some((a) => a.id === apis[0]) ? apis[0] : db.apis[0]?.id ?? "";
+    apis[0] && db.apis.some((a) => a.id === apis[0])
+      ? apis[0]
+      : (db.apis.find((a) => a.id === agentModel)?.id ?? db.apis[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 

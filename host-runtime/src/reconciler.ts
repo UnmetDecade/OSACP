@@ -402,6 +402,16 @@ export class Reconciler {
     const slots = Math.max(1, Number(env.MAX_CONCURRENCY ?? 1) || 1);
     const chat = env.CHAT_ENABLED !== "0";
     const profiles = path.join(root, "profiles.json");
+    const apiProfileIds = (env.API_PROFILE_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    let egressPolicies: Record<string, string[]> | undefined;
+    try {
+      const parsed: unknown = env.EGRESS_POLICIES_JSON ? JSON.parse(env.EGRESS_POLICIES_JSON) : undefined;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        egressPolicies = parsed as Record<string, string[]>;
+      }
+    } catch {
+      egressPolicies = undefined;
+    }
     return {
       scheduler_url: env.SCHEDULER_URL,
       heartbeat_seconds: 10,
@@ -420,12 +430,14 @@ export class Reconciler {
       keep_workspace: true,
       audit_dir: path.join(root, "audit"),
       ...(fs.existsSync(profiles) ? { profiles_file: profiles } : {}),
+      ...(egressPolicies && Object.keys(egressPolicies).length ? { egress_policies: egressPolicies } : {}),
       instances: [
         {
           instance_id: dep.instance_id,
           role_id: dep.spec.role_id,
           host_id: dep.host_id,
           agent_profile_id: env.AGENT_PROFILE_ID || "agp_builder",
+          ...(apiProfileIds.length ? { api_profile_ids: apiProfileIds } : {}),
           task_types: ["task.build", ...(chat ? ["task.chat.builder"] : []), "task.console.builder"],
           capabilities: {
             healthy: chat ? ["code.build", "shell", "llm"] : ["code.build", "shell"],

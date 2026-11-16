@@ -431,6 +431,8 @@ export type TaskChild = {
 export type TaskAttempt = {
   attempt_number: number;
   status: string;
+  /** The instance that actually ran this attempt; the list projection can lose it once the task is terminal. */
+  instance_id?: string | null;
   error?: { code?: string; message?: string } | null;
   /** Why the scheduler classified the failure: permanent | outward | rate_limit | busy | transient. */
   failure_class?: string | null;

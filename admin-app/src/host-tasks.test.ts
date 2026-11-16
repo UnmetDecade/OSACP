@@ -1,125 +1,180 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { tasksForHost } from "./host-tasks";
 import { db } from "./store";
+import { studioScheduler, tasksForHost } from "./host-tasks";
 import type { Host, Instance, Task } from "./types";
 
-function host(id: string, parent: string | null = null): Host {
+function host(id: string, overrides: Partial<Host> = {}): Host {
   return {
     id,
     name: id,
     os: "Linux",
     arch: "x86_64",
-    runtime_version: "1.0.0",
+    runtime_version: "4.6.0",
     state: "ONLINE",
-    cpu: 0,
-    mem: 0,
-    disk: 0,
-    cpu_total: 1,
-    mem_total_mb: 1024,
-    mem_available_mb: 512,
+    cpu: 10,
+    mem: 20,
+    disk: 30,
+    cpu_total: 8,
+    mem_total_mb: 32768,
+    mem_available_mb: 16384,
     labels: {},
     capabilities: [],
     registered_at: "2026-01-01T00:00:00Z",
     maintaining: false,
-    parent_host_id: parent,
+    role_mode: "containers",
+    ...overrides,
   };
 }
 
-function instance(
-  id: string,
-  hostId: string,
-  role: Instance["role"] = "builder",
-): Instance {
+function instance(overrides: Partial<Instance>): Instance {
   return {
-    key: `${hostId}/${id}`,
-    id,
-    name: id,
-    role,
-    host_id: hostId,
-    agent_profile_id: "",
-    api_profile_ids: [],
-    task_types: [],
-    resource_profile: "-",
-    cpu_limit: 1,
-    mem_limit_mb: 1024,
-    disk_gb: 20,
+    key: `${overrides.host_id}/${overrides.id}`,
+    id: "",
+    name: "",
+    role: "builder",
+    host_id: "",
     state: "ONLINE",
     config_version: 1,
     last_heartbeat: "2026-01-01T00:00:00Z",
     image: "",
+    task_types: [],
+    resource_profile: "",
+    cpu_limit: 1,
+    mem_limit_mb: 1024,
+    disk_gb: 10,
+    api_profile_ids: [],
     created_at: "2026-01-01T00:00:00Z",
-  };
+    ...overrides,
+  } as Instance;
 }
 
-function task(id: string, instanceId?: string): Task {
+function task(overrides: Partial<Task>): Task {
   return {
-    id,
-    title: id,
+    id: "t1",
+    title: "queued task",
+    state: "QUEUED",
     type: "task.build",
-    workflow: "-",
-    stage: "RUNNING",
+    workflow: "build",
+    stage: "queued",
     target_role: "builder",
     priority: 2,
-    state: "RUNNING",
-    attention: "none",
-    instance_id: instanceId,
-    attempts: 0,
+    attempt_count: 0,
     created_at: "2026-01-01T00:00:00Z",
     payload: {},
     events: [],
-  };
+    ...overrides,
+  } as unknown as Task;
 }
 
 beforeEach(() => {
-  db.hosts.length = 0;
-  db.instances.length = 0;
-  db.tasks.length = 0;
+  db.hosts = [];
+  db.instances = [];
+  db.tasks = [];
+});
+
+describe("studioScheduler", () => {
+  it("prefers the host's own root scheduler", () => {
+    db.hosts = [host("h1")];
+    db.instances = [
+      instance({ id: "sched-own", role: "scheduler", host_id: "h1", scheduler_role: "root" }),
+      instance({
+        id: "sched-remote",
+        role: "scheduler",
+        host_id: "h2",
+        scheduler_role: "root",
+        deployment_id: "dep-remote",
+      }),
+      instance({ id: "b1", host_id: "h1", scheduler_deployment_id: "dep-remote" }),
+    ];
+    expect(studioScheduler(db.hosts[0])?.id).toBe("sched-own");
+  });
+
+  it("finds the scheduler that owns a builder-only host's builders", () => {
+    db.hosts = [host("h1")];
+    db.instances = [
+      instance({
+        id: "sched-remote",
+        role: "scheduler",
+        host_id: "h2",
+        scheduler_role: "root",
+        deployment_id: "dep-remote",
+      }),
+      instance({ id: "b1", host_id: "h1", scheduler_deployment_id: "dep-remote" }),
+    ];
+    expect(studioScheduler(db.hosts[0])?.id).toBe("sched-remote");
+  });
+
+  it("returns nothing when neither a local scheduler nor an owning one exists", () => {
+    db.hosts = [host("h1")];
+    db.instances = [instance({ id: "b1", host_id: "h1" })];
+    expect(studioScheduler(db.hosts[0])).toBeUndefined();
+  });
+
+  it("finds the scheduler attached through a host merged under this one", () => {
+    // Builders of a merged host are part of this studio, so their scheduler serves this host too.
+    db.hosts = [host("h1"), host("h2", { parent_host_id: "h1" })];
+    db.instances = [
+      instance({
+        id: "sched-remote",
+        role: "scheduler",
+        host_id: "h3",
+        scheduler_role: "root",
+        deployment_id: "dep-remote",
+      }),
+      instance({ id: "b2", host_id: "h2", scheduler_deployment_id: "dep-remote" }),
+    ];
+    expect(studioScheduler(db.hosts[0])?.id).toBe("sched-remote");
+  });
+
+  it("ignores a node scheduler as the studio entry point", () => {
+    db.hosts = [host("h1")];
+    db.instances = [
+      instance({ id: "node-only", role: "scheduler", host_id: "h1", scheduler_role: "node" }),
+    ];
+    expect(studioScheduler(db.hosts[0])).toBeUndefined();
+  });
+
+  it("returns nothing without a host", () => {
+    expect(studioScheduler(undefined)).toBeUndefined();
+  });
 });
 
 describe("tasksForHost", () => {
+  it("shows queued tasks on a builder-only host attached to a remote scheduler", () => {
+    db.hosts = [host("h1")];
+    db.instances = [
+      instance({
+        id: "sched-remote",
+        role: "scheduler",
+        host_id: "h2",
+        scheduler_role: "root",
+        deployment_id: "dep-remote",
+      }),
+      instance({ id: "b1", host_id: "h1", scheduler_deployment_id: "dep-remote" }),
+    ];
+    db.tasks = [task({ id: "t1" }), task({ id: "t2", instance_id: "b1", state: "RUNNING" })];
+    // The queue lives on the remote scheduler; without this the task would vanish between submit and dispatch.
+    expect(tasksForHost(db.hosts[0]).map((t) => t.id)).toEqual(["t1", "t2"]);
+  });
+
+  it("keeps queued tasks hidden when no scheduler serves the host", () => {
+    db.hosts = [host("h1")];
+    db.instances = [instance({ id: "b1", host_id: "h1" })];
+    db.tasks = [task({ id: "t1" })];
+    expect(tasksForHost(db.hosts[0])).toEqual([]);
+  });
+
+  it("shows queued tasks when the host runs its own scheduler", () => {
+    db.hosts = [host("h1")];
+    db.instances = [
+      instance({ id: "sched-local", role: "scheduler", host_id: "h1", scheduler_role: "root" }),
+    ];
+    db.tasks = [task({ id: "t1" })];
+    expect(tasksForHost(db.hosts[0]).map((t) => t.id)).toEqual(["t1"]);
+  });
+
   it("returns nothing without a host", () => {
+    db.tasks = [task({ id: "t1" })];
     expect(tasksForHost(undefined)).toEqual([]);
-  });
-
-  it("includes tasks on this host and on hosts merged below it", () => {
-    db.hosts.push(host("root"), host("child", "root"), host("other"));
-    db.instances.push(
-      instance("builder-root", "root"),
-      instance("builder-child", "child"),
-      instance("builder-other", "other"),
-      instance("scheduler-root", "root", "scheduler"),
-    );
-    db.tasks.push(
-      task("t-root", "builder-root"),
-      task("t-child", "builder-child"),
-      task("t-other", "builder-other"),
-      task("t-unassigned"),
-    );
-
-    expect(tasksForHost(db.hosts[0]).map((t) => t.id)).toEqual([
-      "t-root",
-      "t-child",
-      "t-unassigned",
-    ]);
-  });
-
-  it("does not attribute unassigned tasks without a scheduler in the subtree", () => {
-    db.hosts.push(host("root"), host("child", "root"));
-    db.instances.push(instance("builder-child", "child"));
-    db.tasks.push(task("t-child", "builder-child"), task("t-unassigned"));
-
-    expect(tasksForHost(db.hosts[0]).map((t) => t.id)).toEqual(["t-child"]);
-  });
-
-  it("filters out tasks on unrelated hosts and instances that no longer exist", () => {
-    db.hosts.push(host("root"), host("other"));
-    db.instances.push(instance("builder-root", "root"), instance("scheduler-root", "root", "scheduler"));
-    db.tasks.push(
-      task("t-root", "builder-root"),
-      task("t-other", "builder-other"),
-      task("t-stale", "deleted-builder"),
-    );
-
-    expect(tasksForHost(db.hosts[0]).map((t) => t.id)).toEqual(["t-root"]);
   });
 });

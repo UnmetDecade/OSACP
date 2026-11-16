@@ -4,7 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { db } from "../store";
 import { useHostScope } from "../host-context";
 import { useLive } from "../live/context";
-import { tasksForHost } from "../host-tasks";
+import { studioScheduler, tasksForHost } from "../host-tasks";
 import { Character } from "../components/Character";
 import { Badge, Button, Callout, Card, CardTitle, Empty, Field, Modal, PageHead, Stat, Tag } from "../components/ui";
 import { Icon } from "../components/Icon";
@@ -134,8 +134,10 @@ export function Dashboard() {
   const hostSchedulers = db.instances.filter(
     (i) => i.role === "scheduler" && (!host || i.host_id === host.id),
   );
-  const scheduler =
-    hostSchedulers.find((i) => (i.scheduler_role ?? "root") === "root") ?? hostSchedulers[0];
+  // A builder-only host has no scheduler of its own; the one that dispatches to its builders serves the
+  // studio, so task creation is available without deploying a second scheduler here.
+  const scheduler = studioScheduler(host);
+  const remoteScheduler = Boolean(scheduler && host && scheduler.host_id !== host.id);
   // A host sees only its own sideloads; another host's devices never appear in this studio.
   const hostSideloads = host ? db.sideloads.filter((s) => s.host_id === host.id) : [];
   const hostTasks = tasksForHost(host);
@@ -150,6 +152,8 @@ export function Dashboard() {
   // Count builders in the same scope as the studio and the header: hosts merged into this one are part of it.
   // Checking only this host's own rows made the checklist say "deploy a builder" while the canvas showed two online.
   const buildersReady = builders.length > 0;
+  // A bare-metal builder is attached by the reconciler once a scheduler exists; there is no instance to create.
+  const bareBuilder = host?.role_mode === "builder";
   const steps: {
     title: string;
     desc: string;
@@ -160,21 +164,27 @@ export function Dashboard() {
     blocked: string;
   }[] = [
     {
-      title: t("部署调度机"),
-      desc: t("平台指挥中心，负责接收任务、排队和派发。"),
+      title: remoteScheduler ? t("调度机已接入") : t("部署调度机"),
+      desc: remoteScheduler
+        ? t("任务由 {name} 排队和派发，本机无需再部署调度机。", { name: scheduler?.name ?? "" })
+        : t("平台指挥中心，负责接收任务、排队和派发。"),
       done: schedulerReady,
-      run: () => startDeploy("scheduler"),
+      run: remoteScheduler ? undefined : () => startDeploy("scheduler"),
       action: t("立即部署 →"),
       blocked: "",
     },
     {
       title: t("部署构建机"),
-      desc: t("用 Docker 容器运行构建 Agent，执行研发任务。"),
+      // A host switched to a bare-metal builder has already made the choice; only a scheduler is missing,
+      // so offering the builder dialog here would reopen a decision that is settled.
+      desc: bareBuilder
+        ? t("主机已切换为裸机构建机，部署调度机后自动接入。")
+        : t("用 Docker 容器运行构建 Agent，执行研发任务。"),
       done: buildersReady,
       // The steps lead straight into creating a builder; the container/bare-metal choice appears only at the studio's empty-state entry.
-      run: () => startDeploy("builder"),
+      run: bareBuilder ? undefined : () => startDeploy("builder"),
       action: t("立即部署 →"),
-      blocked: "",
+      blocked: bareBuilder ? t("等待调度机") : "",
     },
     {
       title: t("提交第一个任务"),

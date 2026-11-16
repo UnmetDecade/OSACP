@@ -18,12 +18,13 @@ resolve per instance identity, store references only, support revocation, and ne
 - **Revocation**: after `/v1/secrets/revoke`, that instance immediately gets `INSTANCE_REVOKED`.
 - **File permissions**: the secrets and policy files must be 0600 or stricter, otherwise startup is refused.
 - **Audit**: records the action, instance, reference, decision and error code; **never records credential values**.
-- Listens on loopback only and is never exposed to the WAN; holds no JWT private key (only the PCS public key).
+- Binds to a private address only and is never exposed to the WAN; holds no JWT private key (only the PCS public key).
 
 ## Running
 
 ```bash
 npm install
+SECRET_STORE_HOST=127.0.0.1 \
 SECRET_STORE_SECRETS_FILE=/secure/secrets.json \
 SECRET_STORE_POLICY_FILE=/secure/policy.json \
 SECRET_STORE_AUDIT_FILE=/secure/audit.jsonl \
@@ -31,6 +32,24 @@ SECRET_STORE_ADMIN_TOKEN=... \
 PCS_PUBLIC_KEY_FILE=../pcs-issuer/keys/public.pem \
 npm start
 ```
+
+`SECRET_STORE_HOST=127.0.0.1` (the default) only serves processes on the same machine. Role containers cannot
+reach loopback, so a deployment that binds API Profiles needs a container-visible address:
+on Linux the host's LAN IP, on macOS `0.0.0.0` plus a reachable container URL such as the Docker bridge gateway.
+
+### Deployment
+
+`scripts/deploy.sh` starts the store for you and wires PCS to it — data files and the admin token live under
+`~/.config/platform/secret-store/` (0600), the log next to them, and PCS receives:
+
+| Variable | Meaning |
+|---|---|
+| `PCS_SECRET_STORE_URL` | Address PCS itself uses for key writes (`PUT /v1/secrets`) |
+| `PCS_SECRET_STORE_CONTAINER_URL` | Address containers use to resolve `secret://`; falls back to the URL above |
+| `PCS_SECRET_STORE_ADMIN_TOKEN` | Set from `admin-token`; PCS never returns it to the browser |
+
+The store starts once and is reused on later runs (the script probes `/healthz` first); stop the process yourself
+if you need it restarted, since a running store keeps serving the data and token already on disk.
 
 Data file formats (both must be 0600):
 
@@ -58,7 +77,7 @@ When you enter an API key in the admin app, PCS calls this endpoint on your beha
 
 | Environment variable | Default | Description |
 |---|---|---|
-| `SECRET_STORE_HOST` | `127.0.0.1` | Loopback only |
+| `SECRET_STORE_HOST` | `127.0.0.1` | Listen address; loopback is invisible to role containers, so use a private host address when they must resolve |
 | `SECRET_STORE_PORT` | `7902` | |
 | `SECRET_STORE_SECRETS_FILE` | required | Mapping of references to values, 0600 |
 | `SECRET_STORE_POLICY_FILE` | required | Per-instance authorization of references, 0600 |

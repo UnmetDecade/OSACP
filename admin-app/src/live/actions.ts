@@ -78,6 +78,7 @@ export async function updateHost(
   role_mode?: HostRoleMode;
   native_builder?: { deployment_id: string; created: boolean; status: string };
   warning?: string;
+  warning_code?: string;
 }> {
   if (!connection.pcsUrl) throw new Error(t("未配置控制面地址，无法修改主机"));
   return pcs(connection, `/api/v1/platform/hosts/${encodeURIComponent(hostId)}`, {

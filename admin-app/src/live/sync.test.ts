@@ -359,8 +359,10 @@ function fixtures() {
   };
 }
 
-function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
-  const f = fixtures();
+function routes(
+  overrides: Record<string, Route> = {},
+  f: ReturnType<typeof fixtures> = fixtures(),
+): Record<string, Route> {
   return {
     "/api/v1/platform/hosts": f.hosts,
     "/api/v1/platform/deployments": f.deployments,
@@ -590,6 +592,23 @@ describe("syncLive", () => {
     expect(db.hosts).toHaveLength(1);
     expect(db.instances.map((i) => i.id)).toEqual(["builder-a", "sched-a"]);
     expect(db.tasks).toEqual([]);
+  });
+
+  it("shows a failed deployment as FAILED even while the scheduler row still says STARTING", async () => {
+    const f = fixtures();
+    const failed = f.deployments.deployments.find((d) => d.deployment_id === "dep-builder");
+    if (!failed) throw new Error("fixture deployment missing");
+    failed.status = "FAILED";
+    const row = f.instances.items.find((i) => i.instance_id === "builder-a");
+    if (!row) throw new Error("fixture instance missing");
+    row.state = "STARTING";
+    row.last_heartbeat_at = new Date().toISOString();
+    vi.stubGlobal("fetch", routeFetch(routes({}, f)));
+
+    await syncLive(connection);
+
+    // Keeping 启动中 would hide both the failure and the way back to a redeploy.
+    expect(db.instances.find((i) => i.id === "builder-a")?.state).toBe("FAILED");
   });
 
   it("falls back to the default scheduler when no deployment is known", async () => {

@@ -119,7 +119,13 @@ export function TerminalPage() {
   }
 
   const sshLine = useMemo(
-    () => (instance ? sshCommand(instance.ssh_host, instance.ssh_port, instance.ssh_user) : "-"),
+    () =>
+      instance
+        ? instance.ssh_port
+          ? sshCommand(instance.ssh_host, instance.ssh_port, instance.ssh_user)
+          : // Bare-metal: the shell is the host itself, there is no published SSH port to quote.
+            instance.ssh_host ?? "-"
+        : "-",
     [instance],
   );
 
@@ -141,10 +147,13 @@ export function TerminalPage() {
                 <Icon name="refresh" size={14} />
                 {t("重连")}
               </button>
-              <button className="btn" onClick={copy}>
-                <Icon name={copied ? "check" : "copy"} size={14} />
-                {copied ? t("已复制") : t("复制 SSH")}
-              </button>
+              {/* A bare-metal builder has no sshd of its own; the shell runs through the host runtime. */}
+              {instance.ssh_port ? (
+                <button className="btn" onClick={copy}>
+                  <Icon name={copied ? "check" : "copy"} size={14} />
+                  {copied ? t("已复制") : t("复制 SSH")}
+                </button>
+              ) : null}
               <Link
                 className="btn"
                 to={instance.role === "scheduler" ? `/scheduler/${instance.id}` : `/builders/${instance.id}`}

@@ -101,9 +101,11 @@ export function verifyCommandSignature(payload: CommandPayload, publicKeyPem: st
 
 const COMMAND_TYPES = new Set(["DEPLOY", "START", "STOP", "RESTART", "REMOVE"]);
 const SECRET_KEY = /(secret|token|password|passwd|credential|private[_-]?key)/i;
-// The federation token issued by the control plane is not a user credential: the root uses it to verify child-node reports, and nodes use it to report.
-// It arrives with the signed command and, unlike API keys, is not written into the instance's PROFILE file.
-const PLATFORM_INJECTED_SECRETS = new Set(["SCHEDULER_FEDERATION_TOKEN"]);
+// Values the control plane injects itself whose names match the credential pattern but which are handles, not
+// credentials: the federation token (the root verifies child-node reports with it, nodes report with it) and
+// SECRET_STORE_URL (the Secret Store's address). Both arrive only with the signed command, and unlike API keys they
+// are not written into the instance's PROFILE file.
+const PLATFORM_INJECTED_SECRETS = new Set(["SCHEDULER_FEDERATION_TOKEN", "SECRET_STORE_URL"]);
 
 function assertArray<T>(value: unknown, name: string): asserts value is T[] {
   if (!Array.isArray(value)) throw new CommandRejected("INVALID_COMMAND", `${name} must be an array`);

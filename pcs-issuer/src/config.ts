@@ -99,8 +99,15 @@ export interface PcsConfig {
   dynamicPolicyJson: string | null;
   /** Secret Store address for API keys written from the console; when unset, the UI can only fill in secret:// references */
   secretStoreUrl: string | null;
+  /** Secret Store address handed to role containers; defaults to secretStoreUrl when set (containers need an address they can reach) */
+  secretStoreContainerUrl: string | null;
   /** Secret Store admin token (used only for writes, never returned to the browser) */
   secretStoreAdminToken: string | null;
+  /**
+   * Lifetime of the instance identity token delivered with a deployment. The token is what the
+   * container's API adapter presents to the Secret Store; redeploying refreshes it.
+   */
+  instanceTokenHours: number;
 }
 
 /** `ubuntu24.04=image,ubuntu22.04=image` → { "ubuntu24.04": "image", … } */
@@ -236,7 +243,10 @@ export function loadConfig(overrides: Partial<PcsConfig> = {}): PcsConfig {
     schedulerUrl: (process.env.PCS_SCHEDULER_URL ?? "").trim() || null,
     schedulerSyncUrl: (process.env.PCS_SCHEDULER_SYNC_URL ?? "").trim() || null,
     secretStoreUrl: (process.env.PCS_SECRET_STORE_URL ?? "").trim() || null,
+    secretStoreContainerUrl: (process.env.PCS_SECRET_STORE_CONTAINER_URL ?? "").trim() || null,
     secretStoreAdminToken: (process.env.PCS_SECRET_STORE_ADMIN_TOKEN ?? "").trim() || null,
+    // Container identities outlive a single task; redeploying is the rotation path.
+    instanceTokenHours: intEnv("PCS_INSTANCE_TOKEN_HOURS", 720),
     ...overrides,
   };
   if (Boolean(cfg.tlsCertFile) !== Boolean(cfg.tlsKeyFile)) {

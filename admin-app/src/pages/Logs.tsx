@@ -1,5 +1,6 @@
 import { t } from "../i18n";
 import { db } from "../store";
+import { useLive } from "../live/context";
 import { Badge, Card, Empty, PageHead } from "../components/ui";
 
 /**
@@ -7,6 +8,9 @@ import { Badge, Card, Empty, PageHead } from "../components/ui";
  * Data comes from control plane audit logs.
  */
 export function LogsPage() {
+  // A direct visit renders before the first sync; subscribing re-renders once the audit rows arrive
+  // instead of leaving "no logs yet" on screen.
+  useLive();
   const logs = db.logs;
   return (
     <div className="page page-logs">

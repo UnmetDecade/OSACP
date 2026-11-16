@@ -588,3 +588,93 @@ describe("Agent executor", () => {
     assert.equal(fs.existsSync(dir) ? fs.readdirSync(dir).length : 0, 0);
   });
 });
+
+describe("model routing through the API adapter", () => {
+  const fixture = path.join(process.cwd(), "test", "fixtures", "env-agent.mjs");
+
+  function routedProfiles(modelBound: boolean): RuntimeProfiles {
+    const api = new Map([
+      [
+        "api_llm",
+        apiProfile({
+          api_profile_id: "api_llm",
+          kind: "llm",
+          base_url: "https://api.deepseek.com/anthropic",
+          egress: "api.egress",
+        }),
+      ],
+    ]);
+    return {
+      agent: agentProfile({
+        entrypoint: [process.execPath, fixture],
+        ...(modelBound ? { model_api_profile_id: "api_llm" } : {}),
+      }),
+      api,
+      boundApiIds: new Set(api.keys()),
+    };
+  }
+
+  async function withHostCredential<T>(run: () => Promise<T>): Promise<T> {
+    const saved = {
+      key: process.env.ANTHROPIC_API_KEY,
+      base: process.env.ANTHROPIC_BASE_URL,
+      pass: process.env.PLATFORM_AGENT_PASS_ENV,
+    };
+    process.env.ANTHROPIC_API_KEY = "sk-stale-host-key";
+    process.env.ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
+    process.env.PLATFORM_AGENT_PASS_ENV = "ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL";
+    try {
+      return await run();
+    } finally {
+      for (const [name, value] of [
+        ["ANTHROPIC_API_KEY", saved.key],
+        ["ANTHROPIC_BASE_URL", saved.base],
+        ["PLATFORM_AGENT_PASS_ENV", saved.pass],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  }
+
+  it("a model API Profile wins over a stale host credential and hands out only the adapter handle", async () => {
+    await withHostCredential(async () => {
+      const profiles = routedProfiles(true);
+      const adapter = new ApiAdapter({
+        instanceId: "builder-a",
+        profiles: profiles.api,
+        secretClient: fakeSecret,
+        egress: { policies: { "api.egress": ["api.deepseek.com"] }, allowLoopback: false },
+        port: 0,
+      });
+      await adapter.start();
+      try {
+        const ws = fs.mkdtempSync(path.join(TMP, "ws-model-"));
+        const result = await runAgentTask(assignment({ requirements: {} }), ctxFor(ws).ctx, {
+          profiles,
+          apiAdapter: adapter,
+          toolAudit: () => {},
+        });
+        // The CLI sees the local proxy and a placeholder key; the real credential is injected at egress.
+        assert.equal(result.summary, `base=${adapter.url}/api_llm key=platform-api-adapter`);
+        assert.ok(!result.summary.includes("sk-stale-host-key"));
+      } finally {
+        await adapter.close();
+      }
+    });
+  });
+
+  it("without a model binding the host credential still reaches the Agent", async () => {
+    await withHostCredential(async () => {
+      const ws = fs.mkdtempSync(path.join(TMP, "ws-model-host-"));
+      const result = await runAgentTask(assignment({ requirements: {} }), ctxFor(ws).ctx, {
+        profiles: routedProfiles(false),
+        toolAudit: () => {},
+      });
+      assert.equal(
+        result.summary,
+        "base=https://api.deepseek.com/anthropic key=sk-stale-host-key",
+      );
+    });
+  });
+});

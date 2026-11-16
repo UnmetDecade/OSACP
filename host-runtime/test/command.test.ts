@@ -133,6 +133,14 @@ test("network policy, env credentials, volume mounts, and command arguments are 
     () => validateCommand(command({ instance: spec({ env: { GIT_TOKEN: "x" } }) }), opts),
     "SECRET_IN_ENVELOPE",
   );
+  // SECRET_STORE_URL is the store's address, not a credential: it arrives with every API-Profile deployment
+  // and must pass, or the host rejects a command the control plane signed.
+  assert.doesNotThrow(() =>
+    validateCommand(
+      command({ instance: spec({ env: { SECRET_STORE_URL: "http://127.0.0.1:7902" } }) }),
+      opts,
+    ),
+  );
   expectCode(
     () =>
       validateCommand(

@@ -357,6 +357,8 @@ export function createPcsServer(service: PcsService, cfg: PcsConfig): http.Serve
           demo: cfg.demoMode,
           registration: cfg.registrationMode,
           has_accounts: await service.hasAccounts(),
+          // Without a Secret Store the API Profile dialog can only store secret:// references.
+          secret_store: Boolean(cfg.secretStoreUrl),
         });
       }
 

@@ -114,12 +114,24 @@ Two **cute robots** replace the original cartoon characters. Hand-drawn SVG, no 
 - Two sections: Agent Profile / API Profile, each with its own table; click a row to edit, and create in the top right.
 - Agent Profile: name, role (cannot be changed after creation), Agent type (Claude Code / Codex / Custom); the version is taken automatically from the versions registered for that Agent.
   Known types automatically come with an adapter, entry point, and parameters; only "Custom" shows the adapter, entry point, parameters, image, and capabilities.
+- Model API: optionally pick an API Profile of kind `llm`; model traffic for that Agent then goes through the
+  adapter inside the container with a Secret Store credential. Empty keeps the host credential file
+  (`~/.config/platform/agent-env`). Deploy dialogs select that API automatically; if you rebind the instance by
+  hand, keep it selected or the deployment is refused.
 - Responsibilities and prompt: description (used only for panel identification) and system prompt; the latter is assembled into the prompt by the adapter, and platform safety constraints are always appended at the end.
 - Permissions: comma-separated tool_ids; empty means all permissions. The maximum number of rounds and the timeout are enforced by the runtime.
 - API Profile: name, provider (DeepSeek / Anthropic / OpenAI / Custom), Base URL, API Key, timeout, enabled.
   Preset providers pre-fill the address, authentication method, and `secret://` reference; only "Custom" shows type, authentication, egress, and reference.
+- Base URL is the host root, without `/v1`: model traffic is proxied by the API adapter inside the container, which appends the path the Agent asks for (`/v1/messages`, …).
+  A Profile used as the model must serve the Anthropic Messages API (DeepSeek: `https://api.deepseek.com/anthropic`).
 - The API Key is submitted only once, at save time: the control plane forwards it to the Secret Store, and PCS never persists or echoes it; lists, logs, and audits contain only the reference.
-  Leaving it empty while editing means no change; when the Secret Store is not configured the control plane returns 503, and you can fill in only a `secret://` reference.
+  `scripts/deploy.sh` starts the Secret Store together with PCS (data and admin token under `~/.config/platform/secret-store`, 0600).
+  When PCS is started by hand without `PCS_SECRET_STORE_URL`, the page says so, the key field is disabled, only a `secret://` reference can be saved,
+  and deploying an instance that binds an API Profile is refused (503) instead of starting an adapter that cannot authenticate.
+- An instance that binds API Profiles receives its instance identity token, the Secret Store address, and an egress allowlist
+  (synthesized from each Base URL's hostname) with the deployment; the credential is resolved at egress and never enters the container environment.
+- When the model is an API Profile, the Agent only sees the adapter handle and a placeholder key; the real key is injected at egress.
+  That path needs no `~/.config/platform/agent-env` on the host.
 - The delete button to the right of "Enabled" in a list row opens a confirmation dialog first; if the profile is still referenced by a live instance or Agent, the control plane rejects the deletion—unbind it in "Configure Agent" on the builder / scheduler detail page (choose "No Agent", or remove the API chip). Bindings left behind by removed deployments or deleted hosts are pruned automatically on the next deletion attempt.
 - Which API an instance uses is chosen via "Configure" on the builder / scheduler, and is not specified again in the Agent Profile.
 - The database stores only `secret://` references and image digests; secret values exist only in Secret Store files (0600).

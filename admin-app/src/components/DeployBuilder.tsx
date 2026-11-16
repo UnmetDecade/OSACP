@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { t } from "../i18n";
 import { db } from "../store";
 import { editHost, fetchHostDeployments } from "../api";
@@ -25,20 +26,35 @@ export function DeployBuilderModal({
   onDone: () => Promise<void> | void;
 }) {
   const live = useLive();
+  const navigate = useNavigate();
   const builderAgents = db.agents.filter((a) => a.enabled !== false && a.role === "builder");
+  /**
+   * A builder needs an Agent either way (container or bare metal), so the empty state hands the
+   * operator to the Config page with the new-Agent dialog already open, same as the scheduler.
+   * Navigate without closing first, for the same reason as the scheduler dialog: the close would
+   * otherwise re-render the dashboard before the route transition commits.
+   */
+  const goCreateAgent = () => {
+    navigate("/profiles", { state: { createAgent: true } });
+  };
   const [step, setStep] = useState<"choice" | "native">("choice");
   const [name, setName] = useState("");
   const [agent, setAgent] = useState("");
   const [apiProfile, setApiProfile] = useState("");
   const [busy, setBusy] = useState<"container" | "native" | null>(null);
-  const [notice, setNotice] = useState<{ tone: "warn" | "bad"; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ tone: "info" | "warn" | "bad"; text: string } | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
   // Fall back to the first enabled builder Agent / the empty API option when the stored choice disappears.
   const selectedAgent = builderAgents.some((a) => a.id === agent)
     ? agent
     : builderAgents[0]?.id ?? "";
-  const selectedApi = db.apis.some((a) => a.id === apiProfile) ? apiProfile : "";
+  // Prefer the Agent's model API: a model bound through an API Profile must be selected here or the
+  // control plane refuses the deployment (the Agent would reference an unbound API).
+  const agentModel = db.agents.find((a) => a.id === selectedAgent)?.model_api_profile_id;
+  const selectedApi = db.apis.some((a) => a.id === apiProfile)
+    ? apiProfile
+    : (db.apis.find((a) => a.id === agentModel)?.id ?? "");
 
   /** Turn the host's failed command acknowledgement into an operator-readable reason. */
   function deploymentError(observed: ObservationRow | null | undefined): string {
@@ -100,10 +116,19 @@ export function DeployBuilderModal({
         },
       );
       if (out.warning) {
-        setNotice({
-          tone: "warn",
-          text: t("主机角色已切换，但裸机构建机没有启动：{reason}", { reason: out.warning }),
-        });
+        // No scheduler yet is not a failure: the host is already a bare-metal builder, and the control plane
+        // starts the instance by itself once a scheduler (on any host) becomes reachable.
+        setNotice(
+          out.warning_code === "SCHEDULER_URL_MISSING"
+            ? {
+                tone: "info",
+                text: t("主机已切换为裸机构建机。还没有可接入的调度机，部署调度机后构建机会自动接入并启动。"),
+              }
+            : {
+                tone: "warn",
+                text: t("主机角色已切换，但裸机构建机没有启动：{reason}", { reason: out.warning }),
+              },
+        );
         return;
       }
       if (out.native_builder) {
@@ -133,6 +158,15 @@ export function DeployBuilderModal({
     >
       {t("完成")}
     </Button>
+  ) : builderAgents.length === 0 ? (
+    <>
+      <Button onClick={onClose} disabled={busy !== null}>
+        {t("取消")}
+      </Button>
+      <Button variant="primary" onClick={goCreateAgent}>
+        {t("去创建 Agent")}
+      </Button>
+    </>
   ) : step === "choice" ? (
     <>
       <Button onClick={onClose} disabled={busy !== null}>
@@ -155,7 +189,11 @@ export function DeployBuilderModal({
 
   return (
     <Modal open title={t("部署构建机")} onClose={onClose} width={720} footer={footer}>
-      {step === "choice" ? (
+      {builderAgents.length === 0 ? (
+        <Callout tone="warn">
+          {t("还没有构建机 Agent。先在「配置」页创建一个 Agent Profile，再回来部署。")}
+        </Callout>
+      ) : step === "choice" ? (
         <div className="builder-choice">
           <section className="builder-choice-card">
             <header>
@@ -203,7 +241,6 @@ export function DeployBuilderModal({
           </Field>
           <Field label="Agent">
             <select className="input" value={selectedAgent} onChange={(e) => setAgent(e.target.value)}>
-              {builderAgents.length === 0 && <option value="">—</option>}
               {builderAgents.map((a) => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
@@ -217,11 +254,6 @@ export function DeployBuilderModal({
               ))}
             </select>
           </Field>
-          {builderAgents.length === 0 && (
-            <Callout tone="warn">
-              {t("还没有可用的 Agent Profile，部署后只执行确定性 Shell 任务。")}
-            </Callout>
-          )}
         </div>
       )}
 

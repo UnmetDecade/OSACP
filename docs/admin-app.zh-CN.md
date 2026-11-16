@@ -112,13 +112,23 @@
 - 两段：Agent Profile / API Profile，各用一张表；点击行编辑，右上角新建。
 - Agent Profile：名称、角色（创建后不可改）、Agent 类型（Claude Code / Codex / 自定义）；版本自动取该 Agent 已注册的版本。
   已知类型自动带适配器、入口与参数；只有「自定义」才显示适配器、入口、参数、镜像、能力。
+- 模型 API：可选用一个「大模型」类型的 API Profile；选中后该 Agent 的模型请求走构建机内的适配器，
+  密钥来自 Secret Store；留空则用主机凭据文件（`~/.config/platform/agent-env`）。
+  部署构建机 / 调度机时控制面会自动带上这个 API；手动改绑定时也要把它勾上，否则部署会被拒绝。
 - 职责与提示词：描述（只用于面板识别）、系统提示词；后者由适配器拼进提示词，平台安全约束始终追加在后。
 - 权限：逗号分隔的 tool_id；留空表示全部权限。最大轮次与超时由运行时强制执行。
 - API Profile：名称、服务商（DeepSeek / Anthropic / OpenAI / 自定义）、Base URL、API Key、超时、启用。
   预置服务商自动填好地址、认证方式与 `secret://` 引用；只有「自定义」才显示类型、认证、egress 与引用。
+- Base URL 填主机根路径，不带 `/v1`：模型请求由构建机内的 API 适配器转发，Agent 请求的 `/v1/messages` 等路径由适配器拼上。
+  作为模型的 Profile 必须提供 Anthropic Messages 接口（DeepSeek 填 `https://api.deepseek.com/anthropic`）。
 - API Key 只在保存时提交一次：控制面转发给 Secret Store，PCS 不落库、不回显；列表、日志与审计里只有引用。
-  编辑时留空表示不修改；Secret Store 未配置时控制面返回 503，可只填 `secret://` 引用。
+  `scripts/deploy.sh` 会连同 PCS 一起启动 Secret Store（数据与管理令牌在 `~/.config/platform/secret-store`，权限 0600）。
+  手工启动 PCS 且没有 `PCS_SECRET_STORE_URL` 时，页面会提示，API Key 输入框禁用、只能填 `secret://` 引用，
+  部署绑定 API 的实例会被拒绝（503），而不是启动一个无法认证的适配器。
 - 列表行「启用」右侧的删除按钮会先弹确认框；仍被在线实例或 Agent 引用时控制面拒绝，需先到构建机 / 调度机详情的「配置 Agent」里解除（选「不使用 Agent」，或移除对应 API）；已移除部署、已删除主机留下的绑定会在下次删除时自动清理。
+- 绑定 API 的实例会随部署收到实例身份令牌、Secret Store 地址与 egress 白名单（按每个 Base URL 的主机名合成）；
+  密钥在出口处解析，不进入容器环境变量。
+- 模型走 API Profile 时，Agent 只看到适配器地址与占位密钥，真实密钥由适配器在出口注入；这条路径不依赖主机上的 `~/.config/platform/agent-env`。
 - 实例用哪个 API 由构建机 / 调度机的「配置」选择，不在 Agent Profile 里重复指定。
 - 数据库只保存 `secret://` 引用与镜像 digest；密钥值只存在于 Secret Store 的文件里（0600）。
 

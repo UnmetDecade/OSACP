@@ -102,6 +102,14 @@ function hostState(status: string): HostState {
 }
 
 function instanceState(status: string, actual = "", deploymentStatus = ""): InstanceState {
+  // A failed deployment outranks a stale "starting" row: the scheduler still holds the state from before the
+  // failure, and keeping 启动中 hides both the error and the way back to a redeploy.
+  if (
+    deploymentStatus === "FAILED" &&
+    (status === "" || status === "STARTING" || status === "PROVISIONING")
+  ) {
+    return "FAILED";
+  }
   switch (status) {
     case "ONLINE":
     case "SUSPECT":
@@ -615,7 +623,7 @@ export async function syncLive(connection: LiveConnection): Promise<SyncSummary>
         dep?.status === "SYNCING"
           ? "SYNCING"
           : row && rowFresh
-            ? instanceState(str(row.state))
+            ? instanceState(str(row.state), "", str(dep?.status))
             : instanceState("", str(dep?.actual_state), str(dep?.status)),
       config_version: num(row?.config_version ?? dep?.config_version, 1),
       last_heartbeat:
@@ -947,6 +955,7 @@ function mapAttempts(out: TaskDetailResponse | null | undefined): TaskAttempt[] 
     (a: AttemptRow): TaskAttempt => ({
       attempt_number: num(a.attempt_number),
       status: str(a.status),
+      instance_id: a.instance_id ? str(a.instance_id) : null,
       error: a.error
         ? {
             code: a.error.code ? str(a.error.code) : undefined,
